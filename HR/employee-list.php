@@ -22,24 +22,28 @@ $deptFilter = trim($_GET['dept']             ?? '');
 $showAll    = isset($_GET['show_all']) && $_GET['show_all'] === '1';
 
 // ── Session department ─────────────────────────────────────────
-$_userDept = trim($_SESSION['Department'] ?? '');
-$activeDept = $isAdmin
-    ? trim($_SESSION['Department'] ?? '')  // Admin uses whatever dept is set in set_department
-    : $_userDept;                           // HR always uses their own session dept
+$_sessionDept = trim($_SESSION['Department'] ?? '');
+$viewAll      = ($isAdmin && $_sessionDept === '');
+$activeDept   = $_sessionDept;
 
 // ── Build WHERE ────────────────────────────────────────────────
-function buildWhere(bool $showAll, bool $isAdmin, string $userDept, string $search, string $deptFilter, array &$params): string
+function buildWhere(bool $showInactive, bool $viewAll, string $userDept, string $search, string $deptFilter, array &$params): string
 {
     $params = [];
 
     // Active filter
-    $where = $showAll ? "WHERE 1=1" : "WHERE Active = 1";
-    if (!$showAll) $params[] = 1;
+    $where = $showInactive ? "WHERE 1=1" : "WHERE Active = 1";
 
-    // Department filter — HR sees their dept by default, Admin sees all
-    if (!$isAdmin && $userDept !== '') {
-        $where   .= " AND LTRIM(RTRIM(Department)) = ?";
-        $params[] = $userDept;
+    // Department filter — skip if viewAll (Admin sees all depts)
+    if (!$viewAll && $userDept !== '') {
+        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $params[] = '%' . $userDept . '%';
+    }
+
+    // Dept dropdown filter (only when viewAll)
+    if ($viewAll && $deptFilter !== '') {
+        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $params[] = '%' . $deptFilter . '%';
     }
 
     // Search
@@ -57,7 +61,7 @@ function buildWhere(bool $showAll, bool $isAdmin, string $userDept, string $sear
 }
 
 $params = [];
-$where = buildWhere($showAll, $isAdmin, $activeDept, $search, $deptFilter, $params);
+$where = buildWhere($showAll, $viewAll, $activeDept, $search, $deptFilter, $params);
 
 // ── Total count ────────────────────────────────────────────────
 $countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] {$where}";
@@ -102,16 +106,15 @@ if ($stmt) {
     sqlsrv_free_stmt($stmt);
 }
 
-// ── Departments for filter dropdown ───────────────────────────
+// ── Departments for filter dropdown — pull from clean Departments table ───
 $deptStmt = sqlsrv_query($conn,
-    "SELECT DISTINCT LTRIM(RTRIM(Department)) AS Department
-     FROM [dbo].[TBL_HREmployeeList]
-     WHERE Department IS NOT NULL AND Department <> ''
-     ORDER BY Department");
+    "SELECT DepartmentName FROM [dbo].[Departments]
+     WHERE Status = 1
+     ORDER BY DepartmentName");
 $departments = [];
 if ($deptStmt) {
     while ($dr = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) {
-        $departments[] = $dr['Department'];
+        $departments[] = $dr['DepartmentName'];
     }
     sqlsrv_free_stmt($deptStmt);
 }
@@ -135,8 +138,10 @@ function avatarColor(string $name): string
     return $colors[abs(crc32($name)) % count($colors)];
 }
 
-$paginationParams = ['page' => 1, 'search' => $search, 'dept' => $deptFilter];
+$paginationParams = ['page' => 1, 'search' => $search];
 if ($showAll) $paginationParams['show_all'] = '1';
+if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -301,6 +306,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
         </div>
 
         <!-- Department filter -->
+        <?php if ($viewAll): ?>
         <select name="dept" class="form-select" style="max-width:185px;">
           <option value="">All Departments</option>
           <?php foreach ($departments as $d): ?>
@@ -309,6 +315,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             </option>
           <?php endforeach; ?>
         </select>
+        <?php endif; ?>
 
         <div class="filter-divider"></div>
         <button type="submit" class="btn btn-primary"><i class="bi bi-funnel-fill"></i> Apply</button>
@@ -339,8 +346,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             $bgColor   = avatarColor($fullName);
             $isActive  = (int)($emp['Active'] ?? 0) === 1;
             $isBlack   = (int)($emp['Blacklisted'] ?? 0) === 1;
-            $picPath   = $emp['Picture'] ?? '';
-            $hasPic    = !empty($picPath) && file_exists($_SERVER['DOCUMENT_ROOT'] . $picPath);
+            $picPath = trim($emp['Picture'] ?? '');
+            if ($picPath && !str_starts_with($picPath, '/')) {
+            $picPath = '/TWM/tradewellportal/' . $picPath;
+          }   
+
+$hasPic = !empty($picPath) && file_exists($_SERVER['DOCUMENT_ROOT'] . $picPath);
         ?>
           <tr class="emp-row" data-emp="<?= htmlspecialchars(json_encode($emp, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)) ?>"
               data-bs-toggle="modal" data-bs-target="#empDetailModal">
@@ -596,10 +607,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Avatar
     const avatarEl = document.getElementById('modalAvatarEl');
-    if (emp.Picture) {
-      avatarEl.innerHTML = `<img src="${emp.Picture}" class="modal-avatar" alt="${fullName}" onerror="this.outerHTML='<div class=modal-avatar-initials style=background:${color};>${initials.toUpperCase()}</div>'">`;
+    let picSrc = (emp.Picture || '').trim();
+    if (picSrc && !picSrc.startsWith('/')) {
+        picSrc = '/TWM/tradewellportal/' + picSrc;
+    }
+    if (picSrc) {
+        avatarEl.innerHTML = `<img src="${picSrc}" class="modal-avatar" alt="${fullName}" onerror="this.outerHTML='<div class=modal-avatar-initials style=background:${color};>${initials.toUpperCase()}</div>'">`;
     } else {
-      avatarEl.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials.toUpperCase()}</div>`;
+        avatarEl.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials.toUpperCase()}</div>`;
     }
 
     // Name & role

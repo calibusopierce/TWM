@@ -1,0 +1,307 @@
+/*--------------------------------------------------------------
+  topbar.css — Centralized topbar styles for all pages
+  Depends on CSS variables defined in each page's own stylesheet
+  (admin.css / fuel.css — both define the same :root variables)
+--------------------------------------------------------------*/
+
+/* ── Topbar Shell ──────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  height: var(--header-h, 64px);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 2rem;
+  gap: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Brand / Logo ──────────────────────────────────────────── */
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.topbar-brand-logo {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.topbar-brand-icon {
+  width: 34px; height: 34px;
+  background: var(--primary);
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.topbar-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.topbar-brand-name {
+  font-family: 'Sora', sans-serif;
+  font-size: .92rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -.03em;
+}
+
+.topbar-brand-sub {
+  font-size: .68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+/* ── Dividers & Spacers ────────────────────────────────────── */
+.topbar-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.topbar-sep { flex: 1; }
+
+/* ── Date chip ─────────────────────────────────────────────── */
+.topbar-date {
+  font-size: .72rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--surface-3);
+  padding: .28rem .7rem;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Page label (e.g. "CAREERS ADMIN") ─────────────────────── */
+.topbar-page-label {
+  font-size: .7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Department badge (clickable) ──────────────────────────── */
+.dept-dropdown-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .72rem;
+  font-weight: 700;
+  padding: .25rem .75rem;
+  border-radius: 20px;
+  border: 1.5px solid;
+  cursor: pointer;
+  letter-spacing: .03em;
+  transition: opacity .15s, box-shadow .15s;
+  white-space: nowrap;
+  background: none;
+  font-family: inherit;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.dept-dropdown-btn:hover {
+  opacity: .85;
+  box-shadow: 0 2px 8px rgba(0,0,0,.15);
+}
+
+/* ── Avatar button ─────────────────────────────────────────── */
+.tb-avatar-wrap {
+  position: relative;
+  margin-left: .2rem;
+  flex-shrink: 0;
+}
+
+.tb-avatar-btn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid rgba(59,130,246,.4);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  transition: box-shadow .15s, transform .15s;
+  flex-shrink: 0;
+}
+.tb-avatar-btn:hover {
+  box-shadow: 0 0 0 3px var(--primary-glow);
+  transform: scale(1.05);
+}
+
+.tb-avatar-initials {
+  font-family: 'Sora', sans-serif;
+  font-size: .8rem;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ── Dropdown panel ────────────────────────────────────────── */
+.tb-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + .6rem);
+  right: 0;
+  min-width: 234px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.13);
+  z-index: 9999;
+  overflow: hidden;
+  animation: tbDropIn .15s ease;
+}
+.tb-dropdown.open { display: block; }
+
+@keyframes tbDropIn {
+  from { opacity: 0; transform: translateY(-6px) scale(.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* User info block */
+.tb-drop-user {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .85rem 1rem;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.tb-drop-avatar-lg {
+  width: 36px; height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid rgba(59,130,246,.3);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Sora', sans-serif;
+  font-size: .85rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.tb-drop-name {
+  font-weight: 700;
+  font-size: .82rem;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.tb-drop-meta {
+  display: flex;
+  gap: .3rem;
+  flex-wrap: wrap;
+  margin-top: .2rem;
+  align-items: center;
+}
+
+.tb-drop-role-badge {
+  font-size: .65rem;
+  font-weight: 700;
+  background: var(--primary);
+  color: #fff;
+  padding: .1rem .45rem;
+  border-radius: 20px;
+}
+
+/* Divider */
+.tb-drop-divider {
+  height: 1px;
+  background: var(--border);
+  margin: .2rem 0;
+}
+
+/* Section label */
+.tb-drop-section-label {
+  font-size: .63rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-muted);
+  padding: .4rem 1rem .1rem;
+}
+
+/* Nav items */
+.tb-drop-item {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .5rem 1rem;
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: background .12s, color .12s;
+  cursor: pointer;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+.tb-drop-item i {
+  font-size: .88rem;
+  width: 18px;
+  text-align: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.tb-drop-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.tb-drop-item:hover i { color: var(--primary); }
+
+/* Active/current page highlight */
+.tb-drop-item.active {
+  background: var(--primary-glow);
+  color: var(--primary);
+  font-weight: 700;
+}
+.tb-drop-item.active i { color: var(--primary); }
+
+/* Logout */
+.tb-drop-logout { color: #dc2626 !important; }
+.tb-drop-logout i { color: #dc2626 !important; }
+.tb-drop-logout:hover { background: #fee2e2 !important; }
+
+/* ── Responsive ────────────────────────────────────────────── */
+@media (max-width: 992px) {
+  .topbar { padding: 0 1.25rem; gap: .65rem; }
+  .topbar-brand-sub { display: none; }
+  .topbar-divider { display: none; }
+  .topbar-date { display: none; }
+  .topbar-page-label { display: none; }
+}
+
+@media (max-width: 768px) {
+  .topbar { height: auto; min-height: 56px; padding: .55rem 1rem; flex-wrap: nowrap; gap: .5rem; }
+  .topbar-brand-name { font-size: .82rem; }
+  .topbar-sep { min-width: 0; }
+}
+
+@media (max-width: 480px) {
+  .topbar { padding: .5rem .75rem; }
+  .topbar-brand-name { font-size: .78rem; }
+}

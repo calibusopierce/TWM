@@ -1,0 +1,53 @@
+/* ── DM Sans ─────────────────────────── */
+@font-face {
+  font-family: 'DM Sans';
+  src: url('dm-sans-v17-latin-regular.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── DM Mono ─────────────────────────── */
+@font-face {
+  font-family: 'DM Mono';
+  src: url('dm-mono-v16-latin-regular.woff2') format('woff2');
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Sora ────────────────────────────── */
+@font-face {
+  font-family: 'Sora';
+  src: url('sora-v17-latin-regular.woff2') format('woff2');
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Roboto ──────────────────────────── */
+@font-face {
+  font-family: 'Roboto';
+  src: url('roboto-v51-latin-regular.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Open Sans ───────────────────────── */
+@font-face {
+  font-family: 'Open Sans';
+  src: url('open-sans-v44-latin-regular.woff2') format('woff2');
+  font-weight: 300 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Montserrat ──────────────────────── */
+@font-face {
+  font-family: 'Montserrat';
+  src: url('montserrat-v31-latin-regular.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

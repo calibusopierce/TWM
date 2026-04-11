@@ -1,0 +1,34 @@
+Job Application Form — Bug Fix Log
+File: HR/job-application.php
+Project: TWM — Urban Tradewell Corporation Portal
+
+Issues Found & Fixed
+Bug 1 — File type rejection (3 different file types)
+Symptom: Submitting 3 files with different categories/types would get rejected, but 3 files of the same type passed fine.
+Root Cause: $_FILES array index misalignment — when empty file slots were skipped mid-loop, the category_id array indices no longer matched the file indices.
+Fix: Normalized all $_FILES arrays into clean 0-based arrays before looping, filtering out empty/no-file slots upfront.
+
+Bug 2 — Database not inserting (files uploading but no DB record)
+Symptom: Files were being saved to the filesystem and confirmation email was sent, but nothing was written to JobApplications or ApplicationFiles.
+Root Cause 1 — Broken brace structure:
+The commit/rollback block (Section 5) was accidentally trapped inside an orphaned if ($fstmt === false) block, meaning it only ran on failure, never on success.
+Root Cause 2 — OUTPUT INSERTED not returning ApplicationID:
+sqlsrv_query with OUTPUT INSERTED.ApplicationID requires sqlsrv_next_result() before fetching, but even with that fix it returned null. Switched to SCOPE_IDENTITY() instead which works reliably with the PHP sqlsrv driver.
+Root Cause 3 — Missing sqlsrv_query call for file insert:
+During debugging edits, the actual $fstmt = sqlsrv_query(...) line for inserting into ApplicationFiles got accidentally deleted, leaving only sqlsrv_free_stmt($fstmt) on an undefined variable.
+Fix: Restored the query call, fixed brace structure, switched to SCOPE_IDENTITY().
+
+Bug 3 — ApplicationFiles insert failing with truncation error
+Symptom: String or binary data would be truncated on file insert.
+Root Cause: FileType column in ApplicationFiles was nvarchar(50), but the MIME type for .docx files is application/vnd.openxmlformats-officedocument.wordprocessingml.document which is 71 characters.
+Fix:
+sqlALTER TABLE ApplicationFiles ALTER COLUMN FileType nvarchar(100);
+
+Summary of All Changes
+#TypeDescription1PHPNormalized $_FILES array to fix index misalignment on mixed file types2PHPFixed broken brace structure — commit/rollback now runs correctly3PHPReplaced OUTPUT INSERTED.ApplicationID with SCOPE_IDENTITY()4PHPRestored missing sqlsrv_query file insert call in Section 45SQLExpanded ApplicationFiles.FileType from nvarchar(50) to nvarchar(100)
+
+Notes
+
+ApplicationID in JobApplications is an IDENTITY column — never insert it explicitly
+sqlsrv driver requires sqlsrv_next_result() to advance past INSERT result before reading SCOPE_IDENTITY()
+Debug mode available via $debugSql = true or ?debug_sql=1 in URL (keep set to false in production)

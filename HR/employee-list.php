@@ -214,9 +214,23 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
     .detail-modal .modal-header {
       background: linear-gradient(135deg, #1e40af, #4380e2);
       border-radius: 16px 16px 0 0; padding: 1.25rem 1.5rem;
+      color: #fff; /* Ensure text is white */
     }
-    .detail-modal .modal-title { color: #fff; font-weight: 700; }
-    .detail-modal .btn-close { filter: brightness(0) invert(1); }
+    .detail-modal .modal-title { color: #1e40af; font-weight: 700; }
+    .detail-modal .btn-close { filter: brightness(0) invert(1); 
+      opacity: 0.8; transition: opacity .15s; }
+
+    /* Edit mode styles */
+    .edit-mode .detail-item span { display: none; }
+    .edit-mode .detail-item input,
+    .edit-mode .detail-item select,
+    .edit-mode .detail-item textarea { display: block; width: 100%; }
+    .detail-item input,
+    .detail-item select,
+    .detail-item textarea { display: none; margin-top: .25rem; padding: .25rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: .83rem; }
+
+    /* Action buttons */
+    .modal-actions { display: flex; gap: .5rem; justify-content: flex-end; }
     .modal-avatar-wrap {
       display: flex; align-items: center; gap: 1rem;
       padding: 1.25rem 1.5rem; border-bottom: 1px solid #f1f5f9;

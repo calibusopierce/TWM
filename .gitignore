@@ -31,7 +31,7 @@ uploads/
 *.bak
 *.swp
 *~
- 
+
 # Backup files
 *.old
 *.orig

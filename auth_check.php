@@ -2,8 +2,6 @@
 // auth_check.php
 // ── Session guard — include at the top of every protected page ─
 
-require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
-
 function auth_check(array $allowedRoles = ['HR', 'Admin']): void {
 
     if (session_status() === PHP_SESSION_NONE) session_start();
@@ -23,7 +21,7 @@ function auth_check(array $allowedRoles = ['HR', 'Admin']): void {
     $_SESSION['last_activity'] = time();
 
     // ── Regenerate session ID periodically ────────────────────
-    if (!isset($_SESSION['last_regenerated']) || (time() - $_SESSION['last_regenerated']) > 300) {
+    if (!isset($_SESSION['last_regenerated']) || (time() - $_SESSION['last_regenerated']) > 600) {
         session_regenerate_id(true);
         $_SESSION['last_regenerated'] = time();
     }

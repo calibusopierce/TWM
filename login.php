@@ -1,39 +1,73 @@
 <?php
 session_start();
+
 if (isset($_SESSION['UserID'])) {
-    header("Location: /TWM/home.php");
+    header("Location: " . route('home'));
     exit();
 }
+
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 include_once __DIR__ . '/test_sqlsrv.php';
 
 $error = "";
 
 if (isset($_POST['login'])) {
+
     $username = trim($_POST['username']);
     $password = trim($_POST['password']);
 
+    // still using MD5 (based on your current DB setup)
     $hashedPassword = md5($password);
-$sql    = "SELECT id, username, user_type, Department, DisplayName FROM [dbo].[ViewUserLogIn] WHERE username = ? AND password = ? AND Active = 1";
-$params = [$username, $hashedPassword];
-$stmt   = sqlsrv_query($conn, $sql, $params);
 
-if ($stmt && $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-    $_SESSION['UserID']      = $row['id'];
-    $_SESSION['Username']    = $row['username'];
-    $_SESSION['UserType']    = $row['user_type'];
-    $_SESSION['Department']  = trim($row['Department']);
-    $_SESSION['DisplayName'] = $row['DisplayName'];
+    $sql = "SELECT id, username, user_type, Department, DisplayName 
+            FROM [dbo].[ViewUserLogIn] 
+            WHERE username = ? AND password = ? AND Active = 1";
 
-    // Look up DepartmentID from Departments table using trimmed name
-    $deptName  = trim($row['Department']);
-    $deptSql   = "SELECT DepartmentID FROM Departments WHERE LTRIM(RTRIM(DepartmentName)) = ? AND Status = 1";
-    $deptStmt  = sqlsrv_query($conn, $deptSql, [$deptName]);
-    $deptRow   = $deptStmt ? sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC) : null;
-    $_SESSION['DepartmentID'] = $deptRow ? (int)$deptRow['DepartmentID'] : null;
-    if ($deptStmt) sqlsrv_free_stmt($deptStmt);
+    $params = [$username, $hashedPassword];
+    $stmt = sqlsrv_query($conn, $sql, $params);
 
-    redirect('home');
+    if ($stmt === false) {
+        die(print_r(sqlsrv_errors(), true));
+    }
+
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+
+    if ($row) {
+
+        session_regenerate_id(true);
+
+        $_SESSION['last_activity']    = time();
+        $_SESSION['last_regenerated'] = time();
+        $_SESSION['UserID']           = $row['id'];
+        $_SESSION['Username']         = $row['username'];
+        $_SESSION['UserType']         = $row['user_type'];
+        $_SESSION['Department']       = trim($row['Department']);
+        $_SESSION['DisplayName']      = $row['DisplayName'];
+
+        // department lookup (safe)
+        $_SESSION['DepartmentID'] = null;
+
+        if (!empty($row['Department'])) {
+
+            $deptName = trim($row['Department']);
+
+            $deptSql = "SELECT DepartmentID 
+                        FROM Departments 
+                        WHERE LTRIM(RTRIM(DepartmentName)) = ? 
+                        AND Status = 1";
+
+            $deptStmt = sqlsrv_query($conn, $deptSql, [$deptName]);
+
+            if ($deptStmt && $deptRow = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) {
+                $_SESSION['DepartmentID'] = (int)$deptRow['DepartmentID'];
+            }
+
+            if ($deptStmt) sqlsrv_free_stmt($deptStmt);
+        }
+
+        header("Location: " . route('home'));
+        exit();
+
     } else {
         $error = "Invalid Username or Password!";
     }
@@ -239,6 +273,7 @@ if ($stmt && $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
       .logo-ring { width: 60px; height: 60px; border-radius: 16px; }
       .logo-ring img { width: 38px; height: 38px; }
     }
+
   </style>
 </head>
 
@@ -291,9 +326,15 @@ if ($stmt && $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         </div>
 
         <div class="form-group">
-          <button type="submit" name="login" class="btn-login">
-            Sign In &nbsp;<i class="bi bi-arrow-right-short" style="font-size:1.1rem;vertical-align:middle;"></i>
-          </button>
+          <button type="submit" name="login" class="btn-login" id="loginBtn">
+      <span class="btn-text">
+        Sign In &nbsp;<i class="bi bi-arrow-right-short" style="font-size:1.1rem;vertical-align:middle;"></i>
+      </span>
+
+        <span class="btn-loading" style="display:none;">
+          <i class="bi bi-arrow-repeat spin"></i> Signing In...
+        </span>
+      </button>
         </div>
 
       </form>
@@ -351,6 +392,7 @@ if ($stmt && $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         }
       });
   }, 2000);
+
 </script>
 
 </body>

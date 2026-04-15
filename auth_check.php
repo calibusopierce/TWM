@@ -26,6 +26,12 @@ function auth_check(array $allowedRoles = ['HR', 'Admin']): void {
         $_SESSION['last_regenerated'] = time();
     }
 
+    // NOTE: session_write_close() intentionally removed from here.
+    // Calling it inside auth_check() closes the session before the page
+    // can read or write $_SESSION (e.g. $_SESSION['Department']).
+    // Pages that run long SQL queries should call session_write_close()
+    // themselves, AFTER they have finished reading session data.
+
     // ── Role check ────────────────────────────────────────────
     if (!in_array($_SESSION['UserType'], $allowedRoles, strict: true)) {
         error_log(sprintf(

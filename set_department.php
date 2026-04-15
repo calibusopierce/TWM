@@ -12,34 +12,36 @@ $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $current     = $_SESSION['Department']  ?? '';
 $isAdmin     = in_array($userType, ['Admin', 'Administrator'], true);
 
-$allDepts = ['Monde', 'Century', 'Multilines', 'NutriAsia'];
+$allDepts = ['Monde', 'Century', 'Multilines', 'NutriAsia', 'Silverswan', 'Urban Tradewell Corp.'];
 
-// Non-admins can only select their own department — build allowed list
+// Build allowed list
 if ($isAdmin) {
     $allowed = array_merge([''], $allDepts); // '' = All Departments
 } else {
-    $allowed = [$current]; // strictly only their own department
+    $allowed = [$current];
 }
 
+// ── Handle POST ───────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dept'])) {
     $dept = trim($_POST['dept']);
+
     if (in_array($dept, $allowed, true)) {
         $_SESSION['Department'] = $dept;
-        session_write_close();
-        // Redirect based on role — HR can't access fuel_dashboard
-        if (in_array($userType, ['Admin', 'Administrator', 'Delivery', 'Logistic'])) {
-            header("Location: home.php");
-        }
+        // PHP flushes and closes the session automatically on exit()
+        header('Location: home.php');
         exit();
     }
+    // If validation fails, fall through and re-render the page
 }
 
 $deptColors = [
-    'Monde'      => ['bg'=>'rgba(239,68,68,.15)',   'color'=>'#ef4444', 'border'=>'#fca5a5', 'solid'=>'#ef4444'],
-    'Century'    => ['bg'=>'rgba(59,130,246,.15)',  'color'=>'#3b82f6', 'border'=>'#93c5fd', 'solid'=>'#3b82f6'],
-    'Multilines' => ['bg'=>'rgba(234,179,8,.15)',   'color'=>'#ca8a04', 'border'=>'#fde047', 'solid'=>'#eab308'],
-    'NutriAsia'  => ['bg'=>'rgba(16,185,129,.15)',  'color'=>'#059669', 'border'=>'#6ee7b7', 'solid'=>'#10b981'],
-    ''           => ['bg'=>'rgba(107,114,128,.15)', 'color'=>'#6b7280', 'border'=>'#9ca3af', 'solid'=>'#6b7280'],
+    'Monde'      => ['bg' => 'rgba(239,68,68,.15)',   'color' => '#ef4444', 'border' => '#fca5a5', 'solid' => '#ef4444'],
+    'Century'    => ['bg' => 'rgba(59,130,246,.15)',  'color' => '#3b82f6', 'border' => '#93c5fd', 'solid' => '#3b82f6'],
+    'Multilines' => ['bg' => 'rgba(234,179,8,.15)',   'color' => '#ca8a04', 'border' => '#fde047', 'solid' => '#eab308'],
+    'NutriAsia'  => ['bg' => 'rgba(16,185,129,.15)',  'color' => '#059669', 'border' => '#6ee7b7', 'solid' => '#10b981'],
+    'Silverswan' => ['bg' => 'rgba(99,102,241,.15)',  'color' => '#6366f1', 'border' => '#a5b4fc', 'solid' => '#6366f1'],
+    'Urban Tradewell Corp.' => ['bg' => 'rgba(28, 61, 126, 0.15)', 'color' => '#0b2b6d', 'border' => '#113472', 'solid' => '#0b2863'],
+    ''           => ['bg' => 'rgba(107,114,128,.15)', 'color' => '#6b7280', 'border' => '#9ca3af', 'solid' => '#6b7280'],
 ];
 ?>
 <!DOCTYPE html>
@@ -141,11 +143,14 @@ $deptColors = [
       cursor: pointer;
       transition: background .15s, border-color .15s, transform .15s;
       position: relative;
+      -webkit-user-select: none;
+      user-select: none;
     }
     .dept-option:hover:not(.locked) { background: rgba(255,255,255,.1); transform: translateX(3px); }
     .dept-option.locked {
       opacity: .35; cursor: not-allowed;
       filter: grayscale(.5);
+      pointer-events: none;
     }
     .dept-option.selected {
       border-color: var(--dept-color) !important;
@@ -202,7 +207,11 @@ $deptColors = [
              onerror="this.style.display='none';this.parentElement.innerHTML='<i class=\'bi bi-building\' style=\'font-size:1.5rem;color:#fff;\'></i>';">
       </div>
       <div class="card-title">Select Department</div>
-      <div class="card-subtitle">Welcome, <strong style="color:#fff"><?= htmlspecialchars($displayName) ?></strong> &nbsp;·&nbsp; <?= htmlspecialchars($userType) ?></div>
+      <div class="card-subtitle">
+        Welcome, <strong style="color:#fff"><?= htmlspecialchars($displayName) ?></strong>
+        &nbsp;·&nbsp;
+        <?= htmlspecialchars($userType) ?>
+      </div>
     </div>
 
     <div class="current-dept">
@@ -213,34 +222,55 @@ $deptColors = [
     <?php if (!$isAdmin): ?>
     <div class="lock-notice">
       <i class="bi bi-lock-fill"></i>
-      Your account is restricted to <strong style="margin-left:.25rem"><?= htmlspecialchars($current) ?></strong> only.
+      Your account is restricted to
+      <strong style="margin-left:.25rem"><?= htmlspecialchars($current ?: 'your department') ?></strong>.
+      Please contact IT for additional access.
     </div>
     <?php endif; ?>
 
     <form method="POST" action="set_department.php">
       <div class="dept-options">
         <?php
-          // Build display list — admins see all, non-admins see only their dept
-          $displayOptions = $isAdmin
-            ? array_merge([''=>'All Departments'], array_combine($allDepts, $allDepts))
-            : [$current => ($current !== '' ? $current : 'All Departments')];
+          // Build display list
+          if ($isAdmin) {
+              $displayOptions = array_merge(
+                  ['' => 'All Departments'],
+                  array_combine($allDepts, $allDepts)
+              );
+          } else {
+              $displayOptions = [
+                  $current => ($current !== '' ? $current : 'All Departments')
+              ];
+          }
 
           foreach ($displayOptions as $val => $label):
             $c        = $deptColors[$val] ?? $deptColors[''];
             $isActive = ($current === $val);
             $isLocked = !in_array($val, $allowed, true);
-            $icon     = $val === '' ? 'bi-globe' : 'bi-building';
+            $icon     = ($val === '') ? 'bi-globe' : 'bi-building';
+            $radioId  = 'dept_' . ($val === '' ? 'all' : strtolower(preg_replace('/\s+/', '_', $val)));
         ?>
-        <label class="dept-option<?= $isActive ? ' selected' : '' ?><?= $isLocked ? ' locked' : '' ?>"
-               style="--dept-color:<?= $c['color'] ?>;--dept-bg:<?= $c['bg'] ?>;"
-               for="dept_<?= $val === '' ? 'all' : strtolower($val) ?>">
-          <input type="radio" name="dept"
-                 id="dept_<?= $val === '' ? 'all' : strtolower($val) ?>"
-                 value="<?= htmlspecialchars($val) ?>"
-                 <?= $isActive ? 'checked' : '' ?>
-                 <?= $isLocked ? 'disabled' : '' ?>>
-          <span class="dept-dot" style="background:<?= $c['solid'] ?>;box-shadow:0 0 6px <?= $c['solid'] ?>;"></span>
-          <span class="dept-name"><i class="bi <?= $icon ?>"></i> <?= htmlspecialchars($label) ?></span>
+        <label
+          class="dept-option<?= $isActive ? ' selected' : '' ?><?= $isLocked ? ' locked' : '' ?>"
+          style="--dept-color:<?= $c['color'] ?>;--dept-bg:<?= $c['bg'] ?>;"
+          for="<?= $radioId ?>">
+
+          <input
+            type="radio"
+            name="dept"
+            id="<?= $radioId ?>"
+            value="<?= htmlspecialchars($val) ?>"
+            <?= $isActive ? 'checked' : '' ?>
+            <?= $isLocked ? 'disabled' : '' ?>>
+
+          <span class="dept-dot"
+                style="background:<?= $c['solid'] ?>;box-shadow:0 0 6px <?= $c['solid'] ?>;"></span>
+
+          <span class="dept-name">
+            <i class="bi <?= $icon ?>"></i>
+            <?= htmlspecialchars($label) ?>
+          </span>
+
           <?php if ($isLocked): ?>
             <i class="bi bi-lock-fill lock-icon"></i>
           <?php else: ?>
@@ -250,15 +280,17 @@ $deptColors = [
         <?php endforeach; ?>
       </div>
 
-      <?php if ($isAdmin): ?>
+      <?php
+        // Show submit button for ALL roles (previously hidden from non-admins,
+        // meaning HR/Delivery/Logistic users could never submit the form)
+      ?>
       <button type="submit" class="btn-submit">
-        <i class="bi bi-check2-circle"></i> &nbsp;Apply Department
+        <i class="bi bi-check2-circle"></i>&nbsp; Apply Department
       </button>
-      <?php endif; ?>
     </form>
 
     <div class="divider"></div>
-    <a href="<?= in_array($userType, ['Admin','Administrator','Delivery','Logistic']) ? 'home.php' : 'home.php' ?>" class="back-link">
+    <a href="home.php" class="back-link">
       <i class="bi bi-arrow-left"></i> Back
     </a>
 
@@ -266,9 +298,12 @@ $deptColors = [
 </div>
 
 <script>
-  document.querySelectorAll('.dept-option:not(.locked)').forEach(label => {
+  // Highlight selected option on click (visual only — the hidden radio handles submission)
+  document.querySelectorAll('.dept-option:not(.locked)').forEach(function(label) {
     label.addEventListener('click', function() {
-      document.querySelectorAll('.dept-option').forEach(l => l.classList.remove('selected'));
+      document.querySelectorAll('.dept-option').forEach(function(l) {
+        l.classList.remove('selected');
+      });
       this.classList.add('selected');
     });
   });

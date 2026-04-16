@@ -284,8 +284,9 @@ body { font-size: 15px; }
         <a href="#area"       class="hn-link"><i class="bi bi-geo-alt"></i> Area Summary</a>
         <a href="#comparison" class="hn-link"><i class="bi bi-bar-chart"></i> Fuel Comparison</a>
         <a href="#anomaly"    class="hn-link"><i class="bi bi-exclamation-triangle"></i> Anomaly Flags</a>
-        <a href="#checklist"  class="hn-link"><i class="bi bi-check2-square"></i> Monthly Checklist</a>
-        <a href="#report"     class="hn-link"><i class="bi bi-receipt"></i> Usage Report</a>
+        <a href="#checklist"   class="hn-link"><i class="bi bi-check2-square"></i> Monthly Checklist</a>
+        <a href="#consumption" class="hn-link"><i class="bi bi-calendar-week"></i> Fuel Consumption</a>
+        <a href="#report"      class="hn-link"><i class="bi bi-receipt"></i> Usage Report</a>
       </div>
     </div>
 
@@ -428,10 +429,10 @@ body { font-size: 15px; }
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-truck"></i> Vehicle Type</div><div class="filter-item-desc">Filter by truck category (e.g. 4-Wheeler, 6-Wheeler). Useful when comparing trucks of the same type.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-tag"></i> Plate #</div><div class="filter-item-desc">Search for a specific truck. You can type just part of the plate number — it will find all matches.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-person"></i> Driver</div><div class="filter-item-desc">Filter records by driver name. Useful for checking a specific driver's fuel history.</div></div>
-        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-geo-alt"></i> Area</div><div class="filter-item-desc">Show only trucks or refuels from a specific delivery area or route (e.g. Makati, Pasig).</div></div>
+        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-geo-alt"></i> Area</div><div class="filter-item-desc">Show only trucks or refuels from a specific delivery area or route (e.g. Makati, Pasig). Filters all tabs simultaneously.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-building"></i> Department (Auto)</div><div class="filter-item-desc">Your department is automatically applied from your login. Change it via the avatar menu in the topbar.</div></div>
       </div>
-      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Tip:</strong> Combine multiple filters at once. Example: Vehicle Type = "6-Wheeler" AND Area = "Makati" to see only 6-wheelers in Makati.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Tip:</strong> Combine multiple filters at once. Example: Vehicle Type = "6-Wheeler" AND Area = "Makati" to see only 6-wheelers in Makati. The <strong>Driver</strong> and <strong>Area</strong> filters accept partial text — you don't need to type the full name.</span></div>
     </div>
     <hr class="help-divider">
 
@@ -582,24 +583,50 @@ body { font-size: 15px; }
     <!-- CHECKLIST -->
     <div class="help-section" id="checklist">
       <div class="help-section-header"><span class="help-section-icon">✅</span><div class="help-section-title">Monthly Checklist Tab</div></div>
-      <div class="help-intro">A <strong>daily checklist</strong> of every scheduled truck. <span style="color:var(--green);font-weight:700;">Green rows = refueled ✅</span>, <span style="color:var(--red);font-weight:700;">Red rows = not refueled ❌</span>.</div>
-      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>This tab does <strong>not load automatically</strong>. Apply at least a <strong>date range</strong> or <strong>vehicle type</strong> filter first to prevent loading too much data at once.</span></div>
+      <div class="help-intro">A <strong>daily checklist</strong> of every scheduled truck. <span style="color:var(--green);font-weight:700;">Green rows = refueled ✅</span>, <span style="color:var(--red);font-weight:700;">Red rows = not refueled ❌</span>. Results are paginated — 20 rows per page — and a summary count of refueled vs. not refueled is shown above the table.</div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>This tab does <strong>not load automatically</strong>. Apply at least a <strong>date range</strong>, <strong>vehicle type</strong>, or <strong>plate</strong> filter first to prevent loading too much data at once. A maximum of <strong>500 rows</strong> are returned per query.</span></div>
       <table class="col-table">
         <thead><tr><th>Column</th><th>What it means</th></tr></thead>
         <tbody>
           <tr><td>Day</td><td>Day number of the month (e.g. 1, 2, 3...)</td></tr>
           <tr><td>Date</td><td>Full date of the schedule</td></tr>
+          <tr><td>Fuel Time</td><td>The exact time the refuel was recorded (only shows if refueled that day)</td></tr>
           <tr><td>Plate #</td><td>The truck that was scheduled</td></tr>
           <tr><td>Department</td><td>Which department the truck belongs to</td></tr>
           <tr><td>Vehicle Type</td><td>What type of truck it is</td></tr>
-          <tr><td>Sched. Driver</td><td>The driver assigned on this date per the schedule</td></tr>
+          <tr><td>Sched. Driver</td><td>The driver assigned on this date per the team schedule</td></tr>
           <tr><td>Sched. Area</td><td>The area this truck was scheduled to serve</td></tr>
+          <tr><td>Driver</td><td>The driver who actually requested the fuel (from the fuel record)</td></tr>
           <tr><td>INV #</td><td>The fuel invoice/receipt number (only shows if refueled)</td></tr>
           <tr><td>Liters</td><td>How much fuel was received (only shows if refueled)</td></tr>
           <tr><td>Amount</td><td>How much it cost (only shows if refueled)</td></tr>
           <tr><td>Status</td><td>✅ Refueled or ❌ Not Refueled</td></tr>
         </tbody>
       </table>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>Driver</strong> filter to narrow down the checklist to a specific driver. Use the <strong>search box</strong> to find rows by plate, driver name, or area across the current result set.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <!-- FUEL CONSUMPTION -->
+    <div class="help-section" id="consumption">
+      <div class="help-section-header"><span class="help-section-icon">📆</span><div class="help-section-title">Fuel Consumption Tab</div></div>
+      <div class="help-intro">A <strong>monthly breakdown of fuel consumption per truck</strong>, split into weekly columns. Instead of a simple total, you can see how each vehicle's fuel usage is distributed across Week 1, Week 2, Week 3, Week 4, and (when applicable) Week 5 of the selected month. Rows are grouped by <strong>Department → Vehicle Type</strong> for easy comparison.</div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>month/year selector</strong> at the top of this tab to navigate to any past or current month. The tab uses its own month picker independently of the main date-range filter.</span></div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Plate #</td><td>The truck's plate number</td></tr>
+          <tr><td>Department</td><td>Which department this truck belongs to</td></tr>
+          <tr><td>Vehicle Type</td><td>What category of truck it is</td></tr>
+          <tr><td>Total Refuels</td><td>How many times the truck was refueled across the entire selected month</td></tr>
+          <tr><td>Total Liters</td><td>Total fuel consumed for the month</td></tr>
+          <tr><td>Total Amount</td><td>Total money spent on fuel for the month</td></tr>
+          <tr><td>Week 1–5 (Liters)</td><td>Liters consumed per weekly period (e.g. Week 1 = days 1–7, Week 2 = days 8–14, etc.)</td></tr>
+          <tr><td>Week 1–5 (Amount)</td><td>Money spent per weekly period</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>The table is grouped with <strong>department subtotals</strong> and a <strong>grand total row</strong> at the bottom so you can instantly compare departments and see the overall monthly picture.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Months with 29, 30, or 31 days will have a <strong>5th week column</strong> (days 29–end of month). February in a non-leap year will only show 4 weeks.</span></div>
     </div>
     <hr class="help-divider">
 
@@ -987,7 +1014,7 @@ body { font-size: 15px; }
 const sectionGroup = {
   'getting-started': 'started', 'filters': 'started', 'department': 'started',
   'summary': 'fuel', 'ranking': 'fuel', '30day': 'fuel', 'area': 'fuel',
-  'comparison': 'fuel', 'anomaly': 'fuel', 'checklist': 'fuel', 'report': 'fuel',
+  'comparison': 'fuel', 'anomaly': 'fuel', 'checklist': 'fuel', 'consumption': 'fuel', 'report': 'fuel',
   'graphs-overview': 'graphs', 'graph-consumption': 'graphs', 'graph-trend': 'graphs',
   'graph-area': 'graphs', 'graph-vtype': 'graphs', 'graph-top10': 'graphs', 'graph-status': 'graphs',
   'export': 'other',

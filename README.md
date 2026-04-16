@@ -5,7 +5,7 @@ This is a PHP web application project for an internal business system that inclu
 ## Overview
 
 - PHP-based application
-- Designed to run on XAMPP / Apache with MySQL
+- Designed to run on XAMPP / Apache with SQL Server (sqlsrv)
 - Contains HR, LOGISTICS, SALES, and forms functionality
 - Uses client-side assets in `assets/` and application pages in the project root
 

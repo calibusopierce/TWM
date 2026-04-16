@@ -1,5 +1,6 @@
 <?php
 session_start();
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 
 if (isset($_SESSION['UserID'])) {
     header("Location: " . route('home'));

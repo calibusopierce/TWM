@@ -2,11 +2,7 @@
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 
-include_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
-include_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
-auth_check(['Admin', 'Administrator', 'HR', 'Delivery', 'Logistic']);
-
-
+// Auth is handled by the page itself
 $_topbar_user = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $_topbar_role = $_SESSION['UserType']    ?? '';
 $_topbar_dept = $_SESSION['Department']  ?? '';
@@ -202,7 +198,7 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
           window.location.href = '/TWM/login.php';
         }
       });
-  }, 2000);
+  }, 30000);
 
 
 </script>

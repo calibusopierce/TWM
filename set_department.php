@@ -27,11 +27,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dept'])) {
 
     if (in_array($dept, $allowed, true)) {
         $_SESSION['Department'] = $dept;
-        // PHP flushes and closes the session automatically on exit()
         header('Location: home.php');
         exit();
     }
-    // If validation fails, fall through and re-render the page
 }
 
 $deptColors = [
@@ -64,14 +62,24 @@ $deptColors = [
       --white-25:    rgba(255,255,255,0.25);
       --white-60:    rgba(255,255,255,0.60);
     }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; font-family: 'DM Sans', sans-serif; overflow: hidden; }
+
+    html, body {
+      height: 100%;
+      width: 100%;
+      font-family: 'DM Sans', sans-serif;
+      overflow: hidden; /* .page handles scrolling */
+    }
 
     .bg {
-      position: fixed; inset: 0;
+      position: fixed;
+      inset: 0;
       background: linear-gradient(145deg, var(--blue-bright) 0%, var(--blue-deep) 100%);
+      overflow: hidden; /* clips orbs that have negative right/left offsets */
       z-index: 0;
     }
+
     .orb { position: absolute; border-radius: 50%; animation: drift linear infinite; }
     .orb-1 { width:420px;height:420px;top:-160px;left:-140px;background:transparent;border:1.5px solid rgba(255,255,255,.1);animation-duration:22s; }
     .orb-2 { width:260px;height:260px;top:-60px;left:-60px;background:transparent;border:1px solid rgba(255,255,255,.07);animation-duration:18s;animation-direction:reverse; }
@@ -85,13 +93,20 @@ $deptColors = [
     }
 
     .page {
-      position: relative; z-index: 10;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; padding: 1.5rem;
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding: 1.5rem;
     }
 
     .card {
-      width: 100%; max-width: 440px;
+      width: 100%; max-width: 620px;
       background: rgba(255,255,255,0.07);
       border: 1px solid var(--white-15);
       border-radius: 24px;
@@ -124,7 +139,6 @@ $deptColors = [
     }
     .current-dept strong { color: var(--white); font-size: .85rem; }
 
-    /* Lock notice for non-admins */
     .lock-notice {
       display: flex; align-items: center; gap: .5rem;
       background: rgba(234,179,8,.1); border: 1px solid rgba(234,179,8,.3);
@@ -133,20 +147,40 @@ $deptColors = [
       margin-bottom: 1.25rem;
     }
 
-    .dept-options { display: flex; flex-direction: column; gap: .65rem; margin-bottom: 1.5rem; }
+    .dept-options {
+      display: flex;
+      flex-direction: column;
+      gap: .65rem;
+      margin-bottom: 1.5rem;
+      max-height: 260px;
+      overflow-y: auto;
+      overflow-x: hidden;   /* FIX 1: no horizontal scroll inside the list */
+      padding: 2px 4px;     /* FIX 2: small padding so box-shadow isn't clipped */
+    }
 
     .dept-option {
-      display: flex; align-items: center; gap: .85rem;
-      padding: .85rem 1rem; border-radius: 14px;
+      display: flex;
+      align-items: center;
+      gap: .85rem;
+      padding: .85rem 1rem;
+      border-radius: 14px;
       border: 1.5px solid rgba(255,255,255,.12);
       background: rgba(255,255,255,.05);
       cursor: pointer;
-      transition: background .15s, border-color .15s, transform .15s;
+      /* FIX 3: removed translateX from transition — that 3px shift was
+         momentarily widening the scroll container and causing the
+         horizontal bar + flicker/glitch on hover */
+      transition: background .15s, border-color .15s;
       position: relative;
       -webkit-user-select: none;
       user-select: none;
+      width: 100%;
+      min-width: 0;
     }
-    .dept-option:hover:not(.locked) { background: rgba(255,255,255,.1); transform: translateX(3px); }
+    .dept-option:hover:not(.locked) {
+      background: rgba(255,255,255,.1);
+      /* No translateX here — background change is enough feedback */
+    }
     .dept-option.locked {
       opacity: .35; cursor: not-allowed;
       filter: grayscale(.5);
@@ -161,13 +195,12 @@ $deptColors = [
 
     .dept-dot {
       width: 12px; height: 12px; border-radius: 50%;
-      background: var(--dept-color); flex-shrink: 0;
-      box-shadow: 0 0 6px var(--dept-color);
+      flex-shrink: 0;
     }
-    .dept-name { font-size: .9rem; font-weight: 700; color: var(--white); flex: 1; }
-    .dept-check { font-size: 1rem; color: var(--dept-color); opacity: 0; transition: opacity .15s; }
+    .dept-name { font-size: .9rem; font-weight: 700; color: var(--white); flex: 1; min-width: 0; }
+    .dept-check { font-size: 1rem; color: var(--dept-color); opacity: 0; transition: opacity .15s; flex-shrink: 0; }
     .dept-option.selected .dept-check { opacity: 1; }
-    .lock-icon { font-size: .8rem; color: rgba(255,255,255,.3); }
+    .lock-icon { font-size: .8rem; color: rgba(255,255,255,.3); flex-shrink: 0; }
 
     .btn-submit {
       width: 100%; padding: .8rem 1rem;
@@ -188,7 +221,19 @@ $deptColors = [
     }
     .back-link:hover { color: var(--white); }
     .divider { height: 1px; background: rgba(255,255,255,.1); margin: 1.25rem 0; }
+
+    @media (max-width: 520px) {
+      .page {
+        align-items: flex-start;
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+      }
+      .card {
+        padding: 2.5rem 2.5rem 2.2rem;
+      }
+    }
   </style>
+
 </head>
 <body>
 
@@ -231,7 +276,6 @@ $deptColors = [
     <form method="POST" action="set_department.php">
       <div class="dept-options">
         <?php
-          // Build display list
           if ($isAdmin) {
               $displayOptions = array_merge(
                   ['' => 'All Departments'],
@@ -280,10 +324,6 @@ $deptColors = [
         <?php endforeach; ?>
       </div>
 
-      <?php
-        // Show submit button for ALL roles (previously hidden from non-admins,
-        // meaning HR/Delivery/Logistic users could never submit the form)
-      ?>
       <button type="submit" class="btn-submit">
         <i class="bi bi-check2-circle"></i>&nbsp; Apply Department
       </button>
@@ -298,7 +338,6 @@ $deptColors = [
 </div>
 
 <script>
-  // Highlight selected option on click (visual only — the hidden radio handles submission)
   document.querySelectorAll('.dept-option:not(.locked)').forEach(function(label) {
     label.addEventListener('click', function() {
       document.querySelectorAll('.dept-option').forEach(function(l) {

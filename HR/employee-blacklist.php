@@ -5,6 +5,7 @@
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
+header('Content-Type: text/html; charset=UTF-8');
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator', 'HR']);
@@ -30,12 +31,17 @@ function buildWhere(bool $viewAll, string $userDept, string $search, string $dep
 {
     $params = [];
 
-    // Blacklisted flag OR AWOL via Employee_Status or Notes
+    // Blacklisted flag 
     $where = "WHERE (
         Blacklisted = 1
-        OR UPPER(LTRIM(RTRIM(Employee_Status))) LIKE '%AWOL%'
-        OR UPPER(LTRIM(RTRIM(Notes)))           LIKE '%AWOL%'
     )";
+
+    // Blacklisted flag OR AWOL via Employee_Status or Notes
+    // $where = "WHERE (
+    //    Blacklisted = 1
+    //    OR UPPER(LTRIM(RTRIM(Employee_Status))) LIKE '%AWOL%'
+    //    OR UPPER(LTRIM(RTRIM(Notes)))           LIKE '%AWOL%'
+    //     )";
 
     // Department scope
     if (!$viewAll && $userDept !== '') {
@@ -331,7 +337,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
         Blacklisted Employees
       </div>
       <div class="page-subtitle">
-        Employees flagged as blacklisted or AWOL &nbsp;—&nbsp; <strong><?= $totalRows ?></strong> record<?= $totalRows !== 1 ? 's' : '' ?>
+        Employees flagged as blacklisted &nbsp;—&nbsp; <strong><?= $totalRows ?></strong> record<?= $totalRows !== 1 ? 's' : '' ?>
       </div>
     </div>
     <div style="margin-top:.35rem;">
@@ -488,7 +494,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <tr><td colspan="8">
             <div class="empty-state">
               <i class="bi bi-slash-circle"></i>
-              <p>No blacklisted or AWOL employees found.</p>
+              <p>No blacklisted employees found.</p>
             </div>
           </td></tr>
         <?php endif; ?>

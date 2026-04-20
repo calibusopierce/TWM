@@ -5,6 +5,7 @@
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
+header('Content-Type: text/html; charset=UTF-8');
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator', 'HR']);
@@ -598,14 +599,14 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
       <a href="<?= htmlspecialchars($exportUrl) ?>" class="btn btn-sm" style="background:rgba(16,185,129,.1);color:#059669;border:1px solid rgba(16,185,129,.3);font-weight:600;">
         <i class="bi bi-file-earmark-excel"></i> Export Excel
       </a>
-      <button type="button" onclick="printList()" class="btn btn-sm" style="background:rgba(100,116,139,.1);color:#475569;border:1px solid rgba(100,116,139,.3);font-weight:600;">
-        <i class="bi bi-printer"></i> Print List
+      <!--<button type="button" onclick="printList()" class="btn btn-sm" style="background:rgba(100,116,139,.1);color:#475569;border:1px solid rgba(100,116,139,.3);font-weight:600;">
+        <i class="bi bi-printer"></i> Print List -->
       </button>
       <a href="employee-list.php" class="btn btn-secondary btn-sm">
         <i class="bi bi-people"></i> Active Employees
       </a>
       <a href="employee-blacklist.php" class="btn btn-sm" style="background:rgba(220,38,38,.1);color:#dc2626;border:1px solid rgba(220,38,38,.3);font-weight:600;">
-        <i class="bi bi-slash-circle"></i> Blacklist / AWOL
+        <i class="bi bi-slash-circle"></i> Blacklisted Employees
       </a>
     </div>
   </div>

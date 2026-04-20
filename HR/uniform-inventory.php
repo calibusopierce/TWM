@@ -12,6 +12,8 @@ auth_check(['Admin', 'Administrator', 'HR']);
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
 $tab         = $_GET['tab'] ?? 'stocks';
+$validTabs   = ['stocks','released','requests','po','receiving'];
+if (!in_array($tab, $validTabs)) $tab = 'stocks';
 $sizes       = ['XS','S','M','L','XL','XXL','XXXL','4XL'];
 $depts       = ['Century','Monde','Multilines','NutriAsia'];
 $uTypes      = ['TSHIRT','POLOSHIRT'];
@@ -208,28 +210,145 @@ if (isset($_POST['delete_request'])) {
 
 // ── POST: PO ───────────────────────────────────────────────────
 if (isset($_POST['save_po'])) {
-    $poNum=trim($_POST['PONumber']??''); $poDate=trim($_POST['PODate']??date('Y-m-d'));
-    $sup=trim($_POST['Supplier']??''); $rem=trim($_POST['Remarks']??'');
-    if(!$poNum){$messages[]=['type'=>'danger','text'=>'PO Number is required.'];}
-    else{
-        $stmt=@sqlsrv_query($conn2,"INSERT INTO [dbo].[UniformPO](PONumber,PODate,Supplier,Remarks,CreatedBy) VALUES(?,?,?,?,?)",[$poNum,$poDate,$sup,$rem,$currentUser]);
-        if($stmt!==false){
-            $pidRow=rq($conn2,"SELECT SCOPE_IDENTITY() AS NewID");
-            $newPID=intval($pidRow[0]['NewID']??0);
-            foreach($uTypes as $ut){ foreach($sizes as $sz){
-                $r=intval($_POST["req_{$ut}_{$sz}"]??0); $a=intval($_POST["add_{$ut}_{$sz}"]??0);
-                if($r>0||$a>0) @sqlsrv_query($conn2,"INSERT INTO [dbo].[UniformPOItems](POID,UniformType,Size,Requested,Additional) VALUES(?,?,?,?,?)",[$newPID,$ut,$sz,$r,$a]);
-            }}
-            $messages[]=['type'=>'success','text'=>"PO {$poNum} saved."];
-        } else { $messages[]=['type'=>'danger','text'=>'Failed to save PO.']; }
+    $poNum  = trim($_POST['PONumber'] ?? '');
+    $poDate = trim($_POST['PODate']   ?? date('Y-m-d'));
+    $rem    = trim($_POST['Remarks']  ?? '');
+
+    if (!$poNum) {
+        $messages[] = ['type'=>'danger','text'=>'PO Number is required.'];
+    } else {
+        $sql  = "INSERT INTO [dbo].[UniformPO](PONumber,PODate,Supplier,Remarks,CreatedBy)
+                 OUTPUT INSERTED.POID
+                 VALUES(?,?,?,?,?)";
+        $stmt = @sqlsrv_query($conn2, $sql, [$poNum, $poDate, '', $rem, $currentUser]);
+
+        if ($stmt !== false && ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC))) {
+            $newPID = intval($row['POID']);
+            sqlsrv_free_stmt($stmt);
+
+            foreach ($uTypes as $ut) {
+                foreach ($sizes as $sz) {
+                    $r = intval($_POST["req_{$ut}_{$sz}"] ?? 0);
+                    $a = intval($_POST["add_{$ut}_{$sz}"] ?? 0);
+                    if ($r > 0 || $a > 0) {
+                        @sqlsrv_query($conn2,
+                            "INSERT INTO [dbo].[UniformPOItems](POID,UniformType,Size,Requested,Additional)
+                             VALUES(?,?,?,?,?)",
+                            [$newPID, $ut, $sz, $r, $a]);
+                    }
+                }
+            }
+            $messages[] = ['type'=>'success','text'=>"PO {$poNum} saved."];
+        } else {
+            $err = sqlsrv_errors();
+            $messages[] = ['type'=>'danger','text'=>'Failed to save PO. ' . ($err[0]['message'] ?? '')];
+        }
     }
-    $tab='po';
+    $tab = 'po';
 }
+
+// ── POST: Delete PO ───────────────────────────────────────────
 if (isset($_POST['delete_po'])) {
-    $id=intval($_POST['POID']??0);
-    if($id>0){ @sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformPO] WHERE POID=?",[$id]);
-        $messages[]=['type'=>'success','text'=>'PO deleted.']; }
-    $tab='po';
+    $id = intval($_POST['POID'] ?? 0);
+    if ($id > 0) {
+        @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformPOItems] WHERE POID=?", [$id]);
+        $recRows = rq($conn2, "SELECT RFID FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
+        foreach ($recRows as $rr) {
+            @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?", [intval($rr['RFID'])]);
+        }
+        @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
+        $stmt = @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformPO] WHERE POID=?", [$id]);
+        $messages[] = $stmt !== false
+            ? ['type' => 'success', 'text' => 'PO deleted successfully.']
+            : ['type' => 'danger',  'text' => 'Failed to delete PO. ' . (sqlsrv_errors()[0]['message'] ?? '')];
+    }
+    $tab = 'po';
+}
+
+// ── POST: Save Receiving ───────────────────────────────────────
+if (isset($_POST['save_receiving'])) {
+    $poid      = intval($_POST['POID_REC']??0);
+    $dateRec   = trim($_POST['DateReceived']??date('Y-m-d'));
+    $printShop = trim($_POST['PrintingShop']??'');
+    $printRep  = trim($_POST['PrintingShopRep']??'');
+    $utcRep    = trim($_POST['UTCRep']??'');
+    $recType   = trim($_POST['ReceivingUniformType']??'TSHIRT');
+
+    if(!$poid){ $messages[]=['type'=>'danger','text'=>'Please select a PO.']; }
+    else {
+        $existRec = rq($conn2,
+            "SELECT RFID FROM [dbo].[UniformReceiving] WHERE POID=? AND UniformType=?",
+            [$poid,$recType]);
+
+        if(!empty($existRec)){
+            // ── UPDATE existing record ──────────────────────────────
+            $recId = intval($existRec[0]['RFID']);
+            @sqlsrv_query($conn2,
+                "UPDATE [dbo].[UniformReceiving]
+                 SET RFDate=?,DateReceived=?,PrintingShop=?,PrintShop=?,RepresentativeThem=?,RepresentativeUs=?,UniformType=?
+                 WHERE RFID=?",
+                [$dateRec,$dateRec,$printShop,$printShop,$printRep,$utcRep,$recType,$recId]);
+        } else {
+            // ── INSERT new record ───────────────────────────────────
+            // Generate RFNumber from PO Number
+          $poNumRow = rq($conn2, "SELECT PONumber FROM [dbo].[UniformPO] WHERE POID=?", [$poid]);
+          $poNumStr = $poNumRow[0]['PONumber'] ?? 'PO';
+          $rfNumber = 'RF-' . preg_replace('/[^A-Z0-9]/i', '', $poNumStr) . '-' . date('YmdHis');
+
+          $insStmt = sqlsrv_query($conn2,
+              "INSERT INTO [dbo].[UniformReceiving]
+                  (POID,RFNumber,RFDate,DateReceived,PrintingShop,PrintShop,RepresentativeThem,RepresentativeUs,UniformType,CreatedBy,CreatedAt)
+              OUTPUT INSERTED.RFID
+              VALUES(?,?,?,?,?,?,?,?,?,?,GETDATE())",
+              [$poid,$rfNumber,$dateRec,$dateRec,$printShop,$printShop,$printRep,$utcRep,$recType,$currentUser]);
+
+            $recId = 0;
+            if($insStmt !== false && ($ridRow = sqlsrv_fetch_array($insStmt, SQLSRV_FETCH_ASSOC))){
+                $recId = intval($ridRow['RFID']);
+                sqlsrv_free_stmt($insStmt);
+            } else {
+                $errors = sqlsrv_errors();
+                $errMsg = '';
+                if($errors) foreach($errors as $e) $errMsg .= $e['message'].' ';
+                $messages[]=['type'=>'danger','text'=>'Insert failed: '.trim($errMsg)];
+            }
+        }
+
+        if($recId>0){
+            foreach($sizes as $sz){
+                $qtyRec = intval($_POST["rec_{$recType}_{$sz}"]??0);
+                $exist  = rq($conn2,
+                    "SELECT RFItemID FROM [dbo].[UniformReceivingItems]
+                     WHERE RFID=? AND UniformType=? AND Size=?",
+                    [$recId,$recType,$sz]);
+                if(!empty($exist)){
+                    @sqlsrv_query($conn2,
+                        "UPDATE [dbo].[UniformReceivingItems] SET Quantity=? WHERE RFItemID=?",
+                        [$qtyRec,intval($exist[0]['RFItemID'])]);
+                } else {
+                    @sqlsrv_query($conn2,
+                        "INSERT INTO [dbo].[UniformReceivingItems](RFID,UniformType,Size,Quantity)
+                         VALUES(?,?,?,?)",
+                        [$recId,$recType,$sz,$qtyRec]);
+                }
+            }
+            $messages[]=['type'=>'success','text'=>'Receiving record saved successfully.'];
+        }
+    }
+    $tab='receiving';
+}
+
+// ── POST: Delete Receiving ─────────────────────────────────────
+if (isset($_POST['delete_receiving'])) {
+    $id=intval($_POST['ReceivingID']??0);
+    if($id>0){
+        @sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$id]);
+        $stmt=@sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformReceiving] WHERE RFID=?",[$id]);
+        $messages[]=$stmt!==false
+            ?['type'=>'success','text'=>'Receiving record deleted.']
+            :['type'=>'danger','text'=>'Failed to delete receiving record.'];
+    }
+    $tab='receiving';
 }
 
 // ── FETCH ──────────────────────────────────────────────────────
@@ -240,7 +359,7 @@ foreach ($stocks as $s) $stockMap[$s['UniformType']][$s['Size']] = $s;
 $totalStock = ['TSHIRT'=>0,'POLOSHIRT'=>0];
 foreach ($stocks as $s) $totalStock[$s['UniformType']] += max(0,intval($s['CurrentStock']));
 
-// ── Released (fetch all, paginate in PHP) ──────────────────────
+// ── Released ──────────────────────────────────────────────────
 $relSearch = trim($_GET['rsearch']??'');
 $relWhere  = $relSearch!=='' ? "WHERE (EmployeeName LIKE '%".str_replace("'","''",$relSearch)."%' OR RequestedBy LIKE '%".str_replace("'","''",$relSearch)."%')" : '';
 $relAll    = rq($conn2,"SELECT * FROM [dbo].[UniformReleased] {$relWhere} ORDER BY DateGiven DESC, CreatedAt DESC");
@@ -252,7 +371,7 @@ $released  = array_slice($relAll,($relPage-1)*20,20);
 $totalGiven = rq($conn2,"SELECT ISNULL(SUM(Quantity),0) AS Total FROM [dbo].[UniformReleased]");
 $totalGivenCount = intval($totalGiven[0]['Total']??0);
 
-// ── Requests (fetch all, paginate in PHP) ──────────────────────
+// ── Requests ──────────────────────────────────────────────────
 $reqFilter = in_array($_GET['rfilter']??'',['0','1']) ? $_GET['rfilter'] : '';
 $reqWhere  = $reqFilter!=='' ? "WHERE IsGiven={$reqFilter}" : '';
 $reqAll    = rq($conn2,
@@ -265,14 +384,57 @@ $reqPages  = max(1,(int)ceil($reqTotal/20));
 $reqPage   = max(1,min((int)($_GET['reqpage']??1),$reqPages));
 $requests  = array_slice($reqAll,($reqPage-1)*20,20);
 
-// ── PO (fetch all, paginate in PHP) ───────────────────────────
+// ── PO ────────────────────────────────────────────────────────
 $poAll   = rq($conn2,"SELECT p.*,(SELECT COUNT(*) FROM [dbo].[UniformPOItems] i WHERE i.POID=p.POID) AS ItemCount FROM [dbo].[UniformPO] p ORDER BY PODate DESC");
 $poTotal = count($poAll);
 $poPages = max(1,(int)ceil($poTotal/20));
 $poPage  = max(1,min((int)($_GET['popage']??1),$poPages));
 $poList  = array_slice($poAll,($poPage-1)*20,20);
 
-// ── Edit mode ──────────────────────────────────────────────────
+// ── Auto-increment PO Number ───────────────────────────────────
+$lastPO  = rq($conn2,"SELECT TOP 1 PONumber FROM [dbo].[UniformPO] ORDER BY POID DESC");
+$nextPONum = 'PO-'.date('Y').'-001';
+if(!empty($lastPO)){
+    preg_match('/(\d+)$/',$lastPO[0]['PONumber'],$m);
+    if(!empty($m[1])) $nextPONum='PO-'.date('Y').'-'.str_pad(intval($m[1])+1,3,'0',STR_PAD_LEFT);
+}
+
+// ── Aggregate pending requests by type+size ────────────────────
+$pendingReqRaw = rq($conn2,"SELECT UniformType,UniformSize,SUM(Quantity) AS TotalQty FROM [dbo].[UniformRequests] WHERE IsGiven=0 GROUP BY UniformType,UniformSize");
+$pendingReqMap = [];
+foreach($pendingReqRaw as $pr) $pendingReqMap[$pr['UniformType']][$pr['UniformSize']] = intval($pr['TotalQty']);
+
+// ── Receiving list ─────────────────────────────────────────────
+// FIX: Use correct column names — RFDate, RepresentativeThem, RepresentativeUs
+$recAll  = rq($conn2,
+    "SELECT r.RFID, r.POID, r.RFDate, r.DateReceived, r.PrintingShop,
+            r.RepresentativeThem, r.RepresentativeUs, r.UniformType,
+            r.CreatedBy, r.CreatedAt, p.PONumber
+     FROM [dbo].[UniformReceiving] r
+     LEFT JOIN [dbo].[UniformPO] p ON p.POID=r.POID
+     ORDER BY r.RFDate DESC, r.CreatedAt DESC");
+$recTotal= count($recAll);
+$recPages= max(1,(int)ceil($recTotal/20));
+$recPage = max(1,min((int)($_GET['recpage']??1),$recPages));
+$recList = array_slice($recAll,($recPage-1)*20,20);
+
+// POs for receiving form dropdown
+$poForReceiving = rq($conn2,"SELECT p.POID,p.PONumber,p.PODate FROM [dbo].[UniformPO] p ORDER BY p.PODate DESC");
+
+// ── If editing a receiving record ──────────────────────────────
+$editRecId  = intval($_GET['editrecid']??0);
+$editRecRow = [];
+$editRecItems = [];
+if($editRecId>0 && $tab==='receiving'){
+    $tmp=rq($conn2,"SELECT * FROM [dbo].[UniformReceiving] WHERE RFID=?",[$editRecId]);
+    if(!empty($tmp)){
+        $editRecRow=$tmp[0];
+        $items=rq($conn2,"SELECT * FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$editRecId]);
+        foreach($items as $it) $editRecItems[$it['UniformType']][$it['Size']]=intval($it['Quantity']);
+    }
+}
+
+// ── Edit mode (Released) ───────────────────────────────────────
 $editId  = intval($_GET['editid']??0);
 $editRow = [];
 if ($editId>0 && $tab==='released') {
@@ -384,10 +546,11 @@ if ($editId>0 && $tab==='released') {
 </div>
 
 <div class="tab-bar">
-  <a href="?tab=stocks"   class="tab-btn <?= $tab==='stocks'  ?'active':'' ?>"><i class="bi bi-boxes"></i> Stocks</a>
-  <a href="?tab=released" class="tab-btn <?= $tab==='released'?'active':'' ?>"><i class="bi bi-send-fill"></i> Uniforms Released</a>
-  <a href="?tab=requests" class="tab-btn <?= $tab==='requests'?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
-  <a href="?tab=po"       class="tab-btn <?= $tab==='po'      ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
+  <a href="?tab=stocks"    class="tab-btn <?= $tab==='stocks'   ?'active':'' ?>"><i class="bi bi-boxes"></i> Stocks</a>
+  <a href="?tab=released"  class="tab-btn <?= $tab==='released' ?'active':'' ?>"><i class="bi bi-send-fill"></i> Uniforms Released</a>
+  <a href="?tab=requests"  class="tab-btn <?= $tab==='requests' ?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
+  <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
+  <a href="?tab=receiving" class="tab-btn <?= $tab==='receiving'?'active':'' ?>"><i class="bi bi-box-seam-fill"></i> Receiving Form</a>
 </div>
 
 <?php
@@ -675,27 +838,32 @@ elseif($tab==='requests'): ?>
 <?php
 // ═══ TAB: PO ═══════════════════════════════════════════════════
 elseif($tab==='po'): ?>
+
 <?php if(!empty($poList)): ?>
 <div class="panel" style="margin-bottom:1.5rem;">
   <div class="panel-hdr"><div class="panel-title"><i class="bi bi-collection-fill" style="color:var(--primary-light)"></i> Purchase Orders</div></div>
   <div style="overflow-x:auto;">
   <table class="utbl">
-    <thead><tr><th>#</th><th>PO Number</th><th>Date</th><th>Supplier</th><th>Items</th><th>Remarks</th><th>Created By</th><th style="text-align:center;">Action</th></tr></thead>
+    <thead><tr><th>#</th><th>PO Number</th><th>PO Date</th><th>Items</th><th>Remarks</th><th>Created By</th><th style="text-align:center;">Action</th></tr></thead>
     <tbody>
-    <?php foreach($poList as $i=>$po):
+    <?php foreach($poList as $i=>$po): // FIX: was using $rec/$uTypeRec — now correctly uses $po
       $rowNum = ($poPage-1)*20 + $i + 1;
     ?>
     <tr>
       <td style="color:var(--text-muted);font-family:'DM Mono',monospace;"><?= $rowNum ?></td>
-      <td style="font-weight:700;color:var(--text-primary);font-family:'DM Mono',monospace;"><?= safe($po['PONumber']) ?></td>
+      <td style="font-weight:700;font-family:'DM Mono',monospace;color:var(--primary);"><?= safe($po['PONumber']??'—') ?></td>
       <td style="font-family:'DM Mono',monospace;font-size:.76rem;"><?= fmtDate($po['PODate']) ?></td>
-      <td><?= safe($po['Supplier']??'—') ?></td>
-      <td style="font-family:'DM Mono',monospace;"><?= intval($po['ItemCount']) ?></td>
+      <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= intval($po['ItemCount']) ?></td>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($po['Remarks']??'—') ?></td>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($po['CreatedBy']??'—') ?></td>
-      <td style="text-align:center;">
-        <button class="btn-sm-action btn-edit" onclick="viewPOItems(<?= $po['POID'] ?>,'<?= addslashes($po['PONumber']) ?>')"><i class="bi bi-eye-fill"></i> View</button>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete PO?','PO <?= addslashes($po['PONumber']) ?> will be permanently deleted. Continue?','#dc2626')">
+      <td style="text-align:center;white-space:nowrap;">
+        <button class="btn-sm-action btn-edit" onclick="viewPOItems(<?= $po['POID'] ?>,'<?= addslashes($po['PONumber']??'') ?>')">
+          <i class="bi bi-eye-fill"></i> View
+        </button>
+        <button class="btn-sm-action" onclick="printPO(<?= $po['POID'] ?>,'<?= addslashes($po['PONumber']??'') ?>')" style="color:#0891b2;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.05);">
+          <i class="bi bi-printer-fill"></i> Print
+        </button>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete PO?','This will delete the PO and all its items. Continue?','#dc2626')">
           <input type="hidden" name="delete_po" value="1">
           <input type="hidden" name="POID" value="<?= $po['POID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
@@ -711,15 +879,28 @@ elseif($tab==='po'): ?>
 <?php endif; ?>
 
 <div class="panel">
-  <div class="panel-hdr"><div class="panel-title"><i class="bi bi-file-earmark-plus-fill" style="color:var(--primary-light)"></i> Create Purchase Order</div></div>
+  <div class="panel-hdr" style="cursor:pointer;" onclick="togglePanel('poFormBody','poFormChevron')">
+    <div class="panel-title"><i class="bi bi-file-earmark-plus-fill" style="color:var(--primary-light)"></i> Create Purchase Order</div>
+    <button type="button" class="btn-add" style="pointer-events:none;">
+      <i class="bi bi-plus-lg" id="poFormChevron"></i> New PO
+    </button>
+  </div>
+  <div id="poFormBody" style="display:none;">
   <div style="padding:1.25rem;">
   <form method="POST">
     <input type="hidden" name="save_po" value="1">
     <div class="row g-3 mb-3">
-      <div class="col-md-3"><label class="form-label">PO Number <span style="color:#dc2626">*</span></label><input type="text" name="PONumber" class="form-control" placeholder="e.g. PO-2025-001" required></div>
-      <div class="col-md-3"><label class="form-label">PO Date</label><input type="date" name="PODate" class="form-control" value="<?= date('Y-m-d') ?>"></div>
-      <div class="col-md-3"><label class="form-label">Supplier</label><input type="text" name="Supplier" class="form-control" placeholder="e.g. REX, MEEOW Prints"></div>
+      <div class="col-md-3">
+        <label class="form-label">PO Number <span style="color:#dc2626">*</span></label>
+        <input type="text" name="PONumber" class="form-control" value="<?= safe($nextPONum) ?>" required>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:.2rem;"><i class="bi bi-info-circle"></i> Auto-generated. You may edit if needed.</div>
+      </div>
+      <div class="col-md-3"><label class="form-label">PO Date <span style="color:#dc2626">*</span></label><input type="date" name="PODate" class="form-control" value="<?= date('Y-m-d') ?>" required></div>
       <div class="col-md-3"><label class="form-label">Remarks</label><input type="text" name="Remarks" class="form-control" placeholder="Optional notes"></div>
+    </div>
+    <div style="background:var(--primary-glow);border:1px solid rgba(59,130,246,.2);border-radius:9px;padding:.55rem .9rem;margin-bottom:1rem;font-size:.76rem;color:var(--primary);font-weight:600;">
+      <i class="bi bi-info-circle-fill"></i>
+      <strong>How totals work:</strong> Requested Pieces = items from pending requests list. Additional Pieces = extra stock buffer (default 15 pcs/size). Total Pieces = Requested + Additional.
     </div>
     <div class="po-grid">
     <?php foreach(['TSHIRT'=>['label'=>'T-Shirt','cls'=>'tshirt'],'POLOSHIRT'=>['label'=>'Polo Shirt','cls'=>'polo']] as $type=>$meta): ?>
@@ -729,21 +910,31 @@ elseif($tab==='po'): ?>
       <table class="utbl" style="font-size:.78rem;">
         <thead><tr>
           <th style="text-align:left;">Size</th>
-          <th>Requested<br><span style="font-weight:400;text-transform:none;">(persons)</span></th>
-          <th>Additional<br><span style="font-weight:400;text-transform:none;">(persons)</span></th>
-          <th>Total Pieces<br><span style="font-weight:400;text-transform:none;">(×3)</span></th>
+          <th style="text-align:center;">Requested<br><span style="font-weight:400;text-transform:none;font-size:.68rem;">(from pending list)</span></th>
+          <th style="text-align:center;">Additional<br><span style="font-weight:400;text-transform:none;font-size:.68rem;">(ideal stock buffer)</span></th>
+          <th style="text-align:center;">Total Pieces</th>
         </tr></thead>
         <tbody>
-        <?php foreach($sizes as $sz): ?>
+        <?php foreach($sizes as $sz):
+          $reqPcs = intval($pendingReqMap[$type][$sz] ?? 0);
+        ?>
         <tr>
           <td style="font-weight:700;font-family:'DM Mono',monospace;"><?= $sz ?></td>
-          <td style="text-align:center;"><input type="number" name="req_<?= $type ?>_<?= $sz ?>" class="stock-input po-req" data-type="<?= $type ?>" data-size="<?= $sz ?>" value="0" min="0"></td>
-          <td style="text-align:center;"><input type="number" name="add_<?= $type ?>_<?= $sz ?>" class="stock-input po-add" data-type="<?= $type ?>" data-size="<?= $sz ?>" value="0" min="0"></td>
+          <td style="text-align:center;">
+            <input type="number" name="req_<?= $type ?>_<?= $sz ?>" class="stock-input po-req"
+              data-type="<?= $type ?>" data-size="<?= $sz ?>"
+              value="<?= $reqPcs ?>" min="0">
+          </td>
+          <td style="text-align:center;">
+            <input type="number" name="add_<?= $type ?>_<?= $sz ?>" class="stock-input po-add"
+              data-type="<?= $type ?>" data-size="<?= $sz ?>"
+              value="15" min="0">
+          </td>
           <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;" id="total_<?= $type ?>_<?= $sz ?>">0</td>
         </tr>
         <?php endforeach; ?>
         <tr style="background:var(--surface-3);">
-          <td colspan="2" style="font-weight:700;color:var(--primary);">Total</td>
+          <td colspan="2" style="font-weight:700;color:var(--primary);">Grand Total</td>
           <td></td>
           <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);" id="grandtotal_<?= $type ?>">0</td>
         </tr>
@@ -758,8 +949,402 @@ elseif($tab==='po'): ?>
     </div>
   </form>
   </div>
+  </div><!-- /poFormBody -->
 </div>
 
+<?php
+// ═══ TAB: RECEIVING ════════════════════════════════════════════
+elseif($tab==='receiving'):
+
+$poItemsAll = rq($conn2,"SELECT POID,UniformType,Size,Requested,Additional FROM [dbo].[UniformPOItems] ORDER BY POID");
+$poItemsMap = [];
+foreach($poItemsAll as $pi) {
+    $poItemsMap[$pi['POID']][$pi['UniformType']][$pi['Size']] = [
+        'requested' => intval($pi['Requested']),
+        'additional'=> intval($pi['Additional']),
+    ];
+}
+?>
+
+<?php if(!empty($recList)): ?>
+<div class="panel" style="margin-bottom:1.5rem;">
+  <div class="panel-hdr">
+    <div class="panel-title"><i class="bi bi-box-seam-fill" style="color:var(--primary-light)"></i> Receiving Records</div>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>#</th><th>PO Number</th><th>Uniform Type</th><th>Date Received</th><th>Printing Shop</th><th>Printing Shop Rep</th><th>UTC Rep</th><th>Created By</th><th style="text-align:center;">Action</th></tr></thead>
+    <tbody>
+    <?php foreach($recList as $i=>$rec):
+      $rowNum=($recPage-1)*20+$i+1;
+      $uTypeRec = $rec['UniformType'] ?? '';
+    ?>
+    <tr>
+      <td style="color:var(--text-muted);font-family:'DM Mono',monospace;"><?= $rowNum ?></td>
+      <td style="font-weight:700;font-family:'DM Mono',monospace;color:var(--primary);"><?= safe($rec['PONumber']??'—') ?></td>
+      <td>
+        <?php if($uTypeRec): ?>
+        <span class="bdg <?= $uTypeRec==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $uTypeRec ?></span>
+        <?php else: ?>—<?php endif; ?>
+      </td>
+      <!-- FIX: was $rec['DateReceived'] — use RFDate with fallback to DateReceived -->
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;"><?= fmtDate($rec['DateReceived'] ?? $rec['RFDate']) ?></td>
+      <!-- FIX: PrintingShop is correct -->
+      <td style="font-size:.78rem;font-weight:600;"><?= safe($rec['PrintingShop']??'—') ?></td>
+      <!-- FIX: was $rec['PrintingShopRep'] — correct column is RepresentativeThem -->
+      <td style="font-size:.78rem;"><?= safe($rec['RepresentativeThem']??'—') ?></td>
+      <!-- FIX: was $rec['UTCRep'] — correct column is RepresentativeUs -->
+      <td style="font-size:.78rem;"><?= safe($rec['RepresentativeUs']??'—') ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($rec['CreatedBy']??'—') ?></td>
+      <td style="text-align:center;white-space:nowrap;">
+        <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
+        <button class="btn-sm-action btn-edit" onclick="viewRecItems(<?= $rec['RFID'] ?>,'<?= addslashes($rec['PONumber']??'') ?>','<?= addslashes($rec['UniformType']??'') ?>')">
+          <i class="bi bi-eye-fill"></i> View
+        </button>
+        <a href="?tab=receiving&editrecid=<?= $rec['RFID'] ?>&recpage=<?= $recPage ?>" class="btn-sm-action btn-edit">
+          <i class="bi bi-pencil-fill"></i> Edit
+        </a>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Receiving Record?','This will permanently delete this receiving record. Continue?','#dc2626')">
+          <input type="hidden" name="delete_receiving" value="1">
+          <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
+          <input type="hidden" name="ReceivingID" value="<?= $rec['RFID'] ?>">
+          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
+        </form>
+        <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
+        <button class="btn-sm-action" onclick="printReceiving(<?= $rec['RFID'] ?>)" style="color:#0891b2;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.05);">
+          <i class="bi bi-printer-fill"></i> Print
+        </button>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+  <?= paginationBar('recpage',$recPage,$recPages,$recTotal,['tab'=>'receiving']) ?>
+</div>
+<?php endif; ?>
+
+<!-- ── Receiving Form ──────────────────────────────────────────── -->
+<div class="panel">
+  <div class="panel-hdr" <?php if($editRecId<=0): ?>style="cursor:pointer;" onclick="togglePanel('recFormBody','recFormChevron')"<?php endif; ?>>
+    <div class="panel-title">
+      <?php if($editRecId>0): ?>
+        <i class="bi bi-pencil-fill" style="color:var(--primary)"></i> Edit Receiving Record
+        <?php
+          $editPONum = '';
+          foreach($poForReceiving as $pp){
+            if(intval($pp['POID'])===intval($editRecRow['POID']??0)) { $editPONum=$pp['PONumber']; break; }
+          }
+          if($editPONum) echo ' — <span style="font-family:\'DM Mono\',monospace;color:var(--primary);">'.safe($editPONum).'</span>';
+        ?>
+      <?php else: ?>
+        <i class="bi bi-box-seam-fill" style="color:var(--primary-light)"></i> New Receiving Form
+      <?php endif; ?>
+    </div>
+    <?php if($editRecId>0): ?>
+      <a href="?tab=receiving" class="btn-sm-action btn-del"><i class="bi bi-x-lg"></i> Cancel</a>
+    <?php else: ?>
+      <button type="button" class="btn-add" style="pointer-events:none;">
+        <i class="bi bi-plus-lg" id="recFormChevron"></i> New Receiving
+      </button>
+    <?php endif; ?>
+  </div>
+
+  <div id="recFormBody" style="<?= $editRecId>0 ? '' : 'display:none;' ?>">
+  <div style="padding:1.25rem;">
+  <form method="POST">
+    <input type="hidden" name="save_receiving" value="1">
+    <?php if($editRecId>0): ?><input type="hidden" name="ReceivingID" value="<?= $editRecId ?>"><?php endif; ?>
+
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:.4rem;padding-bottom:.55rem;border-bottom:1px solid var(--border);margin-bottom:.9rem;">
+      <i class="bi bi-truck" style="color:var(--primary-light)"></i> Delivery Details
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-4">
+        <label class="form-label">Purchase Order <span style="color:#dc2626">*</span></label>
+        <select name="POID_REC" id="recPOSelect" class="form-select" required onchange="recFillPO(this.value)">
+          <option value="">— Select PO —</option>
+          <?php foreach($poForReceiving as $po): ?>
+          <option value="<?= $po['POID'] ?>" <?= intval($editRecRow['POID']??0)===$po['POID']?'selected':'' ?>>
+            <?= safe($po['PONumber']) ?> — <?= fmtDate($po['PODate']) ?>
+          </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <?php
+          $recDateVal = $editRecId>0
+            ? (($editRecRow['RFDate'] instanceof DateTime)
+                ? $editRecRow['RFDate']->format('Y-m-d')
+                : date('Y-m-d',strtotime($editRecRow['RFDate']??date('Y-m-d'))))
+            : date('Y-m-d');
+        ?>
+        <label class="form-label">Date Received <span style="color:#dc2626">*</span></label>
+        <input type="date" name="DateReceived" class="form-control" value="<?= $recDateVal ?>" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Printing Shop Name</label>
+        <input type="text" name="PrintingShop" class="form-control" value="<?= safe($editRecRow['PrintingShop']??'') ?>" placeholder="e.g. ABC Printing, Stitch Express…">
+      </div>
+      <div class="col-md-3" style="display:flex;align-items:flex-end;">
+        <div style="background:var(--primary-glow);border:1px solid rgba(59,130,246,.2);border-radius:9px;padding:.5rem .8rem;font-size:.75rem;color:var(--primary);font-weight:600;width:100%;">
+          <i class="bi bi-info-circle-fill"></i> PO selection auto-fills the size &amp; quantity grid below.
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:.4rem;padding-bottom:.55rem;border-bottom:1px solid var(--border);margin-bottom:.9rem;margin-top:1.1rem;">
+      <i class="bi bi-toggles" style="color:var(--primary-light)"></i> Uniform Type &amp; Received Quantities
+    </div>
+
+    <?php
+      $editRecUniformType = $editRecRow['UniformType'] ?? 'TSHIRT';
+      if(!in_array($editRecUniformType,['TSHIRT','POLOSHIRT'])) $editRecUniformType='TSHIRT';
+    ?>
+    <input type="hidden" name="ReceivingUniformType" id="recUniformTypeInput" value="<?= $editRecUniformType ?>">
+
+    <div style="display:flex;gap:.5rem;margin-bottom:1rem;">
+      <?php foreach(['TSHIRT'=>['label'=>'T-Shirt (Logistics)','icon'=>'bi-person-standing','accent'=>'#1e40af','light'=>'rgba(59,130,246,.1)','border'=>'rgba(59,130,246,.3)'],
+                     'POLOSHIRT'=>['label'=>'Polo Shirt (Office / Sales)','icon'=>'bi-person-badge','accent'=>'#0891b2','light'=>'rgba(8,145,178,.1)','border'=>'rgba(8,145,178,.3)']] as $bt=>$bm): ?>
+      <button type="button"
+        id="typeToggle_<?= $bt ?>"
+        onclick="recSetType('<?= $bt ?>')"
+        style="flex:1;padding:.52rem 1rem;border-radius:9px;font-size:.8rem;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .13s;display:flex;align-items:center;justify-content:center;gap:.5rem;
+        <?= $editRecUniformType===$bt ? "background:{$bm['light']};color:{$bm['accent']};border:2px solid {$bm['accent']};" : "background:var(--surface);color:var(--text-secondary);border:1.5px solid var(--border);" ?>">
+        <i class="bi <?= $bm['icon'] ?>"></i> <?= $bm['label'] ?>
+      </button>
+      <?php endforeach; ?>
+    </div>
+
+    <?php
+      $recSizes=['XS','S','M','L','XL','XXL','XXXL','4XL'];
+      $editPOID = intval($editRecRow['POID']??0);
+    ?>
+    <?php foreach(['TSHIRT'=>['label'=>'T-Shirt','cls'=>'tshirt','accent'=>'#1e40af','light'=>'rgba(59,130,246,.08)','border'=>'rgba(59,130,246,.2)'],
+                   'POLOSHIRT'=>['label'=>'Polo Shirt','cls'=>'polo','accent'=>'#0891b2','light'=>'rgba(8,145,178,.08)','border'=>'rgba(8,145,178,.2)']] as $type=>$meta): ?>
+    <div id="recSection_<?= $type ?>" style="<?= $editRecUniformType===$type?'':'display:none;' ?>">
+      <div class="po-type-card" style="margin-bottom:.75rem;">
+        <div class="po-type-hdr <?= $meta['cls'] ?>">
+          <i class="bi bi-grid-3x3-gap-fill"></i> <?= $meta['label'] ?> — Received Quantities
+        </div>
+        <div style="padding:.75rem;overflow-x:auto;">
+        <table class="utbl" style="font-size:.79rem;min-width:500px;">
+          <thead><tr>
+            <th style="text-align:left;width:60px;">Size</th>
+            <th style="text-align:center;">PO Ordered (pcs)</th>
+            <th style="text-align:center;">Qty Received *</th>
+            <th style="text-align:center;">Variance</th>
+          </tr></thead>
+          <tbody>
+          <?php
+            $typeTotal = 0;
+            foreach($recSizes as $sz):
+              $qtyRec  = intval($editRecItems[$type][$sz] ?? 0);
+              $poQtyOrdered = 0;
+              if($editPOID>0 && isset($poItemsMap[$editPOID][$type][$sz])){
+                  $pi = $poItemsMap[$editPOID][$type][$sz];
+                  $poQtyOrdered = $pi['requested'] + $pi['additional'];
+              }
+              $typeTotal += $qtyRec;
+          ?>
+          <tr>
+            <td><span class="<?= $meta['cls']==='tshirt'?'bdg bdg-tshirt':'bdg bdg-polo' ?>" style="font-family:'DM Mono',monospace;font-size:.75rem;"><?= $sz ?></span></td>
+            <td style="text-align:center;font-family:'DM Mono',monospace;color:var(--text-muted);" id="poOrd_<?= $type ?>_<?= $sz ?>"><?= $poQtyOrdered>0?$poQtyOrdered:'—' ?></td>
+            <td style="text-align:center;">
+              <input type="number"
+                name="rec_<?= $type ?>_<?= $sz ?>"
+                class="stock-input rec-qty-new"
+                data-rectype="<?= $type ?>"
+                data-size="<?= $sz ?>"
+                value="<?= $qtyRec ?>"
+                min="0"
+                oninput="recalcNew('<?= $type ?>')">
+            </td>
+            <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.78rem;" id="recvar_<?= $type ?>_<?= $sz ?>">
+              <?php
+                if($poQtyOrdered>0 || $qtyRec>0){
+                    $diff=$qtyRec-$poQtyOrdered;
+                    $col=$diff===0?'#059669':($diff>0?'#ca8a04':'#dc2626');
+                    echo "<span style='color:{$col};font-weight:700;'>".($diff>=0?'+'.$diff:$diff)."</span>";
+                } else { echo '—'; }
+              ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+          <tfoot>
+            <tr style="background:var(--surface-3);">
+              <td style="padding:.5rem .85rem;font-weight:700;color:<?= $meta['accent'] ?>;" colspan="2">Total <?= $meta['label'] ?></td>
+              <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:<?= $meta['accent'] ?>;padding:.5rem .85rem;" id="newrectotal_<?= $type ?>"><?= $typeTotal ?></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        </div>
+      </div>
+    </div>
+    <?php endforeach; ?>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--primary-glow);border:1px solid rgba(59,130,246,.2);border-radius:9px;padding:.6rem 1rem;margin-bottom:1.25rem;">
+      <span style="font-size:.78rem;font-weight:700;color:var(--primary);display:flex;align-items:center;gap:.35rem;"><i class="bi bi-calculator-fill"></i> Grand Total Pieces Received (this session)</span>
+      <span style="font-family:'DM Mono',monospace;font-size:1rem;font-weight:800;color:var(--primary);" id="newrecgrand">0</span>
+    </div>
+
+    <div style="font-size:.78rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:.4rem;padding-bottom:.55rem;border-bottom:1px solid var(--border);margin-bottom:.9rem;">
+      <i class="bi bi-pen-fill" style="color:var(--primary-light)"></i> Representative Information &amp; Signatures
+    </div>
+
+    <div class="row g-3" style="margin-bottom:1.25rem;">
+      <div class="col-md-6">
+        <div style="border:1.5px solid var(--border);border-radius:10px;padding:.9rem;background:var(--surface);">
+          <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:.6rem;"><i class="bi bi-shop"></i> Printing Shop Representative</div>
+          <div class="mb-2">
+            <label class="form-label">Name <span style="color:#dc2626">*</span></label>
+            <!-- FIX: field maps to RepresentativeThem in DB -->
+            <input type="text" name="PrintingShopRep" class="form-control" value="<?= safe($editRecRow['RepresentativeThem']??'') ?>" placeholder="Full name of printing shop rep" required>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:.6rem;margin-top:.5rem;">
+            <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:.4rem;font-weight:600;">Signature</div>
+            <div style="border:1.5px dashed var(--border);border-radius:8px;height:64px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;">
+              <span style="font-size:.72rem;color:var(--text-muted);font-style:italic;">Print and sign manually</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div style="border:1.5px solid var(--border);border-radius:10px;padding:.9rem;background:var(--surface);">
+          <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:.6rem;"><i class="bi bi-building"></i> Urban Tradewell Corp. Representative</div>
+          <div class="mb-2">
+            <label class="form-label">Name <span style="color:#dc2626">*</span></label>
+            <!-- FIX: field maps to RepresentativeUs in DB -->
+            <input type="text" name="UTCRep" class="form-control" value="<?= safe($editRecRow['RepresentativeUs']??'') ?>" placeholder="Full name of UTC representative" required>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:.6rem;margin-top:.5rem;">
+            <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:.4rem;font-weight:600;">Signature</div>
+            <div style="border:1.5px dashed var(--border);border-radius:8px;height:64px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;">
+              <span style="font-size:.72rem;color:var(--text-muted);font-style:italic;">Print and sign manually</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;align-items:center;">
+      <span style="font-size:.75rem;color:var(--text-muted);"><i class="bi bi-printer"></i> After saving, use the Print button to generate the receiving document.</span>
+      <button type="submit" class="btn-add"><i class="bi bi-floppy-fill"></i> Save Receiving Record</button>
+    </div>
+  </form>
+  </div><!-- /padding -->
+  </div><!-- /recFormBody -->
+</div>
+
+<script>
+const recPOItems = <?= json_encode($poItemsMap) ?>;
+const recSizes   = <?= json_encode($sizes) ?>;
+const recUTypes  = ['TSHIRT','POLOSHIRT'];
+
+function recFillPO(poidStr){
+  const poid = parseInt(poidStr)||0;
+  const data = poid ? (recPOItems[poid]||{}) : {};
+  recUTypes.forEach(type => {
+    recSizes.forEach(sz => {
+      const ordEl = document.getElementById('poOrd_'+type+'_'+sz);
+      const recInp = document.querySelector('[name="rec_'+type+'_'+sz+'"]');
+      if(ordEl){
+        const item = (data[type]||{})[sz];
+        const total = item ? (parseInt(item.requested||0)+parseInt(item.additional||0)) : 0;
+        ordEl.textContent = total > 0 ? total : '—';
+        if(recInp) recInp.value = total > 0 ? total : 0;
+      }
+    });
+    recalcNew(type);
+  });
+}
+
+function recSetType(type){
+  document.getElementById('recUniformTypeInput').value = type;
+  recUTypes.forEach(t => {
+    const sec = document.getElementById('recSection_'+t);
+    const btn = document.getElementById('typeToggle_'+t);
+    if(sec) sec.style.display = t===type ? '' : 'none';
+    if(btn){
+      if(t===type){
+        if(type==='TSHIRT'){
+          btn.style.background='rgba(59,130,246,.1)';btn.style.color='#1e40af';btn.style.border='2px solid #1e40af';
+        } else {
+          btn.style.background='rgba(8,145,178,.1)';btn.style.color='#0891b2';btn.style.border='2px solid #0891b2';
+        }
+      } else {
+        btn.style.background='var(--surface)';btn.style.color='var(--text-secondary)';btn.style.border='1.5px solid var(--border)';
+      }
+    }
+  });
+  recalcNew(type);
+  updateRecGrand();
+}
+
+function recalcNew(type){
+  let total=0;
+  recSizes.forEach(sz=>{
+    const inp = document.querySelector('[name="rec_'+type+'_'+sz+'"]');
+    const varEl = document.getElementById('recvar_'+type+'_'+sz);
+    const ordEl = document.getElementById('poOrd_'+type+'_'+sz);
+    const rec = inp ? (parseInt(inp.value)||0) : 0;
+    total += rec;
+    if(varEl && ordEl){
+      const ordTxt = ordEl.textContent.trim();
+      const ord = ordTxt==='—' ? 0 : (parseInt(ordTxt)||0);
+      if(ord>0||rec>0){
+        const diff=rec-ord;
+        const col=diff===0?'#059669':(diff>0?'#ca8a04':'#dc2626');
+        varEl.innerHTML='<span style="color:'+col+';font-weight:700;">'+(diff>=0?'+':'')+diff+'</span>';
+      } else { varEl.textContent='—'; }
+    }
+  });
+  const totEl=document.getElementById('newrectotal_'+type);
+  if(totEl) totEl.textContent=total;
+  updateRecGrand();
+}
+
+function updateRecGrand(){
+  const activeType = document.getElementById('recUniformTypeInput').value;
+  const el = document.getElementById('newrectotal_'+activeType);
+  const g = el ? (parseInt(el.textContent)||0) : 0;
+  const gEl = document.getElementById('newrecgrand');
+  if(gEl) gEl.textContent=g;
+}
+
+document.addEventListener('DOMContentLoaded',function(){
+  document.querySelectorAll('.rec-qty-new').forEach(el=>el.addEventListener('input',function(){recalcNew(this.dataset.rectype);}));
+
+  const poSel=document.getElementById('recPOSelect');
+  const isEditing=<?= $editRecId>0 ? 'true' : 'false' ?>;
+
+  if(poSel&&poSel.value){
+    if(isEditing){
+      const poid=parseInt(poSel.value)||0;
+      const data=poid?(recPOItems[poid]||{}):{};
+      recUTypes.forEach(type=>{
+        recSizes.forEach(sz=>{
+          const ordEl=document.getElementById('poOrd_'+type+'_'+sz);
+          if(ordEl){
+            const item=(data[type]||{})[sz];
+            const total=item?(parseInt(item.requested||0)+parseInt(item.additional||0)):0;
+            ordEl.textContent=total>0?total:'—';
+          }
+        });
+      });
+    } else {
+      recFillPO(poSel.value);
+    }
+  }
+
+  recalcNew('TSHIRT');
+  recalcNew('POLOSHIRT');
+  updateRecGrand();
+});
+</script>
 <?php endif; ?>
 </div><!-- /container -->
 
@@ -882,14 +1467,36 @@ elseif($tab==='po'): ?>
   </div>
 </div>
 
+<!-- ══ MODAL: View Receiving Items ═════════════════════════════ -->
+<div class="modal fade" id="recItemsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="recItemsTitle"><i class="bi bi-box-seam-fill" style="color:var(--primary)"></i> Receiving Record</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="recItemsBody" style="padding:1.25rem;"></div>
+      <div class="modal-footer" style="border-top:1px solid var(--border);gap:.5rem;">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn-add" id="recItemsPrintBtn" style="display:none;" onclick="printReceivingFromModal()">
+          <i class="bi bi-printer-fill"></i> Print
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="../assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
 <script>
-function confirmDel(e,label){
-  e.preventDefault();
-  const form=e.target;
-  Swal.fire({title:'Delete?',text:`Are you sure you want to delete ${label}?`,icon:'warning',showCancelButton:true,confirmButtonColor:'#dc2626',cancelButtonColor:'#64748b',confirmButtonText:'Yes, delete',background:'#fff',color:'#0f172a'})
-    .then(r=>{if(r.isConfirmed)form.submit();});
-  return false;
+function togglePanel(bodyId, iconId) {
+  const body = document.getElementById(bodyId);
+  const icon = document.getElementById(iconId);
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : '';
+  if (icon) {
+    icon.className = isOpen ? 'bi bi-plus-lg' : 'bi bi-dash-lg';
+  }
 }
 
 function confirmAction(e,title,text,color){
@@ -917,23 +1524,23 @@ function autoType(val){
 
 function recalcPO(){
   <?php foreach($uTypes as $ut): ?>
-  let gt_<?= $ut ?>=0;
-  <?php foreach($sizes as $sz): ?>
   (function(){
-    const r=parseInt(document.querySelector('[name="req_<?= $ut ?>_<?= $sz ?>"]')?.value||0);
-    const a=parseInt(document.querySelector('[name="add_<?= $ut ?>_<?= $sz ?>"]')?.value||0);
-    const t=(r+a)*3;
-    const el=document.getElementById('total_<?= $ut ?>_<?= $sz ?>');
-    if(el)el.textContent=t;
-    gt_<?= $ut ?>+=t;
+    let gt=0;
+    <?php foreach($sizes as $sz): ?>
+    (function(){
+      const r=parseInt(document.querySelector('[name="req_<?= $ut ?>_<?= $sz ?>"]')?.value)||0;
+      const a=parseInt(document.querySelector('[name="add_<?= $ut ?>_<?= $sz ?>"]')?.value)||0;
+      const t=r+a;
+      const el=document.getElementById('total_<?= $ut ?>_<?= $sz ?>');
+      if(el) el.textContent=t;
+      gt+=t;
+    })();
+    <?php endforeach; ?>
+    const gtEl=document.getElementById('grandtotal_<?= $ut ?>');
+    if(gtEl) gtEl.textContent=gt;
   })();
   <?php endforeach; ?>
-  const gtEl=document.getElementById('grandtotal_<?= $ut ?>');
-  if(gtEl)gtEl.textContent=gt_<?= $ut ?>;
-  <?php endforeach; ?>
 }
-document.querySelectorAll('.po-req,.po-add').forEach(el=>el.addEventListener('input',recalcPO));
-recalcPO();
 
 function viewPOItems(poid,poNum){
   document.getElementById('poItemsTitle').innerHTML=`<i class="bi bi-eye-fill" style="color:var(--primary-light)"></i> PO: ${poNum}`;
@@ -941,6 +1548,61 @@ function viewPOItems(poid,poNum){
   bootstrap.Modal.getOrCreateInstance(document.getElementById('poItemsModal')).show();
   fetch(`uniform-po-items.php?poid=${poid}`).then(r=>r.text()).then(html=>{document.getElementById('poItemsBody').innerHTML=html;}).catch(()=>{document.getElementById('poItemsBody').innerHTML='<p style="color:#dc2626">Failed to load items.</p>';});
 }
+
+let _currentRecPrintId = 0;
+
+function viewRecItems(recId, poNum, uType) {
+  _currentRecPrintId = recId;
+  const typeBadge = uType === 'TSHIRT'
+    ? '<span class="bdg bdg-tshirt">TSHIRT</span>'
+    : '<span class="bdg bdg-polo">POLOSHIRT</span>';
+  document.getElementById('recItemsTitle').innerHTML =
+    `<i class="bi bi-box-seam-fill" style="color:var(--primary-light)"></i> Receiving — ${poNum} &nbsp;${typeBadge}`;
+  document.getElementById('recItemsBody').innerHTML =
+    '<div style="text-align:center;padding:2rem;color:var(--text-muted)"><i class="bi bi-hourglass-split"></i> Loading…</div>';
+  document.getElementById('recItemsPrintBtn').style.display = 'none';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('recItemsModal')).show();
+  fetch(`uniform-receiving-items.php?recid=${recId}`)
+    .then(r => r.text())
+    .then(html => {
+      document.getElementById('recItemsBody').innerHTML = html;
+      document.getElementById('recItemsPrintBtn').style.display = 'inline-flex';
+    })
+    .catch(() => {
+      document.getElementById('recItemsBody').innerHTML = '<p style="color:#dc2626">Failed to load items.</p>';
+    });
+}
+
+function printReceivingFromModal() { printReceiving(_currentRecPrintId); }
+
+function printPO(poid,poNum){
+  const win=window.open('uniform-po-print.php?poid='+poid,'_blank','width=900,height=700,scrollbars=yes');
+  if(!win) Swal.fire('Popup blocked','Please allow popups for this site to print PO documents.','warning');
+}
+
+function printReceiving(recId){
+  const win=window.open('uniform-receiving-print.php?recid='+recId,'_blank','width=900,height=700,scrollbars=yes');
+  if(!win) Swal.fire('Popup blocked','Please allow popups for this site to print receiving documents.','warning');
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.po-req,.po-add').forEach(el=>el.addEventListener('input',recalcPO));
+  recalcPO();
+
+  // Auto-open the PO form if it was just saved (flash message present) or if URL has #po-form
+  <?php if(!empty($messages) && $tab==='po'): ?>
+  const poBody = document.getElementById('poFormBody');
+  const poIcon = document.getElementById('poFormChevron');
+  if(poBody){ poBody.style.display=''; if(poIcon) poIcon.className='bi bi-dash-lg'; }
+  <?php endif; ?>
+
+  // Auto-open the receiving form if it was just saved (flash message present)
+  <?php if(!empty($messages) && $tab==='receiving'): ?>
+  const recBody = document.getElementById('recFormBody');
+  const recIcon = document.getElementById('recFormChevron');
+  if(recBody){ recBody.style.display=''; if(recIcon) recIcon.className='bi bi-dash-lg'; }
+  <?php endif; ?>
+});
 </script>
 </body>
 </html>

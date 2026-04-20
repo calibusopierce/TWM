@@ -11,6 +11,7 @@ $_role        = $_SESSION['UserType'] ?? '';
 $_can_fuel    = in_array($_role, ['Admin','Administrator','Delivery','Logistic']);
 $_can_careers = in_array($_role, ['Admin','Administrator','HR']);
 $_can_uniform = in_array($_role, ['Admin','Administrator','HR']);
+$_can_emp     = in_array($_role, ['Admin','Administrator','HR']);
 $_is_admin    = in_array($_role, ['Admin','Administrator']);
 ?>
 <!DOCTYPE html>
@@ -88,7 +89,7 @@ body { font-size: 15px; }
   transition: max-height .22s ease;
   padding-left: .25rem;
 }
-.hn-group-body.open { max-height: 400px; }
+.hn-group-body.open { max-height: 600px; }
 
 .hn-link {
   display: flex; align-items: center; gap: .45rem;
@@ -278,12 +279,12 @@ body { font-size: 15px; }
         <i class="bi bi-chevron-down toggle-caret"></i>
       </button>
       <div class="hn-group-body" id="grp-fuel">
-        <a href="#summary"    class="hn-link"><i class="bi bi-table"></i> Overall Summary</a>
-        <a href="#ranking"    class="hn-link"><i class="bi bi-sort-numeric-down"></i> Low / High Ranking</a>
-        <a href="#30day"      class="hn-link"><i class="bi bi-calendar3"></i> 30-Day Monitor</a>
-        <a href="#area"       class="hn-link"><i class="bi bi-geo-alt"></i> Area Summary</a>
-        <a href="#comparison" class="hn-link"><i class="bi bi-bar-chart"></i> Fuel Comparison</a>
-        <a href="#anomaly"    class="hn-link"><i class="bi bi-exclamation-triangle"></i> Anomaly Flags</a>
+        <a href="#summary"     class="hn-link"><i class="bi bi-table"></i> Overall Summary</a>
+        <a href="#ranking"     class="hn-link"><i class="bi bi-sort-numeric-down"></i> Low / High Ranking</a>
+        <a href="#30day"       class="hn-link"><i class="bi bi-calendar3"></i> 30-Day Monitor</a>
+        <a href="#area"        class="hn-link"><i class="bi bi-geo-alt"></i> Area Summary</a>
+        <a href="#comparison"  class="hn-link"><i class="bi bi-bar-chart"></i> Fuel Comparison</a>
+        <a href="#anomaly"     class="hn-link"><i class="bi bi-exclamation-triangle"></i> Anomaly Flags</a>
         <a href="#checklist"   class="hn-link"><i class="bi bi-check2-square"></i> Monthly Checklist</a>
         <a href="#consumption" class="hn-link"><i class="bi bi-calendar-week"></i> Fuel Consumption</a>
         <a href="#report"      class="hn-link"><i class="bi bi-receipt"></i> Usage Report</a>
@@ -351,6 +352,24 @@ body { font-size: 15px; }
         <a href="#uniform-issue"     class="hn-link"><i class="bi bi-arrow-up-circle"></i> Issuing Uniforms</a>
         <a href="#uniform-return"    class="hn-link"><i class="bi bi-arrow-down-circle"></i> Returning Uniforms</a>
         <a href="#uniform-history"   class="hn-link"><i class="bi bi-clock-history"></i> Issuance History</a>
+        <a href="#uniform-po"        class="hn-link"><i class="bi bi-file-earmark-text"></i> Purchase Orders</a>
+        <a href="#uniform-receiving" class="hn-link"><i class="bi bi-box-arrow-in-down"></i> Receiving</a>
+        <a href="#uniform-print"     class="hn-link"><i class="bi bi-printer"></i> Printing</a>
+      </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($_can_emp): ?>
+    <!-- Employee Directory -->
+    <div class="hn-group" data-group="employees">
+      <button class="hn-group-toggle" onclick="toggleGroup('employees')">
+        <span>👤 Employee Directory</span>
+        <i class="bi bi-chevron-down toggle-caret"></i>
+      </button>
+      <div class="hn-group-body" id="grp-employees">
+        <a href="#emp-list"        class="hn-link"><i class="bi bi-people"></i> Employee List</a>
+        <a href="#emp-inactive"    class="hn-link"><i class="bi bi-person-dash"></i> Inactive Employees</a>
+        <a href="#emp-blacklisted" class="hn-link"><i class="bi bi-person-x"></i> Blacklisted Employees</a>
       </div>
     </div>
     <?php endif; ?>
@@ -363,9 +382,9 @@ body { font-size: 15px; }
     <div class="help-hero">
       <div class="help-hero-title">Help <span>Manual</span></div>
       <div class="help-hero-sub">A simple guide to using the
-        <?php if ($_can_fuel && $_can_careers): ?>Fuel Monitoring Dashboard, Analytics Graphs, and Careers pages.
+        <?php if ($_can_fuel && $_can_careers): ?>Fuel Monitoring Dashboard, Analytics Graphs, Careers pages, Uniform Inventory, and Employee Directory.
         <?php elseif ($_can_fuel): ?>Fuel Monitoring Dashboard and Analytics Graphs.
-        <?php else: ?>Careers Admin and Applications pages.
+        <?php else: ?>Careers Admin, Applications, Uniform Inventory, and Employee Directory.
         <?php endif; ?>
         No technical knowledge needed!</div>
       <div class="help-hero-chips">
@@ -380,6 +399,11 @@ body { font-size: 15px; }
         <?php endif; ?>
         <?php if ($_can_uniform): ?>
         <span class="help-chip"><i class="bi bi-bag-fill"></i> Uniform Inventory</span>
+        <span class="help-chip"><i class="bi bi-file-earmark-text"></i> Purchase Orders</span>
+        <span class="help-chip"><i class="bi bi-box-arrow-in-down"></i> Receiving</span>
+        <?php endif; ?>
+        <?php if ($_can_emp): ?>
+        <span class="help-chip"><i class="bi bi-person-badge"></i> Employee Directory</span>
         <?php endif; ?>
         <span class="help-chip"><i class="bi bi-people"></i> For All Users</span>
       </div>
@@ -393,7 +417,7 @@ body { font-size: 15px; }
       </div>
       <div class="help-intro">
         <?php if ($_can_fuel && $_can_careers): ?>
-        This portal gives you access to the <strong>Fuel Monitoring Dashboard</strong>, <strong>Analytics Graphs</strong>, and <strong>Careers Management</strong> — all in one place. Use the sidebar to jump to any topic.
+        This portal gives you access to the <strong>Fuel Monitoring Dashboard</strong>, <strong>Analytics Graphs</strong>, <strong>Careers Management</strong>, <strong>Uniform Inventory</strong>, and <strong>Employee Directory</strong> — all in one place. Use the sidebar to jump to any topic.
         <?php elseif ($_can_fuel): ?>
         The <strong>Fuel Monitoring Dashboard</strong> is your tool for tracking how much fuel every truck uses, how often they refuel, and whether anything looks suspicious. Think of it like a <strong>report card for every truck in the fleet</strong>.
         <?php else: ?>
@@ -412,6 +436,9 @@ body { font-size: 15px; }
         <div class="step-item"><div class="step-num"><?= $_can_fuel ? '6' : '3' ?></div><div class="step-text">On <strong>Careers Admin</strong>, you can add, edit, or delete job postings. Changes appear on the public careers page immediately.</div></div>
         <div class="step-item"><div class="step-num"><?= $_can_fuel ? '7' : '4' ?></div><div class="step-text">On <strong>Applications</strong>, you can view and manage all job applicants — filter by date, status, or search by name.</div></div>
         <?php endif; ?>
+        <?php if ($_can_emp): ?>
+        <div class="step-item"><div class="step-num"><?= $_can_fuel ? '8' : ($_can_careers ? '5' : '3') ?></div><div class="step-text">On <strong>Employee Directory</strong>, you can view active employees, manage inactive employees, and maintain the blacklist.</div></div>
+        <?php endif; ?>
       </div>
     </div>
     <hr class="help-divider">
@@ -428,11 +455,11 @@ body { font-size: 15px; }
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-calendar3"></i> Date From / To</div><div class="filter-item-desc">Show data only within a specific date range. Leave blank to use the current month default.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-truck"></i> Vehicle Type</div><div class="filter-item-desc">Filter by truck category (e.g. 4-Wheeler, 6-Wheeler). Useful when comparing trucks of the same type.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-tag"></i> Plate #</div><div class="filter-item-desc">Search for a specific truck. You can type just part of the plate number — it will find all matches.</div></div>
-        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-person"></i> Driver</div><div class="filter-item-desc">Filter records by driver name. Useful for checking a specific driver's fuel history.</div></div>
-        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-geo-alt"></i> Area</div><div class="filter-item-desc">Show only trucks or refuels from a specific delivery area or route (e.g. Makati, Pasig). Filters all tabs simultaneously.</div></div>
+        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-person"></i> Driver</div><div class="filter-item-desc">Filter records by driver name. Partial text accepted — matches against both the fuel record driver and the team schedule. Shows as an active chip in the filter bar when set.</div></div>
+        <div class="filter-item"><div class="filter-item-name"><i class="bi bi-geo-alt"></i> Area</div><div class="filter-item-desc">Show only trucks or refuels from a specific delivery area or route (e.g. Makati, Pasig). Filters all tabs simultaneously. Shows as an active chip in the filter bar when set.</div></div>
         <div class="filter-item"><div class="filter-item-name"><i class="bi bi-building"></i> Department (Auto)</div><div class="filter-item-desc">Your department is automatically applied from your login. Change it via the avatar menu in the topbar.</div></div>
       </div>
-      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Tip:</strong> Combine multiple filters at once. Example: Vehicle Type = "6-Wheeler" AND Area = "Makati" to see only 6-wheelers in Makati. The <strong>Driver</strong> and <strong>Area</strong> filters accept partial text — you don't need to type the full name.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Tip:</strong> Combine multiple filters at once. Example: Vehicle Type = "6-Wheeler" AND Area = "Makati" to see only 6-wheelers in Makati. The <strong>Driver</strong> and <strong>Area</strong> filters accept partial text — you don't need to type the full name. Active filters appear as <strong>removable chips</strong> in the filter bar so you can see and clear them at a glance.</span></div>
     </div>
     <hr class="help-divider">
 
@@ -594,9 +621,9 @@ body { font-size: 15px; }
           <tr><td>Plate #</td><td>The truck that was scheduled</td></tr>
           <tr><td>Department</td><td>Which department the truck belongs to</td></tr>
           <tr><td>Vehicle Type</td><td>What type of truck it is</td></tr>
-          <tr><td>Sched. Driver</td><td>The driver assigned on this date per the team schedule</td></tr>
+          <tr><td>Sched. Driver</td><td>The driver assigned on this date per the team schedule (pulled from teamschedule, matched by plate + date)</td></tr>
           <tr><td>Sched. Area</td><td>The area this truck was scheduled to serve</td></tr>
-          <tr><td>Driver</td><td>The driver who actually requested the fuel (from the fuel record)</td></tr>
+          <tr><td>Driver</td><td>The driver who actually requested the fuel (from the fuel record — may differ from Sched. Driver)</td></tr>
           <tr><td>INV #</td><td>The fuel invoice/receipt number (only shows if refueled)</td></tr>
           <tr><td>Liters</td><td>How much fuel was received (only shows if refueled)</td></tr>
           <tr><td>Amount</td><td>How much it cost (only shows if refueled)</td></tr>
@@ -611,7 +638,7 @@ body { font-size: 15px; }
     <div class="help-section" id="consumption">
       <div class="help-section-header"><span class="help-section-icon">📆</span><div class="help-section-title">Fuel Consumption Tab</div></div>
       <div class="help-intro">A <strong>monthly breakdown of fuel consumption per truck</strong>, split into weekly columns. Instead of a simple total, you can see how each vehicle's fuel usage is distributed across Week 1, Week 2, Week 3, Week 4, and (when applicable) Week 5 of the selected month. Rows are grouped by <strong>Department → Vehicle Type</strong> for easy comparison.</div>
-      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>month/year selector</strong> at the top of this tab to navigate to any past or current month. The tab uses its own month picker independently of the main date-range filter.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>month/year selector</strong> at the top of this tab to navigate to any past or current month using the <strong>prev/next arrows</strong> or by typing directly. This tab uses its own <code>?fc_year=</code> / <code>?fc_month=</code> parameters, independently of the main date-range filter.</span></div>
       <table class="col-table">
         <thead><tr><th>Column</th><th>What it means</th></tr></thead>
         <tbody>
@@ -621,7 +648,7 @@ body { font-size: 15px; }
           <tr><td>Total Refuels</td><td>How many times the truck was refueled across the entire selected month</td></tr>
           <tr><td>Total Liters</td><td>Total fuel consumed for the month</td></tr>
           <tr><td>Total Amount</td><td>Total money spent on fuel for the month</td></tr>
-          <tr><td>Week 1–5 (Liters)</td><td>Liters consumed per weekly period (e.g. Week 1 = days 1–7, Week 2 = days 8–14, etc.)</td></tr>
+          <tr><td>Week 1–5 (Liters)</td><td>Liters consumed per weekly period (Week 1 = days 1–7, Week 2 = days 8–14, Week 3 = days 15–21, Week 4 = days 22–28, Week 5 = days 29–end of month)</td></tr>
           <tr><td>Week 1–5 (Amount)</td><td>Money spent per weekly period</td></tr>
         </tbody>
       </table>
@@ -801,9 +828,9 @@ body { font-size: 15px; }
       <table class="col-table">
         <thead><tr><th>Status</th><th>What it means</th></tr></thead>
         <tbody>
-          <tr><td>Pending</td><td>Newly submitted — has not been reviewed yet. All new applications land here first.</td></tr>
-          <tr><td>Evaluating</td><td>Currently being reviewed by HR — checking qualifications and fit</td></tr>
-          <tr><td>For Interview</td><td>Applicant has been shortlisted and scheduled for a first interview</td></tr>
+          <tr><td>Pending</td><td>Newly submitted — has not been reviewed yet. All new applications land here first. Visible to all HR staff regardless of department.</td></tr>
+          <tr><td>Evaluating</td><td>Currently being reviewed by HR — checking qualifications and fit. Once moved here, the application is visible only to the assigned department's HR.</td></tr>
+          <tr><td>For Interview</td><td>Applicant has been shortlisted and scheduled for a first (initial) interview</td></tr>
           <tr><td>Re-schedule Interview</td><td>The original interview was moved — a new schedule is being arranged</td></tr>
           <tr><td>Final Interview</td><td>Applicant passed the first interview and is being called for a final round</td></tr>
           <tr><td>Final Interview Rescheduled</td><td>The final interview was moved — a new schedule is being arranged</td></tr>
@@ -814,6 +841,7 @@ body { font-size: 15px; }
     </div>
 
     <hr class="help-divider">
+
     <!-- ── PUBLIC CAREERS PAGE ────────────────────────────── -->
     <div class="help-section" id="careers-public">
       <div class="help-section-header"><span class="help-section-icon">🌐</span><div class="help-section-title">Public Careers Page</div></div>
@@ -884,7 +912,7 @@ body { font-size: 15px; }
       <div class="step-item"><div class="step-num">5</div><div class="step-text">Once all files are attached and categories selected, click <strong>Submit Application</strong>. The system validates everything before saving.</div></div>
     </div>
 
-  <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>The form will <strong>block submission</strong> if any of these are true: a file has no category selected, a file exceeds 10 MB, an unsupported file type is uploaded, or no files are attached at all.</span></div>
+    <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>The form will <strong>block submission</strong> if any of these are true: a file has no category selected, a file exceeds 10 MB, an unsupported file type is uploaded, or no files are attached at all.</span></div>
 
     <p style="font-size:.88rem;font-weight:700;color:var(--text-primary);margin:.85rem 0 .5rem;">How File Uploads Work — HR Side</p>
     <div class="help-intro">On the <strong>Applications page</strong>, each applicant row shows a <strong>files button</strong> with a count (e.g. "3 files"). Clicking it opens a modal showing all uploaded documents grouped by their category.</div>
@@ -899,25 +927,28 @@ body { font-size: 15px; }
     </table>
     <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>File names are automatically <strong>cleaned up</strong> for display — the system strips the unique ID suffix added during upload so HR sees a readable name instead of a long string of characters.</span></div>
 
-
-
     <?php endif; /* end $_can_careers */ ?>
 
     <!-- ══ UNIFORM INVENTORY SECTION ══════════════════════════ -->
     <?php if ($_can_uniform): ?>
+
+    <hr class="help-divider">
 
     <div class="help-section" id="uniform-overview">
       <div class="help-section-header">
         <span class="help-section-icon">🧥</span>
         <div class="help-section-title">Uniform Inventory — Overview</div>
       </div>
-      <div class="help-intro">The <strong>Uniform Inventory</strong> page lets Admin and HR staff manage the company's uniform stock — from adding new uniform types to tracking every item issued to or returned by an employee.</div>
+      <div class="help-intro">The <strong>Uniform Inventory</strong> module lets Admin and HR staff manage the full lifecycle of company uniforms — from stocking items and issuing them to employees, to creating Purchase Orders for restocking and receiving deliveries from suppliers.</div>
       <table class="col-table">
         <thead><tr><th>Feature</th><th>What it does</th></tr></thead>
         <tbody>
           <tr><td>Stat Cards</td><td>Shows a live summary: total uniform types, total stock, low-stock items, and out-of-stock items</td></tr>
           <tr><td>Inventory Tab</td><td>Full list of all uniform items with stock levels and status badges</td></tr>
           <tr><td>History Tab</td><td>A searchable log of every issue and return transaction</td></tr>
+          <tr><td>Purchase Orders</td><td>Create and track POs for ordering uniforms from suppliers</td></tr>
+          <tr><td>Receiving</td><td>Record the actual delivery of items against an existing PO</td></tr>
+          <tr><td>Printing</td><td>Print issuance slips, PO documents, and receiving reports directly from the system</td></tr>
           <tr><td>Department Filter</td><td>The page respects your active department (set via the topbar), so each department only sees their own uniforms</td></tr>
         </tbody>
       </table>
@@ -949,7 +980,7 @@ body { font-size: 15px; }
         <div class="step-item"><div class="step-num">4</div><div class="step-text">Click <strong>Save Item</strong>. The item will appear in the inventory table immediately.</div></div>
       </div>
       <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>To edit an existing item, click the <strong>Edit</strong> button (pencil icon) on any row. The same form opens pre-filled with the current data.</span></div>
-      <div class="tip-box warning"><i class="bi bi-exclamation-triangle-fill"></i><span>Deleting an item <strong>permanently removes</strong> it and all its transaction history. This action cannot be undone — deactivate items instead of deleting them whenever possible.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Deleting an item <strong>permanently removes</strong> it and all its transaction history. This action cannot be undone — deactivate items instead of deleting them whenever possible.</span></div>
     </div>
 
     <div class="help-section" id="uniform-issue">
@@ -1002,7 +1033,170 @@ body { font-size: 15px; }
       <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>Use the <strong>search box</strong> to find transactions by employee name or item name. Use the <strong>type filter</strong> to show only Issues or only Returns.</span></div>
     </div>
 
+    <!-- ── PURCHASE ORDERS ─────────────────────────────────── -->
+    <div class="help-section" id="uniform-po">
+      <div class="help-section-header">
+        <span class="help-section-icon">📄</span>
+        <div class="help-section-title">Purchase Orders (PO)</div>
+      </div>
+      <div class="help-intro">The <strong>Purchase Order</strong> page lets Admin and HR staff create and track orders for uniform restocking. A PO is a formal request sent to a supplier that lists which items need to be ordered, in what quantities, and at what price. Once a PO is created, it can be monitored until delivery is confirmed through the Receiving page.</div>
+      <table class="col-table">
+        <thead><tr><th>Column / Field</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>PO Number</td><td>A unique auto-generated reference number for this purchase order</td></tr>
+          <tr><td>Supplier</td><td>The vendor or supplier the order is being sent to</td></tr>
+          <tr><td>Date Created</td><td>When the PO was raised</td></tr>
+          <tr><td>Items</td><td>The list of uniform items being ordered, with size, quantity, and unit price per line</td></tr>
+          <tr><td>Total Amount</td><td>The computed total cost of all items in the PO</td></tr>
+          <tr><td>Status</td><td><strong>Pending</strong> = not yet delivered · <strong>Partially Received</strong> = some items delivered · <strong>Fully Received</strong> = all items received and closed</td></tr>
+          <tr><td>Created By</td><td>The HR or Admin user who created the PO</td></tr>
+          <tr><td>Actions</td><td>View PO details · Print PO document · Record a delivery via Receiving</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.88rem;font-weight:700;color:var(--text-primary);margin:.85rem 0 .5rem;">Creating a Purchase Order</p>
+      <div class="step-list">
+        <div class="step-item"><div class="step-num">1</div><div class="step-text">Click <strong>Create PO</strong> at the top of the Purchase Orders page.</div></div>
+        <div class="step-item"><div class="step-num">2</div><div class="step-text">Select or type the <strong>Supplier</strong> name.</div></div>
+        <div class="step-item"><div class="step-num">3</div><div class="step-text">Add line items — select the <strong>uniform item</strong>, its <strong>size</strong>, the <strong>quantity</strong> to order, and the <strong>unit price</strong>.</div></div>
+        <div class="step-item"><div class="step-num">4</div><div class="step-text">Click <strong>+ Add Line</strong> to add more items to the same PO. Remove lines with the <strong>✕</strong> button.</div></div>
+        <div class="step-item"><div class="step-num">5</div><div class="step-text">Review the total amount at the bottom, then click <strong>Save PO</strong>. The PO is created with a <strong>Pending</strong> status.</div></div>
+      </div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>A PO does <strong>not</strong> automatically update stock levels. Stock is only updated when items are actually received through the <strong>Receiving</strong> page.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Once a PO has been fully received, it is <strong>closed</strong> and can no longer be edited. Make sure quantities and prices are correct before saving.</span></div>
+    </div>
+
+    <!-- ── RECEIVING ───────────────────────────────────────── -->
+    <div class="help-section" id="uniform-receiving">
+      <div class="help-section-header">
+        <span class="help-section-icon">📦</span>
+        <div class="help-section-title">Receiving</div>
+      </div>
+      <div class="help-intro">The <strong>Receiving</strong> page is where you record the actual delivery of uniform items from a supplier against an existing Purchase Order. When you confirm receipt of items, their quantities are automatically added to the inventory stock count.</div>
+      <table class="col-table">
+        <thead><tr><th>Column / Field</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>PO Number</td><td>The Purchase Order this delivery is for</td></tr>
+          <tr><td>Supplier</td><td>Which supplier made the delivery</td></tr>
+          <tr><td>Received Date</td><td>The date the items were physically received</td></tr>
+          <tr><td>Item</td><td>The uniform item being received</td></tr>
+          <tr><td>Ordered Qty</td><td>How many were originally ordered on the PO</td></tr>
+          <tr><td>Previously Received</td><td>How many of this item have already been received from prior deliveries on the same PO</td></tr>
+          <tr><td>Received Now</td><td>The quantity being received in this specific delivery — enter the actual count</td></tr>
+          <tr><td>Remarks</td><td>Optional notes (e.g. "2 units damaged on arrival", "partial delivery")</td></tr>
+          <tr><td>Received By</td><td>The HR or Admin user confirming the receipt</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.88rem;font-weight:700;color:var(--text-primary);margin:.85rem 0 .5rem;">Recording a Delivery</p>
+      <div class="step-list">
+        <div class="step-item"><div class="step-num">1</div><div class="step-text">Go to the <strong>Receiving</strong> page and click <strong>Receive Items</strong>, or click the <strong>Receive</strong> action button on an open PO.</div></div>
+        <div class="step-item"><div class="step-num">2</div><div class="step-text">Select the <strong>PO Number</strong> from the list. Only POs with a Pending or Partially Received status will appear.</div></div>
+        <div class="step-item"><div class="step-num">3</div><div class="step-text">The line items from the PO will load automatically. For each item, enter the <strong>Received Now</strong> quantity based on what was physically delivered.</div></div>
+        <div class="step-item"><div class="step-num">4</div><div class="step-text">Add any <strong>Remarks</strong> for discrepancies, damage, or partial deliveries.</div></div>
+        <div class="step-item"><div class="step-num">5</div><div class="step-text">Click <strong>Confirm Receipt</strong>. Stock levels are immediately updated for each received item, and the PO status updates automatically to <strong>Partially Received</strong> or <strong>Fully Received</strong>.</div></div>
+      </div>
+      <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>You can record <strong>multiple partial deliveries</strong> against the same PO. Each receiving entry is logged separately in the receiving history, showing the date, quantities, and who confirmed the receipt.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>You cannot receive more items than the quantity on the PO. If a supplier delivers extra units beyond what was ordered, those must be handled through a separate PO or manual stock adjustment.</span></div>
+    </div>
+
+    <!-- ── PRINTING ────────────────────────────────────────── -->
+    <div class="help-section" id="uniform-print">
+      <div class="help-section-header">
+        <span class="help-section-icon">🖨️</span>
+        <div class="help-section-title">Printing</div>
+      </div>
+      <div class="help-intro">The system provides <strong>print-ready templates</strong> for key Uniform Inventory documents. These are formatted for clean, professional output — no extra setup needed. You can trigger printing directly from the relevant page.</div>
+      <table class="col-table">
+        <thead><tr><th>Document</th><th>How to print it</th></tr></thead>
+        <tbody>
+          <tr><td>Issuance Slip</td><td>After confirming an Issue transaction, click the <strong>Print Slip</strong> button in the confirmation modal. Shows employee name, item, size, quantity, date, and the HR staff who processed it.</td></tr>
+          <tr><td>Purchase Order</td><td>On the Purchase Orders list or the PO detail page, click the <strong>Print PO</strong> button. Shows PO number, supplier, line items, quantities, unit prices, total amount, and date.</td></tr>
+          <tr><td>Receiving Report</td><td>After confirming a receiving entry, click <strong>Print Receiving Report</strong>. Shows the PO reference, supplier, items received, quantities, date, and who confirmed the receipt.</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>All print templates open in a <strong>new browser tab</strong> formatted for standard paper size. Use your browser's <strong>Print</strong> dialog (Ctrl+P / Cmd+P) to send to a printer or save as PDF.</span></div>
+      <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>Print templates <strong>automatically hide</strong> navigation bars, sidebars, and buttons — only the document content is shown when printing.</span></div>
+    </div>
+
     <?php endif; /* end $_can_uniform */ ?>
+
+    <!-- ══ EMPLOYEE DIRECTORY SECTION ══════════════════════════ -->
+    <?php if ($_can_emp): ?>
+
+    <hr class="help-divider">
+
+    <!-- ── EMPLOYEE LIST ──────────────────────────────────── -->
+    <div class="help-section" id="emp-list">
+      <div class="help-section-header">
+        <span class="help-section-icon">👤</span>
+        <div class="help-section-title">Employee List (Active)</div>
+      </div>
+      <div class="help-intro">The <strong>Employee List</strong> is the master directory of all currently active employees in the company. Admin and HR staff can view, search, add, and manage employee records from this page. The list is filtered by your active department — Admins can switch departments to view all staff.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Employee Name</td><td>Full name of the employee</td></tr>
+          <tr><td>Employee ID</td><td>The unique ID number assigned to the employee</td></tr>
+          <tr><td>Department</td><td>Which department the employee belongs to</td></tr>
+          <tr><td>Position</td><td>The employee's job title or role</td></tr>
+          <tr><td>Date Hired</td><td>When the employee officially started</td></tr>
+          <tr><td>Contact</td><td>Email address and/or phone number</td></tr>
+          <tr><td>Status</td><td>Shows <strong>Active</strong> for employees currently in this list</td></tr>
+          <tr><td>Actions</td><td>✏️ Edit employee details · 📋 View full profile · ⬇️ Move to Inactive · 🚫 Move to Blacklist</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>search box</strong> to find employees by name, ID, or position. Use the <strong>department filter</strong> to narrow results to a specific team.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Moving an employee to <strong>Inactive</strong> or <strong>Blacklisted</strong> does not delete their record — it transfers them to a separate list so their history is preserved.</span></div>
+    </div>
+
+    <!-- ── INACTIVE EMPLOYEES ─────────────────────────────── -->
+    <div class="help-section" id="emp-inactive">
+      <div class="help-section-header">
+        <span class="help-section-icon">😴</span>
+        <div class="help-section-title">Inactive Employees</div>
+      </div>
+      <div class="help-intro">The <strong>Inactive Employees</strong> page shows staff who are no longer actively employed but whose records are retained — for example, resigned employees, those on extended leave, or former contractors. Their data is kept for reference and can be reactivated if they return.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Employee Name</td><td>Full name of the employee</td></tr>
+          <tr><td>Employee ID</td><td>Their original employee ID number</td></tr>
+          <tr><td>Department</td><td>The department they belonged to</td></tr>
+          <tr><td>Position</td><td>Their last held job title</td></tr>
+          <tr><td>Date Hired</td><td>When they originally started</td></tr>
+          <tr><td>Date Inactivated</td><td>When their status was changed to Inactive</td></tr>
+          <tr><td>Reason</td><td>The reason for inactivation (e.g. Resigned, End of Contract, Extended Leave)</td></tr>
+          <tr><td>Actions</td><td>✅ Reactivate — moves back to the Active Employee List · 🚫 Move to Blacklist</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box success"><i class="bi bi-info-circle-fill"></i><span>To <strong>reactivate</strong> an employee (e.g. a rehire), click the <strong>Reactivate</strong> button on their row. Their record will move back to the Active Employee List with their original details intact.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Inactive employees are <strong>not visible</strong> on the main Employee List and do not count toward active headcount reports — but all their historical records (uniform issuance, applications, etc.) are still accessible.</span></div>
+    </div>
+
+    <!-- ── BLACKLISTED EMPLOYEES ──────────────────────────── -->
+    <div class="help-section" id="emp-blacklisted">
+      <div class="help-section-header">
+        <span class="help-section-icon">🚫</span>
+        <div class="help-section-title">Blacklisted Employees</div>
+      </div>
+      <div class="help-intro">The <strong>Blacklisted Employees</strong> page is a restricted list of individuals who have been flagged and are not eligible for rehire. This may include employees terminated for cause, those with serious conduct violations, or individuals identified as a risk. Access to this list is limited to <strong>Admin and HR</strong> only.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Employee Name</td><td>Full name of the blacklisted individual</td></tr>
+          <tr><td>Employee ID</td><td>Their original employee ID</td></tr>
+          <tr><td>Department</td><td>The department they belonged to when blacklisted</td></tr>
+          <tr><td>Position</td><td>Their last held position</td></tr>
+          <tr><td>Date Blacklisted</td><td>When they were added to the blacklist</td></tr>
+          <tr><td>Reason</td><td>The documented reason for blacklisting (e.g. Terminated for Cause, Theft, Serious Misconduct)</td></tr>
+          <tr><td>Blacklisted By</td><td>The Admin or HR user who added them to the list</td></tr>
+          <tr><td>Actions</td><td>👁️ View full record · 📝 Edit reason/notes (Admin only)</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span><strong>Blacklisted employees cannot be reactivated</strong> through the normal process. Removal from the blacklist requires Admin-level authorization and should be handled with care. If a blacklisted name appears in the Careers applicant list, HR will be alerted automatically.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Always document a clear and accurate <strong>reason</strong> when blacklisting an employee. This record may be referenced for future screening, legal compliance, or internal audits.</span></div>
+    </div>
+
+    <?php endif; /* end $_can_emp */ ?>
 
   </main>
 </div>
@@ -1022,6 +1216,8 @@ const sectionGroup = {
   'applications': 'careers', 'app-status': 'careers', 'careers-apply': 'careers', 'careers-public': 'careers',
   'uniform-overview': 'uniform', 'uniform-items': 'uniform', 'uniform-issue': 'uniform',
   'uniform-return': 'uniform', 'uniform-history': 'uniform',
+  'uniform-po': 'uniform', 'uniform-receiving': 'uniform', 'uniform-print': 'uniform',
+  'emp-list': 'employees', 'emp-inactive': 'employees', 'emp-blacklisted': 'employees',
 };
 
 // ── Toggle accordion group ─────────────────────────────────────
@@ -1063,7 +1259,6 @@ window.addEventListener('scroll', () => {
 
 // ── Open the first group on load ───────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Open whichever group the URL hash belongs to, else open 'started'
   const hash = location.hash.replace('#', '');
   const initGroup = (hash && sectionGroup[hash]) ? sectionGroup[hash] : 'started';
   openGroup(initGroup);

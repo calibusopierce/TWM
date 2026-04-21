@@ -47,6 +47,14 @@ function serializeRow(array $row): array {
         elseif (isset($row[$f]) && is_string($row[$f]) && $row[$f]) $row[$f] = $row[$f];
         else $row[$f] = null;
     }
+    // In your serializeRow() function, add this at the end before return:
+foreach ($row as $k => $v) {
+    if (is_string($v)) {
+        // Strip control characters (newlines, tabs, etc.) that break HTML attributes
+        $row[$k] = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $v);
+    }
+}
+return $row;
     return $row;
 }
 
@@ -495,9 +503,9 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             $picPath  = trim($emp['Picture']??'');
             if ($picPath && !str_starts_with($picPath,'/')) $picPath = '/TWM/tradewellportal/'.$picPath;
             $hasPic   = !empty($picPath);
-            $empJson  = json_encode($emp, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT);
+            $empJson = json_encode($emp, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
         ?>
-          <tr class="emp-row" data-emp='<?= $empJson ?: "{}" ?>'
+          <tr class="emp-row" data-emp="<?= htmlspecialchars($empJson ?: '{}', ENT_QUOTES, 'UTF-8') ?>"
               data-bs-toggle="modal" data-bs-target="#empDetailModal">
             <td>
               <div class="emp-name-wrap">

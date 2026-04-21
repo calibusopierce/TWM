@@ -276,6 +276,14 @@ $department  = $_SESSION['Department']  ?? '';
       <div class="card-desc">Visual analytics and charts for fleet fuel data</div>
     </a>
     <?php endif; ?>
+    
+    <?php if (in_array($userType, ['Admin', 'Administrator'])): ?>
+    <a href="<?= route('po_index') ?>" class="hub-card">
+      <i class="bi bi-receipt-cutoff card-icon" style="color:#a78bfa;"></i>
+      <div class="card-name">Purchase Orders</div>
+      <div class="card-desc">Create, manage and print company POs by category</div>
+    </a>
+    <?php endif; ?>
 
     <a href="<?= route('help') ?>" class="hub-card">
       <i class="bi bi-book-fill card-icon blue"></i>

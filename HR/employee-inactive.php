@@ -7,8 +7,17 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 header('Content-Type: text/html; charset=UTF-8');
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
-auth_check(['Admin', 'Administrator', 'HR']);
+auth_check();
+
+// ── RBAC gate ────────────────────────────────────────────────
+$pdo_rbac = new PDO(
+    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+    null, null,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+rbac_gate($pdo_rbac, 'employee_list');
 
 // ── Session context ────────────────────────────────────────────
 $_userType = $_SESSION['UserType'] ?? '';
@@ -26,22 +35,22 @@ if (isset($_GET['export']) && $_GET['export'] === 'excel') {
     $viewAllE      = ($isAdmin && $_sessionDeptE === '');
 
     $expParams = [];
-    $expWhere  = "WHERE Active = 0";
+    $expWhere  = "WHERE e.Active = 0";
     if (!$viewAllE && $_sessionDeptE !== '') {
-        $expWhere   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $expWhere   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $expParams[] = '%' . $_sessionDeptE . '%';
     }
     if ($viewAllE && $exportDept !== '') {
-        $expWhere   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $expWhere   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $expParams[] = '%' . $exportDept . '%';
     }
     if ($exportSearch !== '') {
         $sp = "%{$exportSearch}%";
-        $expWhere .= " AND (LastName LIKE ? OR FirstName LIKE ? OR EmployeeID LIKE ? OR Department LIKE ? OR Position_held LIKE ? OR Branch LIKE ?)";
+        $expWhere .= " AND (e.LastName LIKE ? OR e.FirstName LIKE ? OR e.EmployeeID LIKE ? OR e.Department LIKE ? OR e.Position_held LIKE ? OR e.Branch LIKE ?)";
         array_push($expParams, $sp, $sp, $sp, $sp, $sp, $sp);
     }
 
-    $expSql  = "SELECT FileNo, EmployeeID, LastName, FirstName, MiddleName, Department, Position_held, Job_tittle, Category, Branch, Hired_date, Date_Of_Seperation, Employee_Status, SSS_Number, TIN_Number, Philhealth_Number, HDMF, Mobile_Number, Phone_Number, Email_Address, Birth_date, Birth_Place, Civil_Status, Gender, Nationality, Religion, Present_Address, Permanent_Address, Contact_Person, Relationship, Contact_Number_Emergency, Educational_Background, Notes, Active, Blacklisted FROM [dbo].[TBL_HREmployeeList] {$expWhere} ORDER BY LastName, FirstName";
+    $expSql  = "SELECT e.FileNo, e.EmployeeID, e.EmployeeID1, e.OfficeID, o.OfficeName, e.LastName, e.FirstName, e.MiddleName, e.Department, e.Position_held, e.Job_tittle, e.Category, e.Branch, e.Hired_date, e.Date_Of_Seperation, e.Employee_Status, e.SSS_Number, e.TIN_Number, e.Philhealth_Number, e.HDMF, e.Mobile_Number, e.Phone_Number, e.Email_Address, e.Birth_date, e.Birth_Place, e.Civil_Status, e.Gender, e.Nationality, e.Religion, e.Present_Address, e.Permanent_Address, e.Contact_Person, e.Relationship, e.Contact_Number_Emergency, e.Educational_Background, e.Notes, e.Active, e.Blacklisted FROM [dbo].[TBL_HREmployeeList] e LEFT JOIN [dbo].[Tbl_Office_Information] o ON o.[ID] = e.OfficeID {$expWhere} ORDER BY e.LastName, e.FirstName";
     $expStmt = sqlsrv_query($conn, $expSql, $expParams);
 
     $rows = [];
@@ -65,14 +74,15 @@ if (isset($_GET['export']) && $_GET['export'] === 'excel') {
 
     echo '<table border="1">';
     echo '<tr style="background:#475569;color:#fff;font-weight:bold;">';
-    $headers = ['File No','Employee ID','Last Name','First Name','Middle Name','Department','Position','Job Title','Category','Branch','Hired Date','Separation Date','Employee Status','SSS No','TIN No','PhilHealth','HDMF','Mobile','Phone','Email','Birth Date','Birth Place','Civil Status','Gender','Nationality','Religion','Present Address','Permanent Address','Emergency Contact','Relationship','Emergency No','Education','Notes','Active','Blacklisted'];
+    $headers = ['File No','Assigned ID','System ID','Last Name','First Name','Middle Name','Office','Department','Position','Job Title','Category','Branch','Hired Date','Separation Date','Employee Status','SSS No','TIN No','PhilHealth','HDMF','Mobile','Phone','Email','Birth Date','Birth Place','Civil Status','Gender','Nationality','Religion','Present Address','Permanent Address','Emergency Contact','Relationship','Emergency No','Education','Notes','Active','Blacklisted'];
     foreach ($headers as $h) echo "<th>" . htmlspecialchars($h) . "</th>";
     echo '</tr>';
 
     foreach ($rows as $r) {
         echo '<tr>';
         $cols = [
-            $r['FileNo'], $r['EmployeeID'], $r['LastName'], $r['FirstName'], $r['MiddleName'],
+            $r['FileNo'], $r['EmployeeID1'], $r['EmployeeID'], $r['LastName'], $r['FirstName'], $r['MiddleName'],
+            $r['OfficeName'],
             $r['Department'], $r['Position_held'], $r['Job_tittle'], $r['Category'], $r['Branch'],
             $fmtD($r['Hired_date']), $fmtD($r['Date_Of_Seperation']), $r['Employee_Status'],
             $r['SSS_Number'], $r['TIN_Number'], $r['Philhealth_Number'], $r['HDMF'],
@@ -105,7 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
     // ─── UPDATE ───────────────────────────────────────────────
     if ($action === 'update' && $fileNo > 0) {
         $fields = [
-            'EmployeeID'               => $sp('EmployeeID'),
+            'EmployeeID1'              => $sp('EmployeeID1'),
             'OfficeID'                 => $sp('OfficeID'),
             'Department'               => $sp('Department'),
             'Position_held'            => $sp('Position_held'),
@@ -220,19 +230,19 @@ $activeDept   = $_sessionDept;
 function buildWhere(bool $viewAll, string $userDept, string $search, string $deptFilter, array &$params): string
 {
     $params = [];
-    $where  = "WHERE Active = 0";
+    $where  = "WHERE e.Active = 0";
 
     if (!$viewAll && $userDept !== '') {
-        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $where   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $params[] = '%' . $userDept . '%';
     }
     if ($viewAll && $deptFilter !== '') {
-        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $where   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $params[] = '%' . $deptFilter . '%';
     }
     if ($search !== '') {
         $sp = "%{$search}%";
-        $where .= " AND (LastName LIKE ? OR FirstName LIKE ? OR EmployeeID LIKE ? OR Department LIKE ? OR Position_held LIKE ? OR Branch LIKE ?)";
+        $where .= " AND (e.LastName LIKE ? OR e.FirstName LIKE ? OR e.EmployeeID LIKE ? OR e.Department LIKE ? OR e.Position_held LIKE ? OR e.Branch LIKE ?)";
         array_push($params, $sp, $sp, $sp, $sp, $sp, $sp);
     }
     return $where;
@@ -242,7 +252,7 @@ $params = [];
 $where  = buildWhere($viewAll, $activeDept, $search, $deptFilter, $params);
 
 // ── Total count ────────────────────────────────────────────────
-$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] {$where}";
+$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] e {$where}";
 $countStmt = sqlsrv_query($conn, $countSql, $params);
 $totalRows = 0;
 if ($countStmt) {
@@ -255,25 +265,27 @@ $totalPages = max(1, (int)ceil($totalRows / $perPage));
 // ── Fetch employees ────────────────────────────────────────────
 $sql = "
     SELECT
-        FileNo, EmployeeID, EmployeeID1, OfficeID,
-        Department, Position_held, Job_tittle, Category,
-        CONVERT(varchar(10), Hired_date, 23)        AS Hired_date,
-        CONVERT(varchar(10), Date_Of_Seperation, 23) AS Date_Of_Seperation,
-        Employee_Status,
-        LastName, FirstName, MiddleName,
-        Permanent_Address, Present_Address,
-        SSS_Number, TIN_Number, Philhealth_Number, HDMF,
-        Phone_Number, Mobile_Number, Email_Address,
-        CONVERT(varchar(10), Birth_date, 23) AS Birth_date,
-        Birth_Place, Civil_Status, Gender,
-        Nationality, Religion, Relationship,
-        Contact_Person, Contact_Number_Emergency,
-        Notes, Educational_Background,
-        Picture, IDPicture, Signature,
-        Active, Blacklisted, System, Branch, SortNo, CutOff
-    FROM [dbo].[TBL_HREmployeeList]
+        e.FileNo, e.EmployeeID, e.EmployeeID1, e.OfficeID,
+        o.OfficeName,
+        e.Department, e.Position_held, e.Job_tittle, e.Category,
+        CONVERT(varchar(10), e.Hired_date, 23)        AS Hired_date,
+        CONVERT(varchar(10), e.Date_Of_Seperation, 23) AS Date_Of_Seperation,
+        e.Employee_Status,
+        e.LastName, e.FirstName, e.MiddleName,
+        e.Permanent_Address, e.Present_Address,
+        e.SSS_Number, e.TIN_Number, e.Philhealth_Number, e.HDMF,
+        e.Phone_Number, e.Mobile_Number, e.Email_Address,
+        CONVERT(varchar(10), e.Birth_date, 23) AS Birth_date,
+        e.Birth_Place, e.Civil_Status, e.Gender,
+        e.Nationality, e.Religion, e.Relationship,
+        e.Contact_Person, e.Contact_Number_Emergency,
+        e.Notes, e.Educational_Background,
+        e.Picture, e.IDPicture, e.Signature,
+        e.Active, e.Blacklisted, e.System, e.Branch, e.SortNo, e.CutOff
+    FROM [dbo].[TBL_HREmployeeList] e
+    LEFT JOIN [dbo].[Tbl_Office_Information] o ON o.[ID] = e.OfficeID
     {$where}
-    ORDER BY LastName, FirstName
+    ORDER BY e.LastName, e.FirstName
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 ";
 
@@ -311,6 +323,11 @@ if ($deptStmt) {
     }
     sqlsrv_free_stmt($deptStmt);
 }
+
+// ── Offices for dropdown ───────────────────────────────────────
+$officeStmt = sqlsrv_query($conn, "SELECT [ID], [OfficeName] FROM [dbo].[Tbl_Office_Information] ORDER BY [OfficeName]");
+$offices = [];
+if ($officeStmt) { while ($or = sqlsrv_fetch_array($officeStmt, SQLSRV_FETCH_ASSOC)) $offices[] = $or; sqlsrv_free_stmt($officeStmt); }
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtDate($d): string
@@ -369,9 +386,9 @@ $exportUrl = '?export=excel&search=' . urlencode($search) . ($viewAll && $deptFi
 
     /* ── Employee table ── */
     .emp-avatar {
-      width: 38px; height: 38px; border-radius: 50%;
+      width: 76px; height: 76px; border-radius: 50%;
       display: inline-flex; align-items: center; justify-content: center;
-      font-size: .78rem; font-weight: 800; color: #fff;
+      font-size: 1rem; font-weight: 800; color: #fff;
       flex-shrink: 0; object-fit: cover;
       border: 2px solid rgba(255,255,255,.6);
       box-shadow: 0 2px 6px rgba(0,0,0,.15);
@@ -447,14 +464,14 @@ $exportUrl = '?export=excel&search=' . urlencode($search) . ($viewAll && $deptFi
       padding: 1.25rem 1.5rem; border-bottom: 1px solid #f1f5f9;
     }
     .modal-avatar {
-      width: 64px; height: 64px; border-radius: 50%;
+      width: 128px; height: 128px; border-radius: 50%;
       object-fit: cover; border: 3px solid #e2e8f0;
       flex-shrink: 0; filter: grayscale(40%);
     }
     .modal-avatar-initials {
-      width: 64px; height: 64px; border-radius: 50%;
+      width: 128px; height: 128px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1.3rem; font-weight: 800; color: #fff; flex-shrink: 0;
+      font-size: 2rem; font-weight: 800; color: #fff; flex-shrink: 0;
     }
     .modal-emp-name { font-size: 1.1rem; font-weight: 800; color: #0f172a; }
     .modal-emp-role { font-size: .82rem; color: #64748b; margin-top: .15rem; }
@@ -696,8 +713,8 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
               </div>
             </td>
             <td>
-              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID'] ?? '—') ?></div>
-              <div class="emp-sub">File: <?= htmlspecialchars($emp['FileNo'] ?? '—') ?></div>
+              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID1'] ?? $emp['EmployeeID'] ?? '—') ?></div>
+              <div class="emp-sub">Sys: <?= htmlspecialchars($emp['EmployeeID'] ?? '—') ?> · File: <?= htmlspecialchars($emp['FileNo'] ?? '—') ?></div>
             </td>
             <td>
               <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['Department'] ?? '—') ?></div>
@@ -792,15 +809,39 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <div class="detail-grid-3">
             <?php
             $idFields = [
-              'EmployeeID'        => ['Employee ID',     'text',  false],
-              'FileNo'            => ['File No',         'text',  true],   // readonly
-              'OfficeID'          => ['Office ID',       'text',  false],
+              'EmployeeID1'       => ['Assigned ID',    'text',  false],
+              'EmployeeID'        => ['System ID',      'text',  true],   // readonly
+              'FileNo'            => ['File No',        'text',  true],   // readonly
+            ];
+            foreach ($idFields as $field => [$label, $type, $readonly]) {
+              $ro = $readonly ? 'readonly' : '';
+              echo "<div class=\"detail-item\">
+                <label>{$label}</label>
+                <span class=\"view-val\" id=\"v-{$field}\">—</span>
+                <div class=\"edit-ctrl\"><input type=\"{$type}\" id=\"e-{$field}\" name=\"{$field}\" {$ro}></div>
+              </div>";
+            }
+            ?>
+            <div class="detail-item">
+              <label>Office</label>
+              <span class="view-val" id="v-OfficeName">—</span>
+              <div class="edit-ctrl">
+                <select id="e-OfficeID" name="OfficeID">
+                  <option value="">— Select Office —</option>
+                  <?php foreach ($offices as $off): ?>
+                  <option value="<?= htmlspecialchars($off['ID']) ?>"><?= htmlspecialchars($off['OfficeName']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+            </div>
+            <?php
+            $idFieldsExtra = [
               'SSS_Number'        => ['SSS Number',      'text',  false],
               'TIN_Number'        => ['TIN Number',      'text',  false],
               'Philhealth_Number' => ['PhilHealth',      'text',  false],
               'HDMF'              => ['HDMF / Pag-IBIG', 'text',  false],
             ];
-            foreach ($idFields as $field => [$label, $type, $readonly]) {
+            foreach ($idFieldsExtra as $field => [$label, $type, $readonly]) {
               $ro = $readonly ? 'readonly' : '';
               echo "<div class=\"detail-item\">
                 <label>{$label}</label>
@@ -1104,7 +1145,8 @@ function setEditVal(id, raw) {
 // ── Date fields ────────────────────────────────────────────────
 const DATE_FIELDS = ['Hired_date','Date_Of_Seperation','Birth_date'];
 const ALL_FIELDS  = [
-  'EmployeeID','FileNo','OfficeID','SSS_Number','TIN_Number','Philhealth_Number','HDMF',
+  'EmployeeID1','EmployeeID','FileNo','OfficeID',
+  'SSS_Number','TIN_Number','Philhealth_Number','HDMF',
   'Department','Position_held','Job_tittle','Category','Branch','System',
   'Hired_date','Date_Of_Seperation','Employee_Status','CutOff',
   'LastName','FirstName','MiddleName','Birth_date','Birth_Place',
@@ -1164,6 +1206,10 @@ function populateModal(emp) {
     }
     if (document.getElementById('e-' + f)) setEditVal(f, raw);  // guard admin-only inputs
   });
+  // Office: display OfficeName in view, set OfficeID in select
+  setViewVal('OfficeName', emp.OfficeName || null);
+  const offSel = document.getElementById('e-OfficeID');
+  if (offSel) offSel.value = emp.OfficeID != null ? String(emp.OfficeID) : '';
 }
 
 // ── Edit mode ──────────────────────────────────────────────────
@@ -1205,6 +1251,12 @@ async function saveEmp() {
         const el = document.getElementById('e-' + f);
         if (el) _currentEmp[f] = el.value;
       });
+      // Sync OfficeName from the select's selected text
+      const offSel = document.getElementById('e-OfficeID');
+      if (offSel) {
+        const selOpt = offSel.options[offSel.selectedIndex];
+        _currentEmp.OfficeName = (selOpt && selOpt.value) ? selOpt.text : null;
+      }
       exitEditMode();
       populateModal(_currentEmp);
       // ── Update the matching table row's data-emp + visible cells
@@ -1321,9 +1373,10 @@ function printProfile() {
     {
       title: 'Identification',
       fields: [
-        ['Employee ID',    fmt(emp.EmployeeID)],
+        ['Assigned ID',    fmt(emp.EmployeeID1)],
+        ['System ID',      fmt(emp.EmployeeID)],
         ['File No',        fmt(emp.FileNo)],
-        ['Office ID',      fmt(emp.OfficeID)],
+        ['Office',         fmt(emp.OfficeName)],
         ['SSS Number',     fmt(emp.SSS_Number)],
         ['TIN Number',     fmt(emp.TIN_Number)],
         ['PhilHealth',     fmt(emp.Philhealth_Number)],
@@ -1419,6 +1472,7 @@ function printList() {
     const fmtD = v => fmtDate(v) || '—';
     tableRows += `<tr>
       <td>${fmt(emp.LastName)}, ${fmt(emp.FirstName)}</td>
+      <td>${fmt(emp.EmployeeID1)}</td>
       <td>${fmt(emp.EmployeeID)}</td>
       <td>${fmt(emp.Department)}</td>
       <td>${fmt(emp.Position_held)}</td>
@@ -1441,7 +1495,7 @@ function printList() {
     <table class="print-list-table">
       <thead>
         <tr>
-          <th>Name</th><th>Employee ID</th><th>Department</th><th>Position</th>
+          <th>Name</th><th>Assigned ID</th><th>System ID</th><th>Department</th><th>Position</th>
           <th>Branch</th><th>Hired</th><th>Separated</th><th>Status</th><th>Contact</th>
         </tr>
       </thead>

@@ -7,8 +7,17 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 header('Content-Type: text/html; charset=UTF-8');
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
-auth_check(['Admin', 'Administrator', 'HR']);
+auth_check();
+
+// ── RBAC gate ────────────────────────────────────────────────
+$pdo_rbac = new PDO(
+    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+    null, null,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+rbac_gate($pdo_rbac, 'employee_list');
 
 // ── Session context ────────────────────────────────────────────
 $_userType = $_SESSION['UserType'] ?? '';
@@ -33,24 +42,17 @@ function buildWhere(bool $viewAll, string $userDept, string $search, string $dep
 
     // Blacklisted flag 
     $where = "WHERE (
-        Blacklisted = 1
+        e.Blacklisted = 1
     )";
-
-    // Blacklisted flag OR AWOL via Employee_Status or Notes
-    // $where = "WHERE (
-    //    Blacklisted = 1
-    //    OR UPPER(LTRIM(RTRIM(Employee_Status))) LIKE '%AWOL%'
-    //    OR UPPER(LTRIM(RTRIM(Notes)))           LIKE '%AWOL%'
-    //     )";
 
     // Department scope
     if (!$viewAll && $userDept !== '') {
-        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $where   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $params[] = '%' . $userDept . '%';
     }
 
     if ($viewAll && $deptFilter !== '') {
-        $where   .= " AND LTRIM(RTRIM(Department)) LIKE ?";
+        $where   .= " AND LTRIM(RTRIM(e.Department)) LIKE ?";
         $params[] = '%' . $deptFilter . '%';
     }
 
@@ -58,9 +60,9 @@ function buildWhere(bool $viewAll, string $userDept, string $search, string $dep
     if ($search !== '') {
         $sp = "%{$search}%";
         $where .= " AND (
-            LastName      LIKE ? OR FirstName     LIKE ? OR
-            EmployeeID    LIKE ? OR Department    LIKE ? OR
-            Position_held LIKE ? OR Branch        LIKE ?
+            e.LastName      LIKE ? OR e.FirstName     LIKE ? OR
+            e.EmployeeID    LIKE ? OR e.Department    LIKE ? OR
+            e.Position_held LIKE ? OR e.Branch        LIKE ?
         )";
         array_push($params, $sp, $sp, $sp, $sp, $sp, $sp);
     }
@@ -72,7 +74,7 @@ $params = [];
 $where  = buildWhere($viewAll, $activeDept, $search, $deptFilter, $params);
 
 // ── Total count ────────────────────────────────────────────────
-$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] {$where}";
+$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] e {$where}";
 $countStmt = sqlsrv_query($conn, $countSql, $params);
 $totalRows = 0;
 if ($countStmt) {
@@ -85,25 +87,27 @@ $totalPages = max(1, (int)ceil($totalRows / $perPage));
 // ── Fetch employees ────────────────────────────────────────────
 $sql = "
     SELECT
-        FileNo, EmployeeID, EmployeeID1, OfficeID,
-        Department, Position_held, Job_tittle, Category,
-        CONVERT(varchar(10), Hired_date, 23)        AS Hired_date,
-        CONVERT(varchar(10), Date_Of_Seperation, 23) AS Date_Of_Seperation,
-        Employee_Status,
-        LastName, FirstName, MiddleName,
-        Permanent_Address, Present_Address,
-        SSS_Number, TIN_Number, Philhealth_Number, HDMF,
-        Phone_Number, Mobile_Number, Email_Address,
-        CONVERT(varchar(10), Birth_date, 23) AS Birth_date,
-        Birth_Place, Civil_Status, Gender,
-        Nationality, Religion, Relationship,
-        Contact_Person, Contact_Number_Emergency,
-        Notes, Educational_Background,
-        Picture, IDPicture, Signature,
-        Active, Blacklisted, System, Branch, SortNo, CutOff
-    FROM [dbo].[TBL_HREmployeeList]
+        e.FileNo, e.EmployeeID, e.EmployeeID1, e.OfficeID,
+        o.OfficeName,
+        e.Department, e.Position_held, e.Job_tittle, e.Category,
+        CONVERT(varchar(10), e.Hired_date, 23)        AS Hired_date,
+        CONVERT(varchar(10), e.Date_Of_Seperation, 23) AS Date_Of_Seperation,
+        e.Employee_Status,
+        e.LastName, e.FirstName, e.MiddleName,
+        e.Permanent_Address, e.Present_Address,
+        e.SSS_Number, e.TIN_Number, e.Philhealth_Number, e.HDMF,
+        e.Phone_Number, e.Mobile_Number, e.Email_Address,
+        CONVERT(varchar(10), e.Birth_date, 23) AS Birth_date,
+        e.Birth_Place, e.Civil_Status, e.Gender,
+        e.Nationality, e.Religion, e.Relationship,
+        e.Contact_Person, e.Contact_Number_Emergency,
+        e.Notes, e.Educational_Background,
+        e.Picture, e.IDPicture, e.Signature,
+        e.Active, e.Blacklisted, e.System, e.Branch, e.SortNo, e.CutOff
+    FROM [dbo].[TBL_HREmployeeList] e
+    LEFT JOIN [dbo].[Tbl_Office_Information] o ON o.[ID] = e.OfficeID
     {$where}
-    ORDER BY LastName, FirstName
+    ORDER BY e.LastName, e.FirstName
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 ";
 
@@ -143,6 +147,11 @@ if ($deptStmt) {
     }
     sqlsrv_free_stmt($deptStmt);
 }
+
+// ── Offices list ───────────────────────────────────────────────
+$officeStmt = sqlsrv_query($conn, "SELECT [ID], [OfficeName] FROM [dbo].[Tbl_Office_Information] ORDER BY [OfficeName]");
+$offices = [];
+if ($officeStmt) { while ($or = sqlsrv_fetch_array($officeStmt, SQLSRV_FETCH_ASSOC)) $offices[] = $or; sqlsrv_free_stmt($officeStmt); }
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtDate($d): string
@@ -194,9 +203,9 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
 
     /* ── Employee table ── */
     .emp-avatar {
-      width: 38px; height: 38px; border-radius: 50%;
+      width: 76px; height: 76px; border-radius: 50%;
       display: inline-flex; align-items: center; justify-content: center;
-      font-size: .78rem; font-weight: 800; color: #fff;
+      font-size: 1rem; font-weight: 800; color: #fff;
       flex-shrink: 0; object-fit: cover;
       border: 2px solid rgba(255,255,255,.6);
       box-shadow: 0 2px 6px rgba(0,0,0,.15);
@@ -270,14 +279,14 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       padding: 1.25rem 1.5rem; border-bottom: 1px solid #f1f5f9;
     }
     .modal-avatar {
-      width: 64px; height: 64px; border-radius: 50%;
+      width: 128px; height: 128px; border-radius: 50%;
       object-fit: cover; border: 3px solid #fecaca;
       flex-shrink: 0; filter: grayscale(30%);
     }
     .modal-avatar-initials {
-      width: 64px; height: 64px; border-radius: 50%;
+      width: 128px; height: 128px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1.3rem; font-weight: 800; color: #fff;
+      font-size: 2rem; font-weight: 800; color: #fff;
       flex-shrink: 0;
     }
     .modal-emp-name { font-size: 1.1rem; font-weight: 800; color: #0f172a; }
@@ -446,8 +455,8 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
               </div>
             </td>
             <td>
-              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID'] ?? '—') ?></div>
-              <div class="emp-sub">File: <?= htmlspecialchars($emp['FileNo'] ?? '—') ?></div>
+              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID1'] ?? $emp['EmployeeID'] ?? '—') ?></div>
+              <div class="emp-sub">Sys: <?= htmlspecialchars($emp['EmployeeID'] ?? '—') ?> · File: <?= htmlspecialchars($emp['FileNo'] ?? '—') ?></div>
             </td>
             <td>
               <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['Department'] ?? '—') ?></div>
@@ -547,9 +556,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
         <div class="detail-section">
           <div class="detail-section-title"><i class="bi bi-fingerprint"></i> Identification</div>
           <div class="detail-grid-3">
-            <div class="detail-item"><label>Employee ID</label><span id="d-EmployeeID">—</span></div>
+            <div class="detail-item"><label>Assigned ID</label><span id="d-EmployeeID1">—</span></div>
+            <div class="detail-item"><label>System ID</label><span id="d-EmployeeID">—</span></div>
             <div class="detail-item"><label>File No</label><span id="d-FileNo">—</span></div>
-            <div class="detail-item"><label>Office ID</label><span id="d-OfficeID">—</span></div>
+            <div class="detail-item"><label>Office</label><span id="d-OfficeName">—</span></div>
             <div class="detail-item"><label>SSS Number</label><span id="d-SSS_Number">—</span></div>
             <div class="detail-item"><label>TIN Number</label><span id="d-TIN_Number">—</span></div>
             <div class="detail-item"><label>PhilHealth</label><span id="d-Philhealth_Number">—</span></div>
@@ -706,9 +716,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Populate fields
     const fields = {
+      'EmployeeID1':             val(emp.EmployeeID1),
       'EmployeeID':              val(emp.EmployeeID),
       'FileNo':                  val(emp.FileNo),
-      'OfficeID':                val(emp.OfficeID),
+      'OfficeName':              val(emp.OfficeName),
       'SSS_Number':              val(emp.SSS_Number),
       'TIN_Number':              val(emp.TIN_Number),
       'Philhealth_Number':       val(emp.Philhealth_Number),

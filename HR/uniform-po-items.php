@@ -3,8 +3,17 @@
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
-auth_check(['Admin', 'Administrator', 'HR']);
+auth_check();
+
+// ── RBAC gate ────────────────────────────────────────────────
+$pdo_rbac = new PDO(
+    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+    null, null,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+rbac_gate($pdo_rbac, 'uniform_inventory');
 
 function rqItems($conn2,$sql,$p=[]) {
     $stmt = empty($p) ? sqlsrv_query($conn2,$sql) : sqlsrv_query($conn2,$sql,$p);

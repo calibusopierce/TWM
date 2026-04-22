@@ -16,11 +16,20 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 header('Content-Type: text/html; charset=UTF-8');
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
-auth_check(['Admin', 'Administrator', 'HR' ]);
+auth_check();
+
+// ── RBAC gate ────────────────────────────────────────────────
+$pdo_rbac = new PDO(
+    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+    null, null,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+rbac_gate($pdo_rbac, 'employee_list');
 
 $_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator']);
+$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
 
 // ── FIX: Define $viewAll / $activeDept BEFORE the POST handler ─
 $_sessionDept = trim($_SESSION['Department'] ?? '');
@@ -29,12 +38,12 @@ $activeDept   = $_sessionDept;
 
 // ── buildWhere also needs to be available in the POST handler ──
 function buildWhere(bool $viewAll, string $userDept, string $search, string $deptFilter, array &$params): string {
-    $params = []; $where = "WHERE Active = 1";
-    if (!$viewAll && $userDept !== '') { $where .= " AND LTRIM(RTRIM(Department)) LIKE ?"; $params[] = '%'.$userDept.'%'; }
-    if ($viewAll && $deptFilter !== '') { $where .= " AND LTRIM(RTRIM(Department)) LIKE ?"; $params[] = '%'.$deptFilter.'%'; }
+    $params = []; $where = "WHERE e.Active = 1";
+    if (!$viewAll && $userDept !== '') { $where .= " AND LTRIM(RTRIM(e.Department)) LIKE ?"; $params[] = '%'.$userDept.'%'; }
+    if ($viewAll && $deptFilter !== '') { $where .= " AND LTRIM(RTRIM(e.Department)) LIKE ?"; $params[] = '%'.$deptFilter.'%'; }
     if ($search !== '') {
         $sp = "%{$search}%";
-        $where .= " AND (LastName LIKE ? OR FirstName LIKE ? OR EmployeeID LIKE ? OR Department LIKE ? OR Position_held LIKE ? OR Branch LIKE ?)";
+        $where .= " AND (e.LastName LIKE ? OR e.FirstName LIKE ? OR e.EmployeeID LIKE ? OR e.Department LIKE ? OR e.Position_held LIKE ? OR e.Branch LIKE ?)";
         array_push($params, $sp,$sp,$sp,$sp,$sp,$sp);
     }
     return $where;
@@ -47,14 +56,11 @@ function serializeRow(array $row): array {
         elseif (isset($row[$f]) && is_string($row[$f]) && $row[$f]) $row[$f] = $row[$f];
         else $row[$f] = null;
     }
-    // In your serializeRow() function, add this at the end before return:
-foreach ($row as $k => $v) {
-    if (is_string($v)) {
-        // Strip control characters (newlines, tabs, etc.) that break HTML attributes
-        $row[$k] = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $v);
+    foreach ($row as $k => $v) {
+        if (is_string($v)) {
+            $row[$k] = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $v);
+        }
     }
-}
-return $row;
     return $row;
 }
 
@@ -75,6 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
         $sp_fn = fn(string $k) => isset($_POST[$k]) ? trim($_POST[$k]) : null;
 
         $stringFields = [
+            'EmployeeID1',
             'OfficeID','SSS_Number','TIN_Number','Philhealth_Number','HDMF',
             'LastName','FirstName','MiddleName',
             'Department','Position_held','Job_tittle','Category',
@@ -187,21 +194,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
         $exportWhere  = buildWhere($viewAll, $activeDept, $exportSearch, $exportDept, $exportParams);
 
         $exportSql = "
-            SELECT FileNo, EmployeeID, LastName, FirstName, MiddleName,
-                Department, Position_held, Job_tittle, Category, Branch, System,
-                Employee_Status,
-                CONVERT(varchar(10), Hired_date, 23)           AS Hired_date,
-                CONVERT(varchar(10), Date_Of_Seperation, 23)   AS Date_Of_Seperation,
-                SSS_Number, TIN_Number, Philhealth_Number, HDMF,
-                Mobile_Number, Phone_Number, Email_Address,
-                Present_Address, Permanent_Address,
-                CONVERT(varchar(10), Birth_date, 23)           AS Birth_date,
-                Birth_Place, Gender, Civil_Status, Nationality, Religion,
-                Contact_Person, Relationship, Contact_Number_Emergency,
-                Educational_Background, Notes, Active, Blacklisted
-            FROM [dbo].[TBL_HREmployeeList]
+            SELECT e.FileNo, e.EmployeeID, e.EmployeeID1, e.OfficeID, o.OfficeName,
+                e.LastName, e.FirstName, e.MiddleName,
+                e.Department, e.Position_held, e.Job_tittle, e.Category, e.Branch, e.System,
+                e.Employee_Status,
+                CONVERT(varchar(10), e.Hired_date, 23)           AS Hired_date,
+                CONVERT(varchar(10), e.Date_Of_Seperation, 23)   AS Date_Of_Seperation,
+                e.SSS_Number, e.TIN_Number, e.Philhealth_Number, e.HDMF,
+                e.Mobile_Number, e.Phone_Number, e.Email_Address,
+                e.Present_Address, e.Permanent_Address,
+                CONVERT(varchar(10), e.Birth_date, 23)           AS Birth_date,
+                e.Birth_Place, e.Gender, e.Civil_Status, e.Nationality, e.Religion,
+                e.Contact_Person, e.Relationship, e.Contact_Number_Emergency,
+                e.Educational_Background, e.Notes, e.Active, e.Blacklisted
+            FROM [dbo].[TBL_HREmployeeList] e
+            LEFT JOIN [dbo].[Tbl_Office_Information] o ON o.[ID] = e.OfficeID
             {$exportWhere}
-            ORDER BY LastName, FirstName";
+            ORDER BY e.LastName, e.FirstName";
 
         $exportStmt = sqlsrv_query($conn, $exportSql, $exportParams);
         $rows = [];
@@ -229,29 +238,32 @@ $deptFilter = trim($_GET['dept']             ?? '');
 
 $params = []; $where = buildWhere($viewAll, $activeDept, $search, $deptFilter, $params);
 
-$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] {$where}";
+$countSql  = "SELECT COUNT(*) AS total FROM [dbo].[TBL_HREmployeeList] e {$where}";
 $countStmt = sqlsrv_query($conn, $countSql, $params);
 $totalRows = 0;
 if ($countStmt) { $cr = sqlsrv_fetch_array($countStmt, SQLSRV_FETCH_ASSOC); $totalRows = (int)($cr['total'] ?? 0); sqlsrv_free_stmt($countStmt); }
 $totalPages = max(1, (int)ceil($totalRows / $perPage));
 
 $sql = "
-    SELECT FileNo, EmployeeID, EmployeeID1, OfficeID,
-        Department, Position_held, Job_tittle, Category,
-        CONVERT(varchar(10), Hired_date, 23) AS Hired_date,
-        CONVERT(varchar(10), Date_Of_Seperation, 23) AS Date_Of_Seperation, Employee_Status,
-        LastName, FirstName, MiddleName,
-        Permanent_Address, Present_Address,
-        SSS_Number, TIN_Number, Philhealth_Number, HDMF,
-        Phone_Number, Mobile_Number, Email_Address,
-        CONVERT(varchar(10), Birth_date, 23) AS Birth_date, Birth_Place, Civil_Status, Gender,
-        Nationality, Religion, Relationship,
-        Contact_Person, Contact_Number_Emergency,
-        Notes, Educational_Background,
-        Picture, IDPicture, Signature,
-        Active, Blacklisted, System, Branch, SortNo, CutOff
-    FROM [dbo].[TBL_HREmployeeList] {$where}
-    ORDER BY LastName, FirstName
+    SELECT e.FileNo, e.EmployeeID, e.EmployeeID1, e.OfficeID,
+        o.OfficeName,
+        e.Department, e.Position_held, e.Job_tittle, e.Category,
+        CONVERT(varchar(10), e.Hired_date, 23) AS Hired_date,
+        CONVERT(varchar(10), e.Date_Of_Seperation, 23) AS Date_Of_Seperation, e.Employee_Status,
+        e.LastName, e.FirstName, e.MiddleName,
+        e.Permanent_Address, e.Present_Address,
+        e.SSS_Number, e.TIN_Number, e.Philhealth_Number, e.HDMF,
+        e.Phone_Number, e.Mobile_Number, e.Email_Address,
+        CONVERT(varchar(10), e.Birth_date, 23) AS Birth_date, e.Birth_Place, e.Civil_Status, e.Gender,
+        e.Nationality, e.Religion, e.Relationship,
+        e.Contact_Person, e.Contact_Number_Emergency,
+        e.Notes, e.Educational_Background,
+        e.Picture, e.IDPicture, e.Signature,
+        e.Active, e.Blacklisted, e.System, e.Branch, e.SortNo, e.CutOff
+    FROM [dbo].[TBL_HREmployeeList] e
+    LEFT JOIN [dbo].[Tbl_Office_Information] o ON o.[ID] = e.OfficeID
+    {$where}
+    ORDER BY e.LastName, e.FirstName
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY";
 
 $fetchParams = array_merge($params, [$offset, $perPage]);
@@ -263,6 +275,11 @@ if ($stmt) { while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $employe
 $deptStmt = sqlsrv_query($conn,"SELECT DepartmentName FROM [dbo].[Departments] WHERE Status = 1 ORDER BY DepartmentName");
 $departments = [];
 if ($deptStmt) { while ($dr = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) $departments[] = $dr['DepartmentName']; sqlsrv_free_stmt($deptStmt); }
+
+// Fetch offices for dropdown
+$officeStmt = sqlsrv_query($conn, "SELECT [ID], [OfficeName] FROM [dbo].[Tbl_Office_Information] ORDER BY [OfficeName]");
+$offices = [];
+if ($officeStmt) { while ($or = sqlsrv_fetch_array($officeStmt, SQLSRV_FETCH_ASSOC)) $offices[] = $or; sqlsrv_free_stmt($officeStmt); }
 
 function fmtDate($d): string { if ($d instanceof DateTime) return $d->format('M j, Y'); if (is_string($d) && $d) return date('M j, Y', strtotime($d)); return '—'; }
 function initials(string $first, string $last): string { return strtoupper(substr($first,0,1).substr($last,0,1)); }
@@ -287,9 +304,9 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
   <style>
     /* ══ Employee Table ══════════════════════════════════════════ */
     .emp-avatar {
-      width:38px;height:38px;border-radius:50%;
+      width:76px;height:76px;border-radius:50%;
       display:inline-flex;align-items:center;justify-content:center;
-      font-size:.78rem;font-weight:800;color:#fff;flex-shrink:0;
+      font-size:1rem;font-weight:800;color:#fff;flex-shrink:0;
       object-fit:cover;border:2px solid rgba(255,255,255,.6);
       box-shadow:0 2px 6px rgba(0,0,0,.15);
     }
@@ -309,8 +326,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
     .detail-modal .modal-title{font-weight:700;color:#0f172a;font-size:1rem;}
     .detail-modal .btn-close{filter:none;opacity:.6;}
     .modal-avatar-wrap{display:flex;align-items:center;gap:1rem;padding:1.25rem 1.5rem;border-bottom:1px solid #f1f5f9;}
-    .modal-avatar{width:72px;height:72px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;flex-shrink:0;}
-    .modal-avatar-initials{width:72px;height:72px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:800;color:#fff;flex-shrink:0;}
+    .modal-avatar{width:144px;height:144px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;flex-shrink:0;}
+    .modal-avatar-initials{width:144px;height:144px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:800;color:#fff;flex-shrink:0;}
 
     /* Avatar upload overlay */
     .avatar-upload-wrap{position:relative;flex-shrink:0;cursor:pointer;}
@@ -380,8 +397,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       body > *:not(#printArea):not(#printListArea){display:none !important;}
       #printArea{display:block !important;font-family:'Segoe UI',sans-serif;color:#0f172a;padding:0;margin:0;}
       .print-header{display:flex;align-items:center;gap:1rem;padding:1rem 1.5rem;border-bottom:3px solid #1e40af;margin-bottom:1rem;}
-      .print-avatar{width:70px;height:70px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;}
-      .print-avatar-initials{width:70px;height:70px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:800;color:#fff;}
+      .print-avatar{width:140px;height:140px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;}
+      .print-avatar-initials{width:140px;height:140px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.5rem;font-weight:800;color:#fff;}
       .print-name{font-size:1.2rem;font-weight:800;}
       .print-role{font-size:.85rem;color:#475569;}
       .print-section{margin-bottom:1rem;padding:.75rem 1.5rem;page-break-inside:avoid;}
@@ -524,8 +541,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
               </div>
             </td>
             <td>
-              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID']??'—') ?></div>
-              <div class="emp-sub">File: <?= htmlspecialchars($emp['FileNo']??'—') ?></div>
+              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['EmployeeID1'] ?? $emp['EmployeeID'] ?? '—') ?></div>
+              <div class="emp-sub">Sys: <?= htmlspecialchars($emp['EmployeeID']??'—') ?> · File: <?= htmlspecialchars($emp['FileNo']??'—') ?></div>
             </td>
             <td>
               <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($emp['Department']??'—') ?></div>
@@ -638,9 +655,17 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             <span id="idMissingBadge" class="missing-count-badge ms-auto" style="display:none;"><i class="bi bi-exclamation-triangle-fill"></i> <span></span> empty</span>
           </div>
           <div class="detail-grid-3">
-            <div class="detail-item"><label>Employee ID</label><span class="d-val" id="d-EmployeeID">—</span><input class="d-input" id="e-EmployeeID" data-field="EmployeeID" readonly></div>
+            <div class="detail-item"><label>Assigned ID</label><span class="d-val" id="d-EmployeeID1">—</span><input class="d-input" id="e-EmployeeID1" data-field="EmployeeID1"></div>
+            <div class="detail-item"><label>System ID</label><span class="d-val" id="d-EmployeeID">—</span><input class="d-input" id="e-EmployeeID" data-field="EmployeeID" readonly></div>
             <div class="detail-item"><label>File No</label><span class="d-val" id="d-FileNo">—</span><input class="d-input" id="e-FileNo" data-field="FileNo" readonly></div>
-            <div class="detail-item"><label>Office ID</label><span class="d-val" id="d-OfficeID">—</span><input class="d-input" id="e-OfficeID" data-field="OfficeID"></div>
+            <div class="detail-item"><label>Office</label><span class="d-val" id="d-OfficeName">—</span>
+              <select class="d-input" id="e-OfficeID" data-field="OfficeID">
+                <option value="">— Select Office —</option>
+                <?php foreach ($offices as $off): ?>
+                <option value="<?= htmlspecialchars($off['ID']) ?>"><?= htmlspecialchars($off['OfficeName']) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
             <div class="detail-item"><label>SSS Number</label><span class="d-val" id="d-SSS_Number">—</span><input class="d-input" id="e-SSS_Number" data-field="SSS_Number"></div>
             <div class="detail-item"><label>TIN Number</label><span class="d-val" id="d-TIN_Number">—</span><input class="d-input" id="e-TIN_Number" data-field="TIN_Number"></div>
             <div class="detail-item"><label>PhilHealth</label><span class="d-val" id="d-Philhealth_Number">—</span><input class="d-input" id="e-Philhealth_Number" data-field="Philhealth_Number"></div>
@@ -786,6 +811,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ══ Config: fields that trigger "missing" warnings ════════════
   const REQUIRED_FIELDS = [
+    {field:'EmployeeID1',  label:'Assigned ID',    displayId:'d-EmployeeID1'},
+    {field:'OfficeName',   label:'Office',          displayId:'d-OfficeName'},
     {field:'SSS_Number',   label:'SSS Number'},
     {field:'TIN_Number',   label:'TIN Number'},
     {field:'Philhealth_Number', label:'PhilHealth Number'},
@@ -883,10 +910,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── Populate display spans ─────────────────────────────────
-    setVal('d-EmployeeID',        val(emp.EmployeeID));
-    setVal('d-FileNo',            val(emp.FileNo));
-    setVal('d-OfficeID',          val(emp.OfficeID));
-    setVal('d-SSS_Number',        val(emp.SSS_Number));
+    setVal('d-EmployeeID1',        val(emp.EmployeeID1));
+    setVal('d-EmployeeID',         val(emp.EmployeeID));
+    setVal('d-FileNo',             val(emp.FileNo));
+    setVal('d-OfficeName',         val(emp.OfficeName));
+    setVal('d-SSS_Number',         val(emp.SSS_Number));
     setVal('d-TIN_Number',        val(emp.TIN_Number));
     setVal('d-Philhealth_Number', val(emp.Philhealth_Number));
     setVal('d-HDMF',              val(emp.HDMF));
@@ -928,7 +956,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (el.type==='date') el.value = resolveDate(v)||'';
       else el.value = val(v)||'';
     }
-    ['EmployeeID','FileNo','OfficeID','SSS_Number','TIN_Number','Philhealth_Number','HDMF',
+    ['EmployeeID','FileNo','EmployeeID1','OfficeID','SSS_Number','TIN_Number','Philhealth_Number','HDMF',
      'LastName','FirstName','MiddleName','Department','Position_held','Job_tittle','Category',
      'Branch','System','Hired_date','Date_Of_Seperation','Employee_Status','CutOff',
      'Birth_date','Birth_Place','Gender','Civil_Status','Nationality','Religion',
@@ -946,10 +974,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.detail-item.field-empty').forEach(el => el.classList.remove('field-empty'));
 
     const missing = [];
-    REQUIRED_FIELDS.forEach(({field, label}) => {
+    REQUIRED_FIELDS.forEach(({field, label, displayId}) => {
       const v = emp[field];
       const isEmpty = !v || String(v).trim() === '';
-      const spanEl  = document.getElementById('d-'+field);
+      // Support custom displayId (e.g. OfficeName shown as d-OfficeName, not d-OfficeName)
+      const resolvedId = displayId || ('d-' + field);
+      const spanEl  = document.getElementById(resolvedId);
       const itemEl  = spanEl ? spanEl.closest('.detail-item') : null;
       if (isEmpty && itemEl) {
         itemEl.classList.add('field-empty');
@@ -1007,7 +1037,16 @@ document.addEventListener('DOMContentLoaded', () => {
       try { json = JSON.parse(raw); } catch { showToast('Server error — check console.','danger'); return; }
 
       if (json.success) {
-        document.querySelectorAll('.d-input[data-field]').forEach(el => { currentEmp[el.dataset.field] = el.value; });
+        document.querySelectorAll('.d-input[data-field]').forEach(el => {
+          if (!el.readOnly) {
+            currentEmp[el.dataset.field] = el.value;
+            // When OfficeID changes, also update OfficeName from the select's selected text
+            if (el.dataset.field === 'OfficeID') {
+              const selOpt = el.options[el.selectedIndex];
+              currentEmp.OfficeName = selOpt && selOpt.value ? selOpt.text : null;
+            }
+          }
+        });
         populateModal(currentEmp);
         exitEditMode();
         showToast(json.message||'Changes saved.','success');
@@ -1233,7 +1272,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="print-role">${pv(emp.Position_held)} · ${pv(emp.Department)}</div>
         <div style="font-size:.75rem;margin-top:.25rem;color:#475569;">${statusText}</div>
       </div></div>
-      ${section('Identification',[['Employee ID',pv(emp.EmployeeID)],['File No',pv(emp.FileNo)],['Office ID',pv(emp.OfficeID)],['SSS Number',pv(emp.SSS_Number)],['TIN Number',pv(emp.TIN_Number)],['PhilHealth',pv(emp.Philhealth_Number)],['HDMF / Pag-IBIG',pv(emp.HDMF)]])}
+      ${section('Identification',[['Assigned ID',pv(emp.EmployeeID1)],['System ID',pv(emp.EmployeeID)],['File No',pv(emp.FileNo)],['Office',pv(emp.OfficeName)],['SSS Number',pv(emp.SSS_Number)],['TIN Number',pv(emp.TIN_Number)],['PhilHealth',pv(emp.Philhealth_Number)],['HDMF / Pag-IBIG',pv(emp.HDMF)]])}
       ${section('Work Information',[['Department',pv(emp.Department)],['Position',pv(emp.Position_held)],['Job Title',pv(emp.Job_tittle)],['Category',pv(emp.Category)],['Branch',pv(emp.Branch)],['System',pv(emp.System)],['Hired Date',pDate(emp.Hired_date)],['Separation Date',pDate(emp.Date_Of_Seperation)],['Employee Status',pv(emp.Employee_Status)],['Cut-Off',pv(emp.CutOff)]])}
       ${section('Personal Information',[['Birth Date',pDate(emp.Birth_date)],['Birth Place',pv(emp.Birth_Place)],['Gender',pv(emp.Gender)],['Civil Status',pv(emp.Civil_Status)],['Nationality',pv(emp.Nationality)],['Religion',pv(emp.Religion)]])}
       ${section('Contact Information',[['Mobile',pv(emp.Mobile_Number)],['Phone',pv(emp.Phone_Number)],['Email',pv(emp.Email_Address)],['Present Address',pv(emp.Present_Address)],['Permanent Address',pv(emp.Permanent_Address)]])}
@@ -1287,6 +1326,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const isActive = parseInt(emp.Active||0) === 1;
       return `<tr>
         <td>${name}</td>
+        <td>${emp.EmployeeID1||'—'}</td>
         <td>${emp.EmployeeID||'—'}</td>
         <td>${emp.Department||'—'}</td>
         <td>${emp.Position_held||'—'}</td>
@@ -1303,7 +1343,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div style="text-align:right;"><p>Total: ${employees.length} record${employees.length!==1?'s':''}</p><p>Printed: ${date}</p></div>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Employee ID</th><th>Department</th><th>Position</th><th>Branch</th><th>Contact</th><th>Hired Date</th><th>Status</th></tr></thead>
+        <thead><tr><th>Name</th><th>Assigned ID</th><th>System ID</th><th>Department</th><th>Position</th><th>Branch</th><th>Contact</th><th>Hired Date</th><th>Status</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table>`;
   }
@@ -1329,8 +1369,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const headers = [
-        'File No','Employee ID','Last Name','First Name','Middle Name',
-        'Department','Position','Job Title','Category','Branch','System',
+        'File No','Assigned ID','System ID','Last Name','First Name','Middle Name',
+        'Office','Department','Position','Job Title','Category','Branch','System',
         'Employee Status','Hired Date','Separation Date',
         'SSS Number','TIN Number','PhilHealth','HDMF/Pag-IBIG',
         'Mobile','Phone','Email','Present Address','Permanent Address',
@@ -1340,8 +1380,8 @@ document.addEventListener('DOMContentLoaded', () => {
       ];
 
       const data = json.data.map(e => [
-        e.FileNo||'', e.EmployeeID||'', e.LastName||'', e.FirstName||'', e.MiddleName||'',
-        e.Department||'', e.Position_held||'', e.Job_tittle||'', e.Category||'', e.Branch||'', e.System||'',
+        e.FileNo||'', e.EmployeeID1||'', e.EmployeeID||'', e.LastName||'', e.FirstName||'', e.MiddleName||'',
+        e.OfficeName||'', e.Department||'', e.Position_held||'', e.Job_tittle||'', e.Category||'', e.Branch||'', e.System||'',
         e.Employee_Status||'', e.Hired_date||'', e.Date_Of_Seperation||'',
         e.SSS_Number||'', e.TIN_Number||'', e.Philhealth_Number||'', e.HDMF||'',
         e.Mobile_Number||'', e.Phone_Number||'', e.Email_Address||'',
@@ -1355,7 +1395,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ]);
 
       const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
-      ws['!cols'] = [8,12,14,14,14,18,18,18,12,14,14,14,12,12,14,14,14,14,14,14,24,28,28,12,18,10,14,14,14,20,14,14,24,24,8,10]
+      ws['!cols'] = [8,14,14,14,14,14,20,18,18,18,12,14,14,14,12,12,14,14,14,14,14,14,24,28,28,12,18,10,14,14,14,20,14,14,24,24,8,10]
         .map(w => ({ wch: w }));
 
       const wb = XLSX.utils.book_new();

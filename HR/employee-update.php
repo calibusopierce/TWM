@@ -19,14 +19,26 @@ if (empty($userType)) {
 }
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 
 // Discard anything printed by includes (warnings, notices, etc.)
 ob_end_clean();
 header('Content-Type: application/json');
 
-// ── Auth check ─────────────────────────────────────────────────
-if (!in_array($userType, ['Admin', 'Administrator'])) {
+// ── RBAC check (JSON-safe — no SweetAlert redirect) ────────────
+try {
+    $pdo_rbac = new PDO(
+        "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+        null, null,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    rbac_load_permissions($pdo_rbac, $userType);
+} catch (PDOException $e) {
+    echo json_encode(['success' => false, 'message' => 'DB error: ' . $e->getMessage()]);
+    exit;
+}
+if (!rbac_can('employee_list')) {
     echo json_encode(['success' => false, 'message' => 'Unauthorized.']);
     exit;
 }
@@ -44,6 +56,7 @@ if (!$fileNo && !$empId) {
 // ── Fields allowed to be updated ──────────────────────────────
 // EmployeeID and FileNo are identifiers — never updated via this endpoint
 $stringFields = [
+    'EmployeeID1',
     'OfficeID', 'SSS_Number', 'TIN_Number', 'Philhealth_Number', 'HDMF',
     'LastName', 'FirstName', 'MiddleName',
     'Department', 'Position_held', 'Job_tittle', 'Category',

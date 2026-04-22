@@ -2,10 +2,11 @@
 // auth_check.php
 // ── Session guard — include at the top of every protected page ─
 
-function auth_check(array $allowedRoles = ['HR', 'Admin']): void {
+function auth_check(array $allowedRoles = []): void {
 
     if (session_status() === PHP_SESSION_NONE) session_start();
 
+    // ── Login check — always runs regardless of roles ─────────
     if (!isset($_SESSION['UserID'], $_SESSION['UserType'])) {
         redirect('login');
     }
@@ -33,7 +34,10 @@ function auth_check(array $allowedRoles = ['HR', 'Admin']): void {
     // themselves, AFTER they have finished reading session data.
 
     // ── Role check ────────────────────────────────────────────
-    if (!in_array($_SESSION['UserType'], $allowedRoles, strict: true)) {
+    // If $allowedRoles is empty, skip the role check entirely —
+    // RBAC (rbac_gate) is responsible for access control on that page.
+    // If $allowedRoles is provided (e.g. RBAC admin panel), enforce it strictly.
+    if (!empty($allowedRoles) && !in_array($_SESSION['UserType'], $allowedRoles, strict: true)) {
         error_log(sprintf(
             "Unauthorized access — UserID: %s, Role: %s, Page: %s, IP: %s",
             $_SESSION['UserID'],

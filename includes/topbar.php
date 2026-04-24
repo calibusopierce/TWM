@@ -1,21 +1,63 @@
 <?php
+// /TWM/RBAC/topbar.php
+// Navigation visibility is driven by RBAC module permissions, not hardcoded role arrays.
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 
-// Auth is handled by the page itself
+// ── Session vars ──────────────────────────────────────────────────────────────
 $_topbar_user = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $_topbar_role = $_SESSION['UserType']    ?? '';
 $_topbar_dept = $_SESSION['Department']  ?? '';
-$topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
+$topbar_page  = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
 
+// ── RBAC: load this user's permissions once (cached in session) ───────────────
+// $pdo must already be available on every page that includes this topbar.
+// If your pages don't share a $pdo, open a dedicated one here:
+if (!isset($pdo)) {
+    try {
+        $pdo = new PDO(
+            "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
+            null, null,
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
+    } catch (PDOException $e) {
+        // Fail silently — no permissions will be loaded, all nav links hidden
+        $pdo = null;
+    }
+}
 
-// Role checks
-$_can_logistics = in_array($_topbar_role, ['Admin', 'Administrator', 'Delivery', 'Logistic']);
-$_can_careers   = in_array($_topbar_role, ['Admin', 'Administrator', 'HR']);
-$_can_uniform   = in_array($_topbar_role, ['Admin', 'Administrator', 'HR']);
-$_can_admin     = in_array($_topbar_role, ['Admin', 'Administrator']);
+if ($pdo) {
+    rbac_load_permissions($pdo, $_topbar_role);
+}
 
-// Department color map
+// ── Admin is still role-gated (not a module) ──────────────────────────────────
+// Switch Department, RBAC manager, etc. are administrative actions, not modules.
+$_can_admin = in_array($_topbar_role, ['Admin', 'Administrator']);
+
+// ── All other nav links are RBAC-driven ───────────────────────────────────────
+// These module_key values must match what is stored in rbac_modules.module_key.
+$_can_fuel       = rbac_can('fuel_dashboard');
+$_can_graphs     = rbac_can('graphs');
+$_can_careers    = rbac_can('careers_admin');
+$_can_view_apps  = rbac_can('view_applications');
+$_can_employees  = rbac_can('employee_list');
+$_can_uniform    = rbac_can('uniform_inventory');
+$_can_help       = rbac_can('help');       // optional — keep help visible to all if preferred
+
+// ── Brand subtitle: show the most relevant portal label for this user ─────────
+// Priority: Admin > Fleet (fuel) > HR (careers) > generic Portal
+if ($_can_admin) {
+    $_brand_sub = 'Admin Portal';
+} elseif ($_can_fuel || $_can_graphs) {
+    $_brand_sub = 'Fleet Monitoring';
+} elseif ($_can_careers || $_can_view_apps || $_can_employees) {
+    $_brand_sub = 'Careers Admin';
+} else {
+    $_brand_sub = 'Portal';
+}
+
+// ── Department color map ──────────────────────────────────────────────────────
 $_deptColors = [
     'Monde'      => ['bg' => 'rgba(239,68,68,.15)',   'color' => '#ef4444', 'border' => '#fca5a5'],
     'Century'    => ['bg' => 'rgba(59,130,246,.15)',  'color' => '#3b82f6', 'border' => '#93c5fd'],
@@ -44,13 +86,7 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
     </div>
     <div class="topbar-brand-text">
       <span class="topbar-brand-name">Urban Tradewell Corporation</span>
-      <span class="topbar-brand-sub">
-        <?php if ($_can_admin): ?>Admin Portal
-        <?php elseif ($_can_logistics): ?>Fleet Monitoring
-        <?php elseif ($_can_careers): ?>Careers Admin
-        <?php else: ?>Portal
-        <?php endif; ?>
-      </span>
+      <span class="topbar-brand-sub"><?= $_brand_sub ?></span>
     </div>
   </a>
 
@@ -107,49 +143,66 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
 
       <div class="tb-drop-divider"></div>
 
-      <!-- Switch Department (admin only) -->
+      <!-- Switch Department + RBAC Manager (admin only) -->
       <?php if ($_can_admin): ?>
       <a href="<?= route('set_department') ?>" class="tb-drop-item <?= $_topbar_page === 'dept' ? 'active' : '' ?>">
         <i class="bi bi-building"></i> Switch Department
+      </a>
+      <a href="<?= rbac_module_url('RBAC') ?>" class="tb-drop-item <?= $_topbar_page === 'rbac' ? 'active' : '' ?>">
+        <i class="bi bi-shield-lock-fill"></i> Access Control (RBAC)
       </a>
       <div class="tb-drop-divider"></div>
       <?php endif; ?>
 
       <div class="tb-drop-section-label">Navigation</div>
 
+      <!-- Home is always visible -->
       <a href="<?= route('home') ?>" class="tb-drop-item <?= $_topbar_page === 'home' ? 'active' : '' ?>">
         <i class="bi bi-house-door-fill"></i> Home
       </a>
 
-      <?php if ($_can_logistics): ?>
-      <a href="<?= route('fuel_dashboard') ?>" class="tb-drop-item <?= $_topbar_page === 'fuel' ? 'active' : '' ?>">
+      <!-- Fleet / Fuel — RBAC-gated per module key -->
+      <?php if ($_can_fuel): ?>
+      <a href="<?= rbac_module_url('fuel_dashboard') ?>" class="tb-drop-item <?= $_topbar_page === 'fuel' ? 'active' : '' ?>">
         <i class="bi bi-fuel-pump-fill"></i> Fuel Dashboard
       </a>
-      <a href="<?= route('graphs') ?>" class="tb-drop-item <?= $_topbar_page === 'graphs' ? 'active' : '' ?>">
+      <?php endif; ?>
+
+      <?php if ($_can_graphs): ?>
+      <a href="<?= rbac_module_url('graphs') ?>" class="tb-drop-item <?= $_topbar_page === 'graphs' ? 'active' : '' ?>">
         <i class="bi bi-bar-chart-fill"></i> Fuel Graphs
       </a>
       <?php endif; ?>
 
+      <!-- HR / Careers — RBAC-gated per module key -->
       <?php if ($_can_careers): ?>
-      <a href="<?= route('careers_admin') ?>" class="tb-drop-item <?= $_topbar_page === 'careers' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('careers_admin') ?>" class="tb-drop-item <?= $_topbar_page === 'careers' ? 'active' : '' ?>">
         <i class="bi bi-file-earmark-person"></i> Careers Admin
       </a>
-      <a href="<?= route('view_applications') ?>" class="tb-drop-item <?= $_topbar_page === 'applications' ? 'active' : '' ?>">
+      <?php endif; ?>
+
+      <?php if ($_can_view_apps): ?>
+      <a href="<?= rbac_module_url('view_applications') ?>" class="tb-drop-item <?= $_topbar_page === 'applications' ? 'active' : '' ?>">
         <i class="bi bi-file-earmark-person-fill"></i> View Job Applications
       </a>
-      <a href="<?= route('employee_list') ?>" class="tb-drop-item <?= $_topbar_page === 'applications' ? 'active' : '' ?>">
+      <?php endif; ?>
+
+      <?php if ($_can_employees): ?>
+      <a href="<?= rbac_module_url('employee_list') ?>" class="tb-drop-item <?= $_topbar_page === 'employees' ? 'active' : '' ?>">
         <i class="bi bi-people-fill"></i> Employee List
       </a>
       <?php endif; ?>
 
+      <!-- Uniform — RBAC-gated -->
       <?php if ($_can_uniform): ?>
-      <a href="<?= route('uniform_inventory') ?>" class="tb-drop-item <?= $_topbar_page === 'uniform' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('uniform_inventory') ?>" class="tb-drop-item <?= $_topbar_page === 'uniform' ? 'active' : '' ?>">
         <i class="bi bi-bag-fill"></i> Uniform Inventory
       </a>
       <?php endif; ?>
 
       <div class="tb-drop-divider"></div>
 
+      <!-- Help — show to everyone, or gate with $_can_help if preferred -->
       <a href="<?= route('help') ?>" class="tb-drop-item <?= $_topbar_page === 'help' ? 'active' : '' ?>">
         <i class="bi bi-book-fill"></i> Help Manual
       </a>
@@ -188,17 +241,14 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
   drop.addEventListener('click', function (e) { e.stopPropagation(); });
 })();
 
-
-  // Auto redirect to login if session is destroyed
-  setInterval(() => {
-    fetch('/TWM/check_session.php')
-      .then(res => res.json())
-      .then(data => {
-        if (!data.loggedIn) {
-          window.location.href = '/TWM/login.php';
-        }
-      });
-  }, 30000);
-
-
+// Auto redirect to login if session is destroyed
+setInterval(() => {
+  fetch('/TWM/check_session.php')
+    .then(res => res.json())
+    .then(data => {
+      if (!data.loggedIn) {
+        window.location.href = '/TWM/login.php';
+      }
+    });
+}, 30000);
 </script>

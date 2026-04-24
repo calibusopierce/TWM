@@ -4,27 +4,11 @@
 
 require_once __DIR__ . '/../auth_check.php';
 require_once __DIR__ . '/../test_sqlsrv.php';
+require_once __DIR__ . '/rbac_helper.php';
 
-auth_check(['Admin', 'Administrator']);
+auth_check(); // login + session guard only
 
-header('Content-Type: application/json');
-
-$action    = $_POST['action']    ?? '';
-$grantedBy = $_SESSION['Username'] ?? 'admin';
-
-// ── These actions use their own POST fields, not the global role/module ──
-$moduleOnlyActions = ['add_module', 'edit_module', 'delete_module', 'grant_all', 'revoke_all'];
-
-if (!in_array($action, $moduleOnlyActions)) {
-    $roleName  = trim($_POST['role']   ?? '');
-    $moduleKey = trim($_POST['module'] ?? '');
-    if (!$roleName || !$moduleKey) {
-        echo json_encode(['ok' => false, 'msg' => 'Missing role or module.']);
-        exit;
-    }
-}
-
-// RBAC uses PDO
+// DB needed for rbac_gate
 try {
     $pdo = new PDO(
         "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
@@ -32,8 +16,40 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
 } catch (PDOException $e) {
+    header('Content-Type: application/json');
     echo json_encode(['ok' => false, 'msg' => 'DB connection failed: ' . $e->getMessage()]);
     exit;
+}
+
+rbac_gate($pdo, 'RBAC'); // DB-driven — only roles with can_access=1 for 'RBAC' get in
+
+header('Content-Type: application/json');
+
+$action    = $_POST['action']    ?? '';
+$grantedBy = $_SESSION['Username'] ?? 'admin';
+
+// ── Actions that manage modules themselves — no role/module fields needed ──
+$moduleOnlyActions = ['add_module', 'edit_module', 'delete_module'];
+
+// ── Actions that need role but NOT a specific module ──────────────────────
+$roleOnlyActions = ['grant_all', 'revoke_all', 'add_role', 'delete_role'];
+
+if (in_array($action, $roleOnlyActions)) {
+    // These actions operate on a whole role — only role is required
+    $roleName  = trim($_POST['role_name'] ?? $_POST['role'] ?? '');
+    $moduleKey = '';
+    if (!$roleName) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing role.']);
+        exit;
+    }
+} elseif (!in_array($action, $moduleOnlyActions)) {
+    // Standard toggle/grant/revoke — both role and module are required
+    $roleName  = trim($_POST['role']   ?? '');
+    $moduleKey = trim($_POST['module'] ?? '');
+    if (!$roleName || !$moduleKey) {
+        echo json_encode(['ok' => false, 'msg' => 'Missing role or module.']);
+        exit;
+    }
 }
 
 try {
@@ -98,7 +114,6 @@ try {
 
         // ── Grant all modules to a role ─────────────────────────────
         case 'grant_all':
-            // Get all module keys
             $allMods = $pdo->query("SELECT module_key FROM rbac_modules")->fetchAll(PDO::FETCH_COLUMN);
             foreach ($allMods as $mk) {
                 $chk = $pdo->prepare("SELECT COUNT(*) FROM rbac_permissions WHERE role_name = ? AND module_key = ?");
@@ -138,7 +153,6 @@ try {
                 exit;
             }
 
-            // Validate category
             $validCats = ['hr', 'fleet', 'finance', 'general'];
             if (!in_array($cat, $validCats)) $cat = 'general';
 
@@ -151,7 +165,6 @@ try {
                 END
             ");
             $stmt->execute([$key, $key, $name, $cat, $icon, $color, $desc]);
-
             echo json_encode(['ok' => true]);
             break;
 
@@ -201,9 +214,32 @@ try {
                 echo json_encode(['ok' => false, 'msg' => 'Module key required.']);
                 exit;
             }
-            // Cascade: remove permissions too
             $pdo->prepare("DELETE FROM rbac_permissions WHERE module_key = ?")->execute([$key]);
             $pdo->prepare("DELETE FROM rbac_modules    WHERE module_key = ?")->execute([$key]);
+            echo json_encode(['ok' => true]);
+            break;
+
+        // ── Add a new user type / role ──────────────────────────────
+        case 'add_role':
+            if (preg_match('/\s/', $roleName)) {
+                echo json_encode(['ok' => false, 'msg' => 'Role name cannot contain spaces.']);
+                exit;
+            }
+            $stmt = $pdo->prepare("
+                IF NOT EXISTS (SELECT 1 FROM rbac_roles WHERE role_name = ?)
+                BEGIN
+                    INSERT INTO rbac_roles (role_name, created_by, created_at)
+                    VALUES (?, ?, GETDATE())
+                END
+            ");
+            $stmt->execute([$roleName, $roleName, $grantedBy]);
+            echo json_encode(['ok' => true, 'role_name' => $roleName]);
+            break;
+
+        // ── Delete a user type / role ───────────────────────────────
+        case 'delete_role':
+            $pdo->prepare("DELETE FROM rbac_permissions WHERE role_name = ?")->execute([$roleName]);
+            $pdo->prepare("DELETE FROM rbac_roles WHERE role_name = ?")->execute([$roleName]);
             echo json_encode(['ok' => true]);
             break;
 

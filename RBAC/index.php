@@ -1,12 +1,11 @@
 <?php
+
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once __DIR__ . '/../auth_check.php';
 require_once __DIR__ . '/../test_sqlsrv.php';
+require_once __DIR__ . '/rbac_helper.php';
 
-auth_check(['Admin', 'Administrator']);
-
-$userType    = $_SESSION['UserType']    ?? '';
-$displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
+auth_check(); // login + session guard only
 
 try {
     $pdo = new PDO(
@@ -18,30 +17,75 @@ try {
     die("❌ RBAC DB connection failed: " . $e->getMessage());
 }
 
+rbac_gate($pdo, 'RBAC'); // DB-driven — only roles with can_access=1 for 'RBAC' get in
+
+$userType    = $_SESSION['UserType']    ?? '';
+$displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
+
 // ── Load all modules ──────────────────────────────────────────
 $modules = $pdo->query("
     SELECT * FROM rbac_modules ORDER BY sort_order ASC
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// ── Load all distinct roles from users table ──────────────────
+// ── Load all distinct roles: from users table + rbac_roles table ──
+// rbac_roles holds roles created via "Add User Type" that may have 0 users
 $rolesFromUsers = $pdo->query("
     SELECT DISTINCT user_type AS role_name, COUNT(*) AS total
     FROM users
     WHERE user_type IS NOT NULL AND user_type != ''
     GROUP BY user_type
-    ORDER BY total DESC
 ")->fetchAll(PDO::FETCH_ASSOC);
+
+// ── Auto-create rbac_roles table if it does not exist yet ────
+$pdo->exec("
+    IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_NAME = 'rbac_roles'
+    )
+    BEGIN
+        CREATE TABLE rbac_roles (
+            role_name   NVARCHAR(100) NOT NULL PRIMARY KEY,
+            created_by  NVARCHAR(100) NULL,
+            created_at  DATETIME      NOT NULL DEFAULT GETDATE()
+        )
+    END
+");
+
+// Extra roles defined in rbac_roles but not yet assigned to any user
+$extraRoles = $pdo->query("
+    SELECT role_name, 0 AS total FROM rbac_roles
+    WHERE role_name NOT IN (
+        SELECT DISTINCT user_type FROM users WHERE user_type IS NOT NULL AND user_type != ''
+    )
+")->fetchAll(PDO::FETCH_ASSOC);
+
+$allRoles = array_merge($rolesFromUsers, $extraRoles);
+// Sort deferred — happens below after $roleGrantCount is built
 
 // ── Load all current permissions as a flat lookup ─────────────
 $permsRaw = $pdo->query("
-    SELECT role_name, module_key, can_access
-    FROM rbac_permissions
+    SELECT role_name, module_key, can_access FROM rbac_permissions
 ")->fetchAll(PDO::FETCH_ASSOC);
 
 $permsMap = [];
 foreach ($permsRaw as $p) {
     $permsMap[$p['role_name'] . '|' . $p['module_key']] = (int)$p['can_access'];
 }
+
+// ── Per-role grant counts ─────────────────────────────────────
+$roleGrantCount = [];
+foreach ($permsRaw as $p) {
+    if ($p['can_access']) {
+        $roleGrantCount[$p['role_name']] = ($roleGrantCount[$p['role_name']] ?? 0) + 1;
+    }
+}
+
+// ── Sort roles by granted modules desc, then name asc ─────────
+usort($allRoles, function($a, $b) use ($roleGrantCount) {
+    $ga = $roleGrantCount[$a['role_name']] ?? 0;
+    $gb = $roleGrantCount[$b['role_name']] ?? 0;
+    return $gb <=> $ga ?: strcmp($a['role_name'], $b['role_name']);
+});
 
 // ── Category meta ─────────────────────────────────────────────
 $categoryMeta = [
@@ -51,8 +95,9 @@ $categoryMeta = [
     'general' => ['label' => 'General', 'color' => '#60a5fa'],
 ];
 
-// ── Encode modules to JSON for JS use ────────────────────────
-$modulesJson = json_encode(array_values($modules));
+$modulesJson  = json_encode(array_values($modules));
+$permsMapJson = json_encode($permsMap);
+$totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -85,436 +130,310 @@ $modulesJson = json_encode(array_values($modules));
       --on-color:  #34d399;
       --off-color: rgba(255,255,255,0.15);
     }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: 'DM Sans', sans-serif; background: var(--bg-0); color: var(--white); overflow-x: hidden; }
 
-    html, body {
-      height: 100%;
-      font-family: 'DM Sans', sans-serif;
-      background: var(--bg-0);
-      color: var(--white);
-      overflow-x: hidden;
-    }
+    /* ── Mesh bg ── */
+    .mesh { position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background: radial-gradient(ellipse 80% 50% at 10% 0%, rgba(67,128,226,0.18) 0%, transparent 60%),
+                  radial-gradient(ellipse 60% 40% at 90% 100%, rgba(52,211,153,0.10) 0%, transparent 60%),
+                  radial-gradient(ellipse 100% 80% at 50% 50%, rgba(6,13,31,1) 40%, transparent 100%); }
+    .mesh::after { content:''; position:absolute; inset:0;
+      background-image: linear-gradient(rgba(255,255,255,0.025) 1px,transparent 1px),
+                        linear-gradient(90deg,rgba(255,255,255,0.025) 1px,transparent 1px);
+      background-size: 48px 48px; }
 
-    /* ── Background mesh ──────────────────────────────────── */
-    .mesh {
-      position: fixed; inset: 0; z-index: 0; pointer-events: none;
-      background:
-        radial-gradient(ellipse 80% 50% at 10% 0%,   rgba(67,128,226,0.18) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 40% at 90% 100%,  rgba(52,211,153,0.10) 0%, transparent 60%),
-        radial-gradient(ellipse 100% 80% at 50% 50%,  rgba(6,13,31,1) 40%,  transparent 100%);
-    }
-    .mesh::after {
-      content: '';
-      position: absolute; inset: 0;
-      background-image:
-        linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
-      background-size: 48px 48px;
-    }
+    /* ── Layout ── */
+    .wrap { position:relative; z-index:10; max-width:1300px; margin:0 auto; padding:2rem 1.5rem 4rem; }
 
-    /* ── Layout ────────────────────────────────────────────── */
-    .wrap {
-      position: relative; z-index: 10;
-      max-width: 1300px;
-      margin: 0 auto;
-      padding: 2rem 1.5rem 4rem;
-    }
+    /* ── Page header ── */
+    .page-header { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:1rem; margin-bottom:2rem; animation:fadeUp .4s ease both; }
+    .breadcrumb { font-size:.72rem; color:var(--w40); letter-spacing:.06em; text-transform:uppercase; margin-bottom:.4rem; }
+    .breadcrumb a { color:var(--accent2); text-decoration:none; }
+    .breadcrumb a:hover { text-decoration:underline; }
+    .page-title { font-family:'Sora',sans-serif; font-size:1.75rem; font-weight:800; letter-spacing:-.04em; color:var(--white); line-height:1.1; }
+    .page-title span { color:var(--accent2); }
+    .page-sub { font-size:.82rem; color:var(--w60); margin-top:.35rem; }
+    .page-header-right { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
 
-    /* ── Page header ──────────────────────────────────────── */
-    .page-header {
-      display: flex; align-items: flex-start; justify-content: space-between;
-      flex-wrap: wrap; gap: 1rem; margin-bottom: 2rem;
-      animation: fadeUp .4s ease both;
-    }
-    .breadcrumb {
-      font-size: .72rem; color: var(--w40);
-      letter-spacing: .06em; text-transform: uppercase; margin-bottom: .4rem;
-    }
-    .breadcrumb a { color: var(--accent2); text-decoration: none; }
-    .breadcrumb a:hover { text-decoration: underline; }
-    .page-title {
-      font-family: 'Sora', sans-serif;
-      font-size: 1.75rem; font-weight: 800;
-      letter-spacing: -.04em; color: var(--white); line-height: 1.1;
-    }
-    .page-title span { color: var(--accent2); }
-    .page-sub { font-size: .82rem; color: var(--w60); margin-top: .35rem; }
-    .page-header-right { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+    /* ── Buttons ── */
+    .btn { display:inline-flex; align-items:center; gap:.4rem; padding:.5rem 1.1rem; border-radius:10px; font-size:.8rem; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .2s; text-decoration:none; font-family:'DM Sans',sans-serif; }
+    .btn-primary { background:var(--accent); color:#fff; border-color:rgba(67,128,226,.5); }
+    .btn-primary:hover { background:#3370d4; }
+    .btn-ghost { background:var(--w08); color:var(--w60); border-color:var(--border); }
+    .btn-ghost:hover { background:var(--w15); color:var(--white); }
+    .btn-success { background:rgba(52,211,153,.12); color:#34d399; border:1px solid rgba(52,211,153,.25); }
+    .btn-success:hover { background:rgba(52,211,153,.22); }
+    .btn-danger { background:rgba(239,68,68,.15); color:#fca5a5; border-color:rgba(239,68,68,.3); }
+    .btn-danger:hover { background:rgba(239,68,68,.25); }
+    .btn-sm { padding:.3rem .7rem; font-size:.72rem; }
 
-    /* ── Buttons ──────────────────────────────────────────── */
-    .btn {
-      display: inline-flex; align-items: center; gap: .4rem;
-      padding: .5rem 1.1rem; border-radius: 10px;
-      font-size: .8rem; font-weight: 600; cursor: pointer;
-      border: 1px solid transparent; transition: all .2s;
-      text-decoration: none; font-family: 'DM Sans', sans-serif;
-    }
-    .btn-primary { background: var(--accent); color: #fff; border-color: rgba(67,128,226,.5); }
-    .btn-primary:hover { background: #3370d4; }
-    .btn-ghost { background: var(--w08); color: var(--w60); border-color: var(--border); }
-    .btn-ghost:hover { background: var(--w15); color: var(--white); }
-    .btn-danger { background: rgba(239,68,68,.15); color: #fca5a5; border-color: rgba(239,68,68,.3); }
-    .btn-danger:hover { background: rgba(239,68,68,.25); }
-    .btn-sm { padding: .3rem .7rem; font-size: .72rem; }
+    /* ── Stats bar ── */
+    .stats-bar { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1.75rem; animation:fadeUp .4s .1s ease both; }
+    .stat-chip { display:flex; align-items:center; gap:.6rem; padding:.6rem 1rem; background:var(--surface); border:1px solid var(--border); border-radius:12px; font-size:.78rem; }
+    .stat-chip-num { font-family:'Sora',sans-serif; font-size:1.1rem; font-weight:700; color:var(--white); }
+    .stat-chip-label { color:var(--w60); }
+    .stat-chip .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
-    /* ── Stats bar ────────────────────────────────────────── */
-    .stats-bar {
-      display: flex; gap: 1rem; flex-wrap: wrap;
-      margin-bottom: 1.75rem;
-      animation: fadeUp .4s .1s ease both;
-    }
-    .stat-chip {
-      display: flex; align-items: center; gap: .6rem;
-      padding: .6rem 1rem;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 12px; font-size: .78rem;
-    }
-    .stat-chip-num { font-family: 'Sora', sans-serif; font-size: 1.1rem; font-weight: 700; color: var(--white); }
-    .stat-chip-label { color: var(--w60); }
-    .stat-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    /* ── Tabs ── */
+    .tab-bar { display:flex; gap:.5rem; margin-bottom:1.5rem; border-bottom:1px solid var(--border); padding-bottom:.75rem; animation:fadeUp .4s .12s ease both; }
+    .tab-btn { display:inline-flex; align-items:center; gap:.4rem; padding:.45rem 1rem; border-radius:10px 10px 0 0; font-size:.82rem; font-weight:600; cursor:pointer; border:1px solid transparent; border-bottom:none; background:transparent; color:var(--w40); transition:all .2s; font-family:'DM Sans',sans-serif; position:relative; top:1px; }
+    .tab-btn:hover { color:var(--white); background:var(--w08); }
+    .tab-btn.active { background:var(--bg-1); border-color:var(--border); color:var(--white); border-bottom-color:var(--bg-0); }
+    .tab-btn .tab-badge { background:var(--accent); color:#fff; font-size:.6rem; font-weight:700; padding:.1rem .4rem; border-radius:999px; margin-left:.15rem; }
+    .tab-panel { display:none; }
+    .tab-panel.active { display:block; }
 
-    /* ── Filter row ───────────────────────────────────────── */
-    .filter-row {
-      display: flex; gap: .75rem; flex-wrap: wrap; align-items: center;
-      margin-bottom: 1.5rem;
-      animation: fadeUp .4s .15s ease both;
-    }
-    .search-box {
-      display: flex; align-items: center; gap: .5rem;
-      background: var(--surface); border: 1px solid var(--border2);
-      border-radius: 10px; padding: .45rem .85rem;
-      flex: 1; min-width: 200px; max-width: 320px;
-    }
-    .search-box i { color: var(--w40); font-size: .9rem; }
-    .search-box input {
-      background: none; border: none; outline: none;
-      color: var(--white); font-size: .82rem; width: 100%;
-      font-family: 'DM Sans', sans-serif;
-    }
-    .search-box input::placeholder { color: var(--w40); }
+    /* ── Role cards grid ── */
+    .roles-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:.85rem; animation:fadeUp .4s .2s ease both; }
 
-    .filter-pills { display: flex; gap: .5rem; flex-wrap: wrap; }
-    .pill {
-      padding: .3rem .8rem; border-radius: 999px;
-      font-size: .72rem; font-weight: 600; cursor: pointer;
-      border: 1px solid var(--border2);
-      background: var(--w08); color: var(--w60); transition: all .15s;
+    .role-card {
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:18px; padding:1.25rem 1.25rem 1rem;
+      cursor:pointer; transition:border-color .2s, background .2s, transform .15s;
+      display:flex; flex-direction:column; gap:.75rem; position:relative;
     }
-    .pill.active, .pill:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .pill[data-cat="hr"].active      { background: #34d399; border-color: #34d399; color: #000; }
-    .pill[data-cat="fleet"].active   { background: #fbbf24; border-color: #fbbf24; color: #000; }
-    .pill[data-cat="finance"].active { background: #a78bfa; border-color: #a78bfa; color: #000; }
-    .pill[data-cat="general"].active { background: #60a5fa; border-color: #60a5fa; color: #000; }
-
-    /* ── Matrix card ──────────────────────────────────────── */
-    .matrix-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 20px; overflow: hidden;
-      animation: fadeUp .4s .2s ease both;
-    }
-    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-
-    table { width: 100%; border-collapse: collapse; min-width: 700px; }
-
-    thead tr { background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border); }
-    th {
-      padding: .9rem 1rem;
-      font-size: .72rem; font-weight: 700;
-      letter-spacing: .06em; text-transform: uppercase;
-      color: var(--w40); text-align: left; white-space: nowrap;
-    }
-    th.mod-col { text-align: center; min-width: 100px; }
-    .mod-col-inner { display: flex; flex-direction: column; align-items: center; gap: .2rem; }
-    .mod-col-icon { font-size: 1rem; }
-    .mod-col-name {
-      font-size: .65rem; font-weight: 600; letter-spacing: .04em;
-      text-transform: none; color: var(--w60); line-height: 1.3;
-      text-align: center; max-width: 80px;
-    }
-    .cat-badge {
-      display: inline-block; padding: .1rem .4rem; border-radius: 4px;
-      font-size: .58rem; font-weight: 700;
-      letter-spacing: .04em; text-transform: uppercase; margin-top: .1rem;
-    }
-
-    tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
-    tbody tr:last-child { border-bottom: none; }
-    tbody tr:hover { background: rgba(255,255,255,0.03); }
-
-    td { padding: .75rem 1rem; font-size: .82rem; vertical-align: middle; }
-
-    /* Role cell */
-    .role-cell { display: flex; align-items: center; gap: .65rem; white-space: nowrap; }
+    .role-card:hover { border-color:var(--border2); background:rgba(255,255,255,0.06); transform:translateY(-2px); }
+    .role-card-top { display:flex; align-items:center; gap:.75rem; }
     .role-avatar {
-      width: 32px; height: 32px; border-radius: 9px;
-      display: flex; align-items: center; justify-content: center;
-      font-family: 'Sora', sans-serif; font-size: .7rem; font-weight: 800;
-      flex-shrink: 0;
-      background: rgba(67,128,226,.2); color: var(--accent2);
-      border: 1px solid rgba(67,128,226,.25);
+      width:42px; height:42px; border-radius:12px; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      font-family:'Sora',sans-serif; font-size:.82rem; font-weight:800;
+      background:rgba(67,128,226,.18); color:var(--accent2);
+      border:1px solid rgba(67,128,226,.28);
     }
-    .role-name  { font-weight: 600; color: var(--white); }
-    .role-count { font-size: .72rem; color: var(--w40); }
+    .role-card-info { flex:1; min-width:0; }
+    .role-card-name { font-size:.92rem; font-weight:700; color:var(--white); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .role-card-sub  { font-size:.72rem; color:var(--w40); margin-top:.1rem; }
 
-    /* Row actions cell */
-    .row-actions { display: flex; gap: .35rem; align-items: center; white-space: nowrap; }
-    .btn-grant-all {
-      background: rgba(52,211,153,.12); color: #34d399;
-      border: 1px solid rgba(52,211,153,.25);
-    }
-    .btn-grant-all:hover { background: rgba(52,211,153,.22); }
-    .btn-revoke-all {
-      background: rgba(248,113,113,.10); color: #f87171;
-      border: 1px solid rgba(248,113,113,.22);
-    }
-    .btn-revoke-all:hover { background: rgba(248,113,113,.2); }
+    .role-card-arrow { color:var(--w40); font-size:.9rem; transition:color .15s, transform .15s; }
+    .role-card:hover .role-card-arrow { color:var(--accent2); transform:translateX(2px); }
 
-    /* Toggle cell */
-    td.toggle-cell { text-align: center; }
-    .toggle { position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer; }
-    .toggle input { display: none; }
-    .toggle-track {
-      position: absolute; inset: 0;
-      background: var(--off-color); border-radius: 999px;
-      transition: background .2s; border: 1px solid rgba(255,255,255,.1);
-    }
-    .toggle input:checked ~ .toggle-track { background: var(--on-color); border-color: var(--on-color); }
-    .toggle-thumb {
-      position: absolute; top: 3px; left: 3px;
-      width: 14px; height: 14px;
-      background: #fff; border-radius: 50%;
-      transition: transform .2s; box-shadow: 0 1px 4px rgba(0,0,0,.3);
-    }
-    .toggle input:checked ~ .toggle-thumb { transform: translateX(18px); }
+    /* Grant bar */
+    .role-grant-bar { height:4px; background:var(--border); border-radius:999px; overflow:hidden; }
+    .role-grant-fill { height:100%; background:var(--green); border-radius:999px; transition:width .4s ease; }
 
-    tr.saving td { opacity: .6; pointer-events: none; }
+    .role-card-footer { display:flex; align-items:center; justify-content:space-between; }
+    .role-grant-label { font-size:.7rem; color:var(--w40); }
+    .role-grant-label strong { color:var(--green); }
 
-    /* ── Module registry panel ────────────────────────────── */
-    .modules-panel { margin-top: 2rem; animation: fadeUp .4s .3s ease both; }
-    .panel-header {
-      display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 1rem; flex-wrap: wrap; gap: .75rem;
+    /* Delete role btn (top-right corner) */
+    .role-card-del {
+      position:absolute; top:.65rem; right:.65rem;
+      background:none; border:none; cursor:pointer; font-size:.8rem;
+      color:var(--w40); padding:.2rem .35rem; border-radius:6px;
+      transition:color .15s, background .15s; opacity:0; pointer-events:none;
     }
-    .panel-title { font-family: 'Sora', sans-serif; font-size: 1rem; font-weight: 700; color: var(--white); }
-    .panel-title span { color: var(--w40); font-size: .8rem; font-weight: 400; }
+    .role-card:hover .role-card-del { opacity:1; pointer-events:auto; }
+    .role-card-del:hover { color:var(--red); background:rgba(248,113,113,.12); }
 
-    .modules-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: .75rem;
+    /* ── Drawer overlay ── */
+    .drawer-overlay {
+      display:none; position:fixed; inset:0; z-index:150;
+      background:rgba(0,0,0,.55); backdrop-filter:blur(4px);
     }
+    .drawer-overlay.open { display:block; }
 
-    /* Module chip — now matches homepage card style */
-    .module-chip {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 16px; padding: 1rem 1rem .85rem;
-      display: flex; flex-direction: column; gap: .6rem;
-      transition: border-color .2s, background .2s;
-      position: relative;
+    /* ── Drawer panel ── */
+    .drawer {
+      position:fixed; top:0; right:0; bottom:0; z-index:160;
+      width:min(680px, 95vw);
+      background:#0a1428; border-left:1px solid var(--border2);
+      display:flex; flex-direction:column;
+      transform:translateX(100%); transition:transform .3s cubic-bezier(.4,0,.2,1);
+      box-shadow:-24px 0 64px rgba(0,0,0,.5);
     }
-    .module-chip:hover { border-color: var(--border2); background: rgba(255,255,255,0.06); }
+    .drawer.open { transform:translateX(0); }
 
-    .chip-top { display: flex; align-items: center; gap: .75rem; }
-    .module-chip-icon {
-      width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+    .drawer-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:1.25rem 1.5rem; border-bottom:1px solid var(--border);
+      flex-shrink:0;
     }
-    .module-chip-icon.green  { background: rgba(52,211,153,.15);  border: 1px solid rgba(52,211,153,.25);  color: #34d399; }
-    .module-chip-icon.amber  { background: rgba(251,191,36,.15);  border: 1px solid rgba(251,191,36,.25);  color: #fbbf24; }
-    .module-chip-icon.purple { background: rgba(167,139,250,.15); border: 1px solid rgba(167,139,250,.25); color: #a78bfa; }
-    .module-chip-icon.blue   { background: rgba(96,165,250,.15);  border: 1px solid rgba(96,165,250,.25);  color: #60a5fa; }
+    .drawer-header-left { display:flex; align-items:center; gap:.85rem; }
+    .drawer-avatar {
+      width:44px; height:44px; border-radius:13px; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      font-family:'Sora',sans-serif; font-size:.9rem; font-weight:800;
+      background:rgba(67,128,226,.2); color:var(--accent2);
+      border:1px solid rgba(67,128,226,.3);
+    }
+    .drawer-role-name { font-family:'Sora',sans-serif; font-size:1.1rem; font-weight:700; }
+    .drawer-role-sub  { font-size:.74rem; color:var(--w40); margin-top:.15rem; }
+    .drawer-close { background:var(--w08); border:1px solid var(--border); color:var(--w60); width:32px; height:32px; border-radius:8px; cursor:pointer; font-size:1rem; display:flex; align-items:center; justify-content:center; transition:all .15s; }
+    .drawer-close:hover { background:var(--w15); color:var(--white); }
 
-    .chip-info { flex: 1; min-width: 0; }
-    .module-chip-name { font-size: .84rem; font-weight: 600; color: var(--white); }
-    .module-chip-key  { font-size: .68rem; color: var(--w40); font-family: monospace; margin-top: .1rem; }
+    .drawer-toolbar {
+      display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem;
+      padding:.75rem 1.5rem; border-bottom:1px solid var(--border); flex-shrink:0;
+    }
+    .drawer-filter-pills { display:flex; gap:.4rem; flex-wrap:wrap; }
+    .drawer-actions { display:flex; gap:.4rem; }
 
-    .chip-desc { font-size: .72rem; color: var(--w60); line-height: 1.45; padding: 0 .1rem; }
+    .drawer-body { flex:1; overflow-y:auto; padding:1.25rem 1.5rem; }
 
-    .chip-footer { display: flex; align-items: center; gap: .4rem; margin-top: .1rem; }
-    .chip-cat-badge {
-      padding: .15rem .5rem; border-radius: 5px;
-      font-size: .62rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    /* ── Module toggle list inside drawer ── */
+    .drawer-cat-label {
+      font-size:.68rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+      color:var(--w40); margin:1.25rem 0 .6rem; padding-bottom:.35rem;
+      border-bottom:1px solid var(--border);
     }
-    .chip-cat-badge.hr      { background: rgba(52,211,153,.15);  color: #34d399; }
-    .chip-cat-badge.fleet   { background: rgba(251,191,36,.15);  color: #fbbf24; }
-    .chip-cat-badge.finance { background: rgba(167,139,250,.15); color: #a78bfa; }
-    .chip-cat-badge.general { background: rgba(96,165,250,.15);  color: #60a5fa; }
+    .drawer-cat-label:first-child { margin-top:0; }
 
-    .chip-actions { margin-left: auto; display: flex; gap: .3rem; }
-    .module-chip-edit, .module-chip-del {
-      background: none; border: none; cursor: pointer;
-      font-size: .8rem; padding: .25rem .4rem;
-      border-radius: 6px; transition: color .15s, background .15s;
+    .module-row {
+      display:flex; align-items:center; gap:.9rem;
+      padding:.75rem .9rem; border-radius:12px;
+      transition:background .15s; cursor:pointer;
+      border:1px solid transparent; margin-bottom:.35rem;
     }
-    .module-chip-edit { color: var(--w40); }
-    .module-chip-edit:hover { color: var(--accent2); background: rgba(147,197,253,.1); }
-    .module-chip-del  { color: var(--w40); }
-    .module-chip-del:hover  { color: var(--red); background: rgba(248,113,113,.1); }
+    .module-row:hover { background:rgba(255,255,255,.04); border-color:var(--border); }
+    .module-row.granted { background:rgba(52,211,153,.05); border-color:rgba(52,211,153,.15); }
 
-    /* ── Homepage preview strip ───────────────────────────── */
-    .preview-strip {
-      margin-top: .6rem;
-      padding: .65rem .9rem;
-      background: rgba(255,255,255,.03); border-radius: 10px;
-      border: 1px solid rgba(255,255,255,.06);
-      font-size: .72rem; color: var(--w40);
-      display: flex; align-items: center; gap: .5rem;
+    .mod-row-icon {
+      width:36px; height:36px; border-radius:10px; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center; font-size:1rem;
     }
-    .preview-strip i { font-size: .8rem; }
+    .mod-row-icon.green  { background:rgba(52,211,153,.15);  border:1px solid rgba(52,211,153,.25);  color:#34d399; }
+    .mod-row-icon.amber  { background:rgba(251,191,36,.15);  border:1px solid rgba(251,191,36,.25);  color:#fbbf24; }
+    .mod-row-icon.purple { background:rgba(167,139,250,.15); border:1px solid rgba(167,139,250,.25); color:#a78bfa; }
+    .mod-row-icon.blue   { background:rgba(96,165,250,.15);  border:1px solid rgba(96,165,250,.25);  color:#60a5fa; }
 
-    /* ── Modals (shared) ──────────────────────────────────── */
-    .modal-backdrop {
-      display: none; position: fixed; inset: 0; z-index: 100;
-      background: rgba(0,0,0,.6); backdrop-filter: blur(4px);
-      align-items: center; justify-content: center;
-    }
-    .modal-backdrop.open { display: flex; }
-    .modal {
-      background: #0f1c3a; border: 1px solid var(--border2);
-      border-radius: 20px; padding: 1.75rem;
-      width: 100%; max-width: 520px;
-      box-shadow: 0 24px 64px rgba(0,0,0,.5);
-      animation: popIn .2s ease both;
-    }
-    @keyframes popIn {
-      from { opacity:0; transform:scale(.94) translateY(10px); }
-      to   { opacity:1; transform:scale(1) translateY(0); }
-    }
-    .modal-title {
-      font-family: 'Sora', sans-serif;
-      font-size: 1.05rem; font-weight: 700; margin-bottom: 1.25rem;
-      display: flex; align-items: center; gap: .5rem;
-    }
-    .form-group { margin-bottom: 1rem; }
-    .form-label {
-      display: block; font-size: .74rem; font-weight: 600;
-      color: var(--w60); margin-bottom: .35rem;
-      letter-spacing: .04em; text-transform: uppercase;
-    }
-    .form-control {
-      width: 100%; padding: .55rem .85rem;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid var(--border2); border-radius: 10px;
-      color: var(--white); font-size: .82rem; outline: none;
-      transition: border-color .2s; font-family: 'DM Sans', sans-serif;
-    }
-    .form-control:focus { border-color: var(--accent); }
-    select.form-control option { background: #0f1c3a; }
-    .form-row { display: flex; gap: .75rem; }
-    .form-row .form-group { flex: 1; }
-    .modal-footer { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.25rem; }
+    .mod-row-info { flex:1; min-width:0; }
+    .mod-row-name { font-size:.85rem; font-weight:600; color:var(--white); }
+    .mod-row-key  { font-size:.68rem; color:var(--w40); font-family:monospace; margin-top:.1rem; }
 
-    /* ── Live card preview inside modal ──────────────────── */
-    .card-preview-wrap {
-      margin-bottom: 1.25rem;
-      background: rgba(255,255,255,.03); border: 1px solid var(--border);
-      border-radius: 14px; padding: .9rem 1rem;
-    }
-    .card-preview-label {
-      font-size: .66rem; font-weight: 700; letter-spacing: .06em;
-      text-transform: uppercase; color: var(--w40); margin-bottom: .65rem;
-    }
-    /* Mirrors homepage .hub-card exactly */
-    .hp-card-preview {
-      display: inline-flex; flex-direction: column; align-items: center;
-      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,.15);
-      border-radius: 18px; padding: 1.4rem 1.1rem 1.2rem;
-      min-width: 150px; max-width: 190px; text-align: center;
-      box-shadow: 0 4px 20px rgba(8,23,61,.2);
-    }
-    .hp-card-preview .prev-icon { font-size: 2.1rem; margin-bottom: .7rem; display: block; line-height: 1; }
-    .hp-card-preview .prev-icon.blue   { color: #60a5fa; }
-    .hp-card-preview .prev-icon.green  { color: #34d399; }
-    .hp-card-preview .prev-icon.amber  { color: #fbbf24; }
-    .hp-card-preview .prev-icon.purple { color: #a78bfa; }
-    .hp-card-preview .prev-name { font-family: 'Sora', sans-serif; font-size: .9rem; font-weight: 700; margin-bottom: .3rem; }
-    .hp-card-preview .prev-desc { font-size: .72rem; color: var(--w60); line-height: 1.45; }
+    /* Toggle */
+    .toggle { position:relative; display:inline-block; width:42px; height:24px; cursor:pointer; flex-shrink:0; }
+    .toggle input { display:none; }
+    .toggle-track { position:absolute; inset:0; background:var(--off-color); border-radius:999px; transition:background .2s; border:1px solid rgba(255,255,255,.1); }
+    .toggle input:checked ~ .toggle-track { background:var(--on-color); border-color:var(--on-color); }
+    .toggle-thumb { position:absolute; top:3px; left:3px; width:16px; height:16px; background:#fff; border-radius:50%; transition:transform .2s; box-shadow:0 1px 4px rgba(0,0,0,.3); }
+    .toggle input:checked ~ .toggle-thumb { transform:translateX(18px); }
 
-    /* Icon search */
-    .icon-search-wrap { position: relative; }
-    .icon-suggestions {
-      position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
-      background: #0f1c3a; border: 1px solid var(--border2); border-radius: 10px;
-      max-height: 160px; overflow-y: auto; display: none;
-    }
-    .icon-suggestions.open { display: block; }
-    .icon-sug-item {
-      display: flex; align-items: center; gap: .6rem;
-      padding: .45rem .8rem; cursor: pointer; font-size: .8rem;
-      transition: background .1s;
-    }
-    .icon-sug-item:hover { background: rgba(255,255,255,.06); }
-    .icon-sug-item i { font-size: 1rem; color: var(--accent2); width: 20px; text-align: center; }
+    /* ── Module Registry (tab 2) ── */
+    .registry-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem; flex-wrap:wrap; gap:.75rem; animation:fadeUp .4s .2s ease both; }
+    .panel-title { font-family:'Sora',sans-serif; font-size:1rem; font-weight:700; color:var(--white); }
+    .panel-title span { color:var(--w40); font-size:.8rem; font-weight:400; }
 
-    /* ── Confirm overlay (replaces native confirm()) ──────── */
-    .confirm-overlay {
-      display: none; position: fixed; inset: 0; z-index: 200;
-      background: rgba(0,0,0,.65); backdrop-filter: blur(4px);
-      align-items: center; justify-content: center;
-    }
-    .confirm-overlay.open { display: flex; }
-    .confirm-box {
-      background: #0f1c3a; border: 1px solid rgba(248,113,113,.3);
-      border-radius: 18px; padding: 1.75rem; max-width: 380px; width: 100%;
-      box-shadow: 0 24px 64px rgba(0,0,0,.6); animation: popIn .2s ease both;
-      text-align: center;
-    }
-    .confirm-box-icon { font-size: 2rem; color: var(--red); margin-bottom: .75rem; }
-    .confirm-box-title { font-family: 'Sora', sans-serif; font-size: 1rem; font-weight: 700; margin-bottom: .5rem; }
-    .confirm-box-msg { font-size: .82rem; color: var(--w60); margin-bottom: 1.25rem; line-height: 1.5; }
-    .confirm-box-actions { display: flex; gap: .6rem; justify-content: center; }
+    .modules-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:.75rem; }
 
-    /* ── Toast ────────────────────────────────────────────── */
-    .toast-wrap {
-      position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 300;
-      display: flex; flex-direction: column; gap: .5rem; pointer-events: none;
-    }
-    .toast {
-      display: flex; align-items: center; gap: .6rem;
-      padding: .65rem 1rem;
-      background: #0f1c3a; border: 1px solid var(--border2);
-      border-radius: 12px; font-size: .8rem;
-      box-shadow: 0 8px 24px rgba(0,0,0,.4);
-      animation: toastIn .25s ease both; pointer-events: auto;
-    }
-    .toast.success { border-color: rgba(52,211,153,.4); }
-    .toast.error   { border-color: rgba(248,113,113,.4); }
-    .toast i.success { color: var(--green); }
-    .toast i.error   { color: var(--red); }
-    @keyframes toastIn  { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
-    @keyframes toastOut { to   { opacity:0; transform:translateX(20px); } }
+    .module-chip { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:1rem 1rem .85rem; display:flex; flex-direction:column; gap:.6rem; transition:border-color .2s,background .2s; position:relative; }
+    .module-chip:hover { border-color:var(--border2); background:rgba(255,255,255,0.06); }
+    .chip-top { display:flex; align-items:center; gap:.75rem; }
+    .module-chip-icon { width:38px; height:38px; border-radius:11px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:1.1rem; }
+    .module-chip-icon.green  { background:rgba(52,211,153,.15);  border:1px solid rgba(52,211,153,.25);  color:#34d399; }
+    .module-chip-icon.amber  { background:rgba(251,191,36,.15);  border:1px solid rgba(251,191,36,.25);  color:#fbbf24; }
+    .module-chip-icon.purple { background:rgba(167,139,250,.15); border:1px solid rgba(167,139,250,.25); color:#a78bfa; }
+    .module-chip-icon.blue   { background:rgba(96,165,250,.15);  border:1px solid rgba(96,165,250,.25);  color:#60a5fa; }
+    .chip-info { flex:1; min-width:0; }
+    .module-chip-name { font-size:.84rem; font-weight:600; color:var(--white); }
+    .module-chip-key  { font-size:.68rem; color:var(--w40); font-family:monospace; margin-top:.1rem; }
+    .chip-desc { font-size:.72rem; color:var(--w60); line-height:1.45; padding:0 .1rem; }
+    .chip-footer { display:flex; align-items:center; gap:.4rem; margin-top:.1rem; }
+    .chip-cat-badge { padding:.15rem .5rem; border-radius:5px; font-size:.62rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+    .chip-cat-badge.hr      { background:rgba(52,211,153,.15);  color:#34d399; }
+    .chip-cat-badge.fleet   { background:rgba(251,191,36,.15);  color:#fbbf24; }
+    .chip-cat-badge.finance { background:rgba(167,139,250,.15); color:#a78bfa; }
+    .chip-cat-badge.general { background:rgba(96,165,250,.15);  color:#60a5fa; }
+    .chip-actions { margin-left:auto; display:flex; gap:.3rem; }
+    .module-chip-edit, .module-chip-del { background:none; border:none; cursor:pointer; font-size:.8rem; padding:.25rem .4rem; border-radius:6px; transition:color .15s,background .15s; }
+    .module-chip-edit { color:var(--w40); }
+    .module-chip-edit:hover { color:var(--accent2); background:rgba(147,197,253,.1); }
+    .module-chip-del  { color:var(--w40); }
+    .module-chip-del:hover  { color:var(--red); background:rgba(248,113,113,.1); }
 
-    /* ── Misc ─────────────────────────────────────────────── */
-    @keyframes fadeUp {
-      from { opacity:0; transform:translateY(14px); }
-      to   { opacity:1; transform:translateY(0); }
-    }
-    .empty-row td { text-align: center; padding: 2rem; color: var(--w40); font-size: .82rem; }
+    .preview-strip { margin-top:.6rem; padding:.65rem .9rem; background:rgba(255,255,255,.03); border-radius:10px; border:1px solid rgba(255,255,255,.06); font-size:.72rem; color:var(--w40); display:flex; align-items:center; gap:.5rem; }
 
-    @media (max-width: 640px) {
-      .page-title { font-size: 1.35rem; }
-      .wrap { padding: 1.25rem 1rem 3rem; }
-      .form-row { flex-direction: column; gap: 0; }
+    .hp-card-preview { display:inline-flex; flex-direction:column; align-items:center; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,.15); border-radius:18px; padding:1.4rem 1.1rem 1.2rem; min-width:150px; max-width:190px; text-align:center; box-shadow:0 4px 20px rgba(8,23,61,.2); }
+    .hp-card-preview .prev-icon { font-size:2.1rem; margin-bottom:.7rem; display:block; line-height:1; }
+    .hp-card-preview .prev-icon.blue   { color:#60a5fa; }
+    .hp-card-preview .prev-icon.green  { color:#34d399; }
+    .hp-card-preview .prev-icon.amber  { color:#fbbf24; }
+    .hp-card-preview .prev-icon.purple { color:#a78bfa; }
+    .hp-card-preview .prev-name { font-family:'Sora',sans-serif; font-size:.9rem; font-weight:700; margin-bottom:.3rem; }
+    .hp-card-preview .prev-desc { font-size:.72rem; color:var(--w60); line-height:1.45; }
+
+    /* ── Filter row for roles tab ── */
+    .filter-row { display:flex; gap:.75rem; flex-wrap:wrap; align-items:center; margin-bottom:1.25rem; animation:fadeUp .4s .15s ease both; }
+    .search-box { display:flex; align-items:center; gap:.5rem; background:var(--surface); border:1px solid var(--border2); border-radius:10px; padding:.45rem .85rem; flex:1; min-width:200px; max-width:320px; }
+    .search-box i { color:var(--w40); font-size:.9rem; }
+    .search-box input { background:none; border:none; outline:none; color:var(--white); font-size:.82rem; width:100%; font-family:'DM Sans',sans-serif; }
+    .search-box input::placeholder { color:var(--w40); }
+
+    .pill { padding:.3rem .8rem; border-radius:999px; font-size:.72rem; font-weight:600; cursor:pointer; border:1px solid var(--border2); background:var(--w08); color:var(--w60); transition:all .15s; }
+    .pill.active, .pill:hover { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+    /* ── Modals (shared) ── */
+    .modal-backdrop { display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; }
+    .modal-backdrop.open { display:flex; }
+    .modal { background:#0f1c3a; border:1px solid var(--border2); border-radius:20px; padding:1.75rem; width:100%; max-width:520px; box-shadow:0 24px 64px rgba(0,0,0,.5); animation:popIn .2s ease both; }
+    @keyframes popIn { from{opacity:0;transform:scale(.94) translateY(10px);} to{opacity:1;transform:scale(1) translateY(0);} }
+    .modal-title { font-family:'Sora',sans-serif; font-size:1.05rem; font-weight:700; margin-bottom:1.25rem; display:flex; align-items:center; gap:.5rem; }
+    .form-group { margin-bottom:1rem; }
+    .form-label { display:block; font-size:.74rem; font-weight:600; color:var(--w60); margin-bottom:.35rem; letter-spacing:.04em; text-transform:uppercase; }
+    .form-control { width:100%; padding:.55rem .85rem; background:rgba(255,255,255,0.06); border:1px solid var(--border2); border-radius:10px; color:var(--white); font-size:.82rem; outline:none; transition:border-color .2s; font-family:'DM Sans',sans-serif; }
+    .form-control:focus { border-color:var(--accent); }
+    select.form-control option { background:#0f1c3a; }
+    .form-row { display:flex; gap:.75rem; }
+    .form-row .form-group { flex:1; }
+    .modal-footer { display:flex; justify-content:flex-end; gap:.6rem; margin-top:1.25rem; }
+    .form-hint { font-size:.72rem; color:var(--w40); margin-top:.3rem; }
+
+    .card-preview-wrap { margin-bottom:1.25rem; background:rgba(255,255,255,.03); border:1px solid var(--border); border-radius:14px; padding:.9rem 1rem; }
+    .card-preview-label { font-size:.66rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--w40); margin-bottom:.65rem; }
+
+    .icon-search-wrap { position:relative; }
+    .icon-suggestions { position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:10; background:#0f1c3a; border:1px solid var(--border2); border-radius:10px; max-height:160px; overflow-y:auto; display:none; }
+    .icon-suggestions.open { display:block; }
+    .icon-sug-item { display:flex; align-items:center; gap:.6rem; padding:.45rem .8rem; cursor:pointer; font-size:.8rem; transition:background .1s; }
+    .icon-sug-item:hover { background:rgba(255,255,255,.06); }
+    .icon-sug-item i { font-size:1rem; color:var(--accent2); width:20px; text-align:center; }
+
+    /* ── Confirm overlay ── */
+    .confirm-overlay { display:none; position:fixed; inset:0; z-index:300; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); align-items:center; justify-content:center; }
+    .confirm-overlay.open { display:flex; }
+    .confirm-box { background:#0f1c3a; border:1px solid rgba(248,113,113,.3); border-radius:18px; padding:1.75rem; max-width:380px; width:100%; box-shadow:0 24px 64px rgba(0,0,0,.6); animation:popIn .2s ease both; text-align:center; }
+    .confirm-box-icon { font-size:2rem; color:var(--red); margin-bottom:.75rem; }
+    .confirm-box-title { font-family:'Sora',sans-serif; font-size:1rem; font-weight:700; margin-bottom:.5rem; }
+    .confirm-box-msg { font-size:.82rem; color:var(--w60); margin-bottom:1.25rem; line-height:1.5; }
+    .confirm-box-actions { display:flex; gap:.6rem; justify-content:center; }
+
+    /* ── Toast ── */
+    .toast-wrap { position:fixed; bottom:1.5rem; right:1.5rem; z-index:400; display:flex; flex-direction:column; gap:.5rem; pointer-events:none; }
+    .toast { display:flex; align-items:center; gap:.6rem; padding:.65rem 1rem; background:#0f1c3a; border:1px solid var(--border2); border-radius:12px; font-size:.8rem; box-shadow:0 8px 24px rgba(0,0,0,.4); animation:toastIn .25s ease both; pointer-events:auto; }
+    .toast.success { border-color:rgba(52,211,153,.4); }
+    .toast.error   { border-color:rgba(248,113,113,.4); }
+    .toast i.success { color:var(--green); }
+    .toast i.error   { color:var(--red); }
+    @keyframes toastIn  { from{opacity:0;transform:translateX(20px);} to{opacity:1;transform:translateX(0);} }
+    @keyframes toastOut { to{opacity:0;transform:translateX(20px);} }
+
+    @keyframes fadeUp { from{opacity:0;transform:translateY(14px);} to{opacity:1;transform:translateY(0);} }
+    .empty-state { text-align:center; padding:3rem 1rem; color:var(--w40); font-size:.85rem; }
+    .empty-state i { font-size:2.5rem; display:block; margin-bottom:.75rem; opacity:.4; }
+
+    @media (max-width:640px) {
+      .page-title { font-size:1.35rem; }
+      .wrap { padding:1.25rem 1rem 3rem; }
+      .form-row { flex-direction:column; gap:0; }
     }
   </style>
 </head>
 <body>
-
 <div class="mesh"></div>
-
 <div class="wrap">
 
   <!-- ── Page Header ── -->
   <div class="page-header">
-    <div class="page-header-left">
-      <div class="breadcrumb">
-        <a href="<?= route('home') ?>">Home</a> &rsaquo; RBAC
-      </div>
+    <div>
+      <div class="breadcrumb"><a href="<?= route('home') ?>">Home</a> &rsaquo; RBAC</div>
       <div class="page-title">Role-Based <span>Access Control</span></div>
       <div class="page-sub">Manage which user types can access each portal module.</div>
     </div>
     <div class="page-header-right">
+      <button class="btn btn-success" id="btnAddRole">
+        <i class="bi bi-person-plus-fill"></i> Add User Type
+      </button>
       <button class="btn btn-primary" id="btnAddModule">
         <i class="bi bi-plus-lg"></i> Add Module
       </button>
@@ -529,7 +448,7 @@ $modulesJson = json_encode(array_values($modules));
     <div class="stat-chip">
       <div class="dot" style="background:#4380e2"></div>
       <div>
-        <div class="stat-chip-num"><?= count($rolesFromUsers) ?></div>
+        <div class="stat-chip-num" id="statRoleCount"><?= count($allRoles) ?></div>
         <div class="stat-chip-label">User Types</div>
       </div>
     </div>
@@ -543,7 +462,7 @@ $modulesJson = json_encode(array_values($modules));
     <div class="stat-chip">
       <div class="dot" style="background:#fbbf24"></div>
       <div>
-        <div class="stat-chip-num" id="statGrantCount"><?= count(array_filter($permsRaw, fn($p) => $p['can_access'])) ?></div>
+        <div class="stat-chip-num" id="statGrantCount"><?= $totalGrants ?></div>
         <div class="stat-chip-label">Active Grants</div>
       </div>
     </div>
@@ -553,95 +472,75 @@ $modulesJson = json_encode(array_values($modules));
     </div>
   </div>
 
-  <!-- ── Filter row ── -->
-  <div class="filter-row">
-    <div class="search-box">
-      <i class="bi bi-search"></i>
-      <input type="text" id="roleSearch" placeholder="Search user type…">
-    </div>
-    <div class="filter-pills">
-      <span class="pill active" data-cat="all">All</span>
-      <span class="pill" data-cat="hr">HR</span>
-      <span class="pill" data-cat="fleet">Fleet</span>
-      <span class="pill" data-cat="finance">Finance</span>
-      <span class="pill" data-cat="general">General</span>
-    </div>
+  <!-- ── Tabs ── -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="roles">
+      <i class="bi bi-people-fill"></i> User Types
+      <span class="tab-badge" id="tabRoleBadge"><?= count($allRoles) ?></span>
+    </button>
+    <button class="tab-btn" data-tab="registry">
+      <i class="bi bi-grid-fill"></i> Module Registry
+      <span class="tab-badge" id="tabModBadge"><?= count($modules) ?></span>
+    </button>
   </div>
 
-  <!-- ── Permissions Matrix ── -->
-  <div class="matrix-card">
-    <div class="table-scroll">
-      <table id="permMatrix">
-        <thead>
-          <tr id="matrixHead">
-            <th style="min-width:180px">User Type</th>
-            <?php foreach ($modules as $mod):
-              $catColor = $categoryMeta[$mod['category']]['color'] ?? '#60a5fa';
-              $catLabel = $categoryMeta[$mod['category']]['label'] ?? $mod['category'];
-            ?>
-            <th class="mod-col" data-cat="<?= $mod['category'] ?>" data-mod-key="<?= htmlspecialchars($mod['module_key']) ?>">
-              <div class="mod-col-inner">
-                <i class="bi <?= htmlspecialchars($mod['icon']) ?> mod-col-icon" style="color:<?= $catColor ?>"></i>
-                <div class="mod-col-name"><?= htmlspecialchars($mod['module_name']) ?></div>
-                <span class="cat-badge" style="background:<?= $catColor ?>22;color:<?= $catColor ?>"><?= $catLabel ?></span>
-              </div>
-            </th>
-            <?php endforeach; ?>
-            <th class="th-actions" style="min-width:130px; text-align:center;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="matrixBody">
-          <?php foreach ($rolesFromUsers as $role):
-            $rn       = $role['role_name'];
-            $initials = strtoupper(substr($rn, 0, 2));
-          ?>
-          <tr data-role="<?= htmlspecialchars($rn) ?>">
-            <td>
-              <div class="role-cell">
-                <div class="role-avatar"><?= $initials ?></div>
-                <div>
-                  <div class="role-name"><?= htmlspecialchars($rn) ?></div>
-                  <div class="role-count"><?= number_format($role['total']) ?> users</div>
-                </div>
-              </div>
-            </td>
-            <?php foreach ($modules as $mod):
-              $key     = $rn . '|' . $mod['module_key'];
-              $checked = isset($permsMap[$key]) && $permsMap[$key] ? 'checked' : '';
-            ?>
-            <td class="toggle-cell" data-cat="<?= $mod['category'] ?>">
-              <label class="toggle">
-                <input type="checkbox" <?= $checked ?>
-                       data-role="<?= htmlspecialchars($rn) ?>"
-                       data-module="<?= htmlspecialchars($mod['module_key']) ?>">
-                <div class="toggle-track"></div>
-                <div class="toggle-thumb"></div>
-              </label>
-            </td>
-            <?php endforeach; ?>
-            <td>
-              <div class="row-actions">
-                <button class="btn btn-sm btn-grant-all" data-role="<?= htmlspecialchars($rn) ?>" title="Grant all modules">
-                  <i class="bi bi-check-all"></i> All
-                </button>
-                <button class="btn btn-sm btn-revoke-all" data-role="<?= htmlspecialchars($rn) ?>" title="Revoke all modules">
-                  <i class="bi bi-x-lg"></i> None
-                </button>
-              </div>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-          <?php if (!$rolesFromUsers): ?>
-          <tr class="empty-row"><td colspan="<?= count($modules) + 2 ?>">No user types found.</td></tr>
-          <?php endif; ?>
-        </tbody>
-      </table>
-    </div>
-  </div>
+  <!-- ══════════════════ TAB: USER TYPES ══════════════════ -->
+  <div class="tab-panel active" id="tab-roles">
 
-  <!-- ── Module Registry ── -->
-  <div class="modules-panel">
-    <div class="panel-header">
+    <!-- Filter row -->
+    <div class="filter-row">
+      <div class="search-box">
+        <i class="bi bi-search"></i>
+        <input type="text" id="roleSearch" placeholder="Search user type…">
+      </div>
+    </div>
+
+    <!-- Role cards -->
+    <div class="roles-grid" id="rolesGrid">
+      <?php foreach ($allRoles as $role):
+        $rn       = $role['role_name'];
+        $total    = (int)$role['total'];
+        $granted  = $roleGrantCount[$rn] ?? 0;
+        $modCount = count($modules);
+        $pct      = $modCount > 0 ? round($granted / $modCount * 100) : 0;
+        $initials = strtoupper(substr($rn, 0, 2));
+      ?>
+      <div class="role-card" data-role="<?= htmlspecialchars($rn) ?>" data-total="<?= $total ?>">
+        <button class="role-card-del btn btn-sm btn-danger"
+                data-role="<?= htmlspecialchars($rn) ?>"
+                title="Delete user type"
+                onclick="event.stopPropagation()">
+          <i class="bi bi-trash3"></i>
+        </button>
+        <div class="role-card-top">
+          <div class="role-avatar"><?= $initials ?></div>
+          <div class="role-card-info">
+            <div class="role-card-name"><?= htmlspecialchars($rn) ?></div>
+            <div class="role-card-sub"><?= $total > 0 ? number_format($total) . ' user' . ($total !== 1 ? 's' : '') : '<em>No users yet</em>' ?></div>
+          </div>
+          <i class="bi bi-chevron-right role-card-arrow"></i>
+        </div>
+        <div class="role-grant-bar">
+          <div class="role-grant-fill" style="width:<?= $pct ?>%"></div>
+        </div>
+        <div class="role-card-footer">
+          <span class="role-grant-label"><strong><?= $granted ?></strong> / <?= $modCount ?> modules granted</span>
+          <span class="role-grant-label"><?= $pct ?>%</span>
+        </div>
+      </div>
+      <?php endforeach; ?>
+      <?php if (!$allRoles): ?>
+      <div class="empty-state" style="grid-column:1/-1">
+        <i class="bi bi-people"></i>
+        No user types found. Add one to get started.
+      </div>
+      <?php endif; ?>
+    </div>
+  </div><!-- /tab-roles -->
+
+  <!-- ══════════════════ TAB: MODULE REGISTRY ══════════════════ -->
+  <div class="tab-panel" id="tab-registry">
+    <div class="registry-header">
       <div class="panel-title">
         Module Registry <span id="moduleRegistryCount">— <?= count($modules) ?> portal card<?= count($modules) !== 1 ? 's' : '' ?></span>
       </div>
@@ -672,8 +571,7 @@ $modulesJson = json_encode(array_values($modules));
         <div class="chip-footer">
           <span class="chip-cat-badge <?= htmlspecialchars($mod['category']) ?>"><?= $catLabel ?></span>
           <div class="chip-actions">
-            <button class="module-chip-edit" title="Edit module"
-                    data-key="<?= htmlspecialchars($mod['module_key']) ?>">
+            <button class="module-chip-edit" title="Edit module" data-key="<?= htmlspecialchars($mod['module_key']) ?>">
               <i class="bi bi-pencil"></i>
             </button>
             <button class="module-chip-del" title="Delete module"
@@ -683,11 +581,7 @@ $modulesJson = json_encode(array_values($modules));
             </button>
           </div>
         </div>
-        <div class="preview-strip">
-          <i class="bi bi-eye"></i>
-          Homepage card preview ↓
-        </div>
-        <!-- Homepage card preview -->
+        <div class="preview-strip"><i class="bi bi-eye"></i> Homepage card preview ↓</div>
         <div class="hp-card-preview" style="width:100%">
           <i class="bi <?= htmlspecialchars($mod['icon']) ?> prev-icon <?= htmlspecialchars($mod['color']) ?>"></i>
           <div class="prev-name"><?= htmlspecialchars($mod['module_name']) ?></div>
@@ -696,9 +590,65 @@ $modulesJson = json_encode(array_values($modules));
       </div>
       <?php endforeach; ?>
     </div>
-  </div>
+  </div><!-- /tab-registry -->
 
 </div><!-- /.wrap -->
+
+<!-- ══════════════════════════════════════════════════════════
+     DRAWER OVERLAY + DRAWER
+     ══════════════════════════════════════════════════════════ -->
+<div class="drawer-overlay" id="drawerOverlay"></div>
+<div class="drawer" id="roleDrawer">
+  <div class="drawer-header">
+    <div class="drawer-header-left">
+      <div class="drawer-avatar" id="drawerAvatar">AD</div>
+      <div>
+        <div class="drawer-role-name" id="drawerRoleName">Role</div>
+        <div class="drawer-role-sub"  id="drawerRoleSub">0 users &middot; 0 grants</div>
+      </div>
+    </div>
+    <button class="drawer-close" id="drawerClose"><i class="bi bi-x-lg"></i></button>
+  </div>
+  <div class="drawer-toolbar">
+    <div class="drawer-filter-pills">
+      <span class="pill active" data-dcat="all">All</span>
+      <span class="pill" data-dcat="hr">HR</span>
+      <span class="pill" data-dcat="fleet">Fleet</span>
+      <span class="pill" data-dcat="finance">Finance</span>
+      <span class="pill" data-dcat="general">General</span>
+    </div>
+    <div class="drawer-actions">
+      <button class="btn btn-sm btn-success" id="drawerGrantAll"><i class="bi bi-check-all"></i> Grant All</button>
+      <button class="btn btn-sm btn-danger"  id="drawerRevokeAll"><i class="bi bi-x-lg"></i> Revoke All</button>
+    </div>
+  </div>
+  <div class="drawer-body" id="drawerBody">
+    <!-- Populated by JS -->
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     ADD USER TYPE MODAL
+     ══════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="addRoleModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">
+      <i class="bi bi-person-plus-fill" style="color:var(--green)"></i>
+      Add User Type
+    </div>
+    <div class="form-group">
+      <label class="form-label">User Type Name</label>
+      <input class="form-control" id="r_name" placeholder="e.g. Supervisor">
+      <div class="form-hint">This becomes a role_name in the permissions table. Use PascalCase, no spaces.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="closeAddRole">Cancel</button>
+      <button class="btn btn-primary" id="saveRole">
+        <i class="bi bi-check-lg"></i> Create User Type
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════
      ADD MODULE MODAL
@@ -709,8 +659,6 @@ $modulesJson = json_encode(array_values($modules));
       <i class="bi bi-plus-circle" style="color:var(--accent2)"></i>
       Add New Module
     </div>
-
-    <!-- Live homepage card preview -->
     <div class="card-preview-wrap">
       <div class="card-preview-label"><i class="bi bi-eye"></i> &nbsp;Live Homepage Card Preview</div>
       <div class="hp-card-preview" id="addPreviewCard">
@@ -719,7 +667,6 @@ $modulesJson = json_encode(array_values($modules));
         <div class="prev-desc" id="addPrevDesc">Description appears here</div>
       </div>
     </div>
-
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">Module Key <span style="color:var(--w40);font-weight:400;text-transform:none">(unique, no spaces)</span></label>
@@ -761,9 +708,7 @@ $modulesJson = json_encode(array_values($modules));
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="closeAddModal">Cancel</button>
-      <button class="btn btn-primary" id="saveModule">
-        <i class="bi bi-check-lg"></i> Save Module
-      </button>
+      <button class="btn btn-primary" id="saveModule"><i class="bi bi-check-lg"></i> Save Module</button>
     </div>
   </div>
 </div>
@@ -778,8 +723,6 @@ $modulesJson = json_encode(array_values($modules));
       Edit Module
       <span id="editModalKeyBadge" style="font-size:.72rem;font-weight:400;color:var(--w40);margin-left:.25rem;font-family:monospace;"></span>
     </div>
-
-    <!-- Live homepage card preview -->
     <div class="card-preview-wrap">
       <div class="card-preview-label"><i class="bi bi-eye"></i> &nbsp;Live Homepage Card Preview</div>
       <div class="hp-card-preview" id="editPreviewCard">
@@ -788,7 +731,6 @@ $modulesJson = json_encode(array_values($modules));
         <div class="prev-desc" id="editPrevDesc">Description appears here</div>
       </div>
     </div>
-
     <input type="hidden" id="e_key">
     <div class="form-row">
       <div class="form-group" style="flex:2">
@@ -822,14 +764,12 @@ $modulesJson = json_encode(array_values($modules));
       <div class="icon-suggestions" id="editIconSuggestions"></div>
     </div>
     <div class="form-group">
-      <label class="form-label">Description <span style="color:var(--w40);font-weight:400;text-transform:none">(shown on homepage card)</span></label>
+      <label class="form-label">Description</label>
       <input class="form-control" id="e_desc" placeholder="Short description for the card">
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="closeEditModal">Cancel</button>
-      <button class="btn btn-primary" id="updateModule">
-        <i class="bi bi-check-lg"></i> Save Changes
-      </button>
+      <button class="btn btn-primary" id="updateModule"><i class="bi bi-check-lg"></i> Save Changes</button>
     </div>
   </div>
 </div>
@@ -840,23 +780,384 @@ $modulesJson = json_encode(array_values($modules));
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
     <div class="confirm-box-icon"><i class="bi bi-trash3-fill"></i></div>
-    <div class="confirm-box-title" id="confirmTitle">Delete Module?</div>
-    <div class="confirm-box-msg" id="confirmMsg">This will permanently remove the module and all its permission grants.</div>
+    <div class="confirm-box-title" id="confirmTitle">Delete?</div>
+    <div class="confirm-box-msg"   id="confirmMsg">This action cannot be undone.</div>
     <div class="confirm-box-actions">
-      <button class="btn btn-ghost" id="confirmCancel">Cancel</button>
+      <button class="btn btn-ghost"  id="confirmCancel">Cancel</button>
       <button class="btn btn-danger" id="confirmOk"><i class="bi bi-trash3"></i> Delete</button>
     </div>
   </div>
 </div>
 
-<!-- Toast container -->
+<!-- Toast -->
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script>
-const ACTION_URL   = '<?= base_url('RBAC/rbac_action.php') ?>';
-let   activeFilter = 'all';
+const ACTION_URL = '<?= base_url('RBAC/rbac_action.php') ?>';
 
-// ── Bootstrap icon list (common subset for autocomplete) ─────
+// ── Data from PHP ─────────────────────────────────────────────
+const ALL_MODULES  = <?= $modulesJson ?>;
+let   permsMap     = <?= $permsMapJson ?>;  // "role|module_key" => 0|1
+
+// ── Helpers ───────────────────────────────────────────────────
+function toast(msg, type = 'success') {
+  const wrap = document.getElementById('toastWrap');
+  const el   = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<i class="bi ${type === 'success' ? 'bi-check-circle-fill success' : 'bi-x-circle-fill error'}"></i> ${msg}`;
+  wrap.appendChild(el);
+  setTimeout(() => {
+    el.style.animation = 'toastOut .25s ease forwards';
+    setTimeout(() => el.remove(), 260);
+  }, 2800);
+}
+
+function confirmDialog(title, msg) {
+  return new Promise(resolve => {
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').textContent   = msg;
+    const overlay = document.getElementById('confirmOverlay');
+    overlay.classList.add('open');
+    const ok = document.getElementById('confirmOk'), cancel = document.getElementById('confirmCancel');
+    function cleanup(r) { overlay.classList.remove('open'); ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); resolve(r); }
+    const onOk = () => cleanup(true), onCancel = () => cleanup(false);
+    ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel);
+  });
+}
+
+// ── Tabs ──────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    this.classList.add('active');
+    document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+  });
+});
+
+// If "Add Module" is clicked while on roles tab, switch to registry first
+document.getElementById('btnAddModule').addEventListener('click', () => {
+  // Switch to registry tab
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-tab="registry"]').classList.add('active');
+  document.getElementById('tab-registry').classList.add('active');
+  // Open modal
+  ['m_key','m_name','m_icon','m_desc'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('m_cat').value   = 'general';
+  document.getElementById('m_color').value = 'blue';
+  updatePreview('add');
+  document.getElementById('addModuleModal').classList.add('open');
+});
+
+// ── Role search ───────────────────────────────────────────────
+document.getElementById('roleSearch').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#rolesGrid .role-card').forEach(card => {
+    card.style.display = (card.dataset.role || '').toLowerCase().includes(q) ? '' : 'none';
+  });
+});
+
+// ── Stats counters ────────────────────────────────────────────
+function recountGrants() {
+  let total = 0;
+  for (const k in permsMap) { if (permsMap[k]) total++; }
+  document.getElementById('statGrantCount').textContent = total;
+}
+
+function resortRoleCards() {
+  const grid  = document.getElementById('rolesGrid');
+  const cards = Array.from(grid.querySelectorAll('.role-card'));
+  cards.sort((a, b) => {
+    const ga = parseInt(a.querySelector('.role-grant-label strong').textContent) || 0;
+    const gb = parseInt(b.querySelector('.role-grant-label strong').textContent) || 0;
+    return gb - ga || a.dataset.role.localeCompare(b.dataset.role);
+  });
+  cards.forEach(c => grid.appendChild(c));
+}
+
+function updateRoleCard(roleName) {
+  const card     = document.querySelector(`.role-card[data-role="${roleName}"]`);
+  if (!card) return;
+  const modCount = ALL_MODULES.length;
+  let   granted  = 0;
+  ALL_MODULES.forEach(m => { if (permsMap[roleName + '|' + m.module_key]) granted++; });
+  const pct      = modCount > 0 ? Math.round(granted / modCount * 100) : 0;
+  card.querySelector('.role-grant-fill').style.width = pct + '%';
+  card.querySelector('.role-grant-label strong').textContent = granted;
+  card.querySelectorAll('.role-grant-label')[1].textContent  = pct + '%';
+}
+
+// ── DRAWER ────────────────────────────────────────────────────
+let drawerRole        = '';
+let drawerCatFilter   = 'all';
+const drawer          = document.getElementById('roleDrawer');
+const drawerOverlay   = document.getElementById('drawerOverlay');
+
+function openDrawer(roleName, total) {
+  drawerRole = roleName;
+  drawerCatFilter = 'all';
+
+  // Reset filter pills
+  document.querySelectorAll('[data-dcat]').forEach(p => p.classList.toggle('active', p.dataset.dcat === 'all'));
+
+  // Header
+  document.getElementById('drawerAvatar').textContent   = roleName.substring(0,2).toUpperCase();
+  document.getElementById('drawerRoleName').textContent = roleName;
+
+  let granted = 0;
+  ALL_MODULES.forEach(m => { if (permsMap[roleName + '|' + m.module_key]) granted++; });
+  document.getElementById('drawerRoleSub').textContent  =
+    (total > 0 ? total + ' user' + (total != 1 ? 's' : '') : 'No users yet') +
+    ' · ' + granted + ' / ' + ALL_MODULES.length + ' modules';
+
+  renderDrawerBody();
+
+  drawer.classList.add('open');
+  drawerOverlay.classList.add('open');
+}
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  drawerOverlay.classList.remove('open');
+}
+
+function renderDrawerBody() {
+  const body   = document.getElementById('drawerBody');
+  const cats   = {hr:'HR', fleet:'Fleet', finance:'Finance', general:'General'};
+  const colors = {hr:'#34d399', fleet:'#fbbf24', finance:'#a78bfa', general:'#60a5fa'};
+
+  // Group by category
+  const grouped = {};
+  ALL_MODULES.forEach(m => {
+    if (drawerCatFilter !== 'all' && m.category !== drawerCatFilter) return;
+    if (!grouped[m.category]) grouped[m.category] = [];
+    grouped[m.category].push(m);
+  });
+
+  let html = '';
+  for (const cat in grouped) {
+    html += `<div class="drawer-cat-label" style="color:${colors[cat]||'#60a5fa'}">${cats[cat]||cat}</div>`;
+    grouped[cat].forEach(m => {
+      const key     = drawerRole + '|' + m.module_key;
+      const checked = permsMap[key] ? 'checked' : '';
+      const grantedClass = permsMap[key] ? 'granted' : '';
+      html += `
+        <div class="module-row ${grantedClass}" data-module="${m.module_key}">
+          <div class="mod-row-icon ${m.color}"><i class="bi ${m.icon}"></i></div>
+          <div class="mod-row-info">
+            <div class="mod-row-name">${m.module_name}</div>
+            <div class="mod-row-key">${m.module_key}</div>
+          </div>
+          <label class="toggle" onclick="event.stopPropagation()">
+            <input type="checkbox" ${checked} data-role="${drawerRole}" data-module="${m.module_key}">
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+        </div>`;
+    });
+  }
+
+  if (!html) html = `<div class="empty-state"><i class="bi bi-grid"></i> No modules in this category.</div>`;
+  body.innerHTML = html;
+  updateDrawerSub();
+}
+
+function updateDrawerSub() {
+  let granted = 0;
+  ALL_MODULES.forEach(m => { if (permsMap[drawerRole + '|' + m.module_key]) granted++; });
+  const totalUsers = document.querySelector(`.role-card[data-role="${drawerRole}"]`)?.dataset.total || 0;
+  document.getElementById('drawerRoleSub').textContent =
+    (totalUsers > 0 ? totalUsers + ' user' + (totalUsers != 1 ? 's' : '') : 'No users yet') +
+    ' · ' + granted + ' / ' + ALL_MODULES.length + ' modules';
+}
+
+// Open drawer on card click
+document.getElementById('rolesGrid').addEventListener('click', function(e) {
+  const card = e.target.closest('.role-card');
+  if (!card) return;
+  if (e.target.closest('.role-card-del')) return;
+  openDrawer(card.dataset.role, parseInt(card.dataset.total) || 0);
+});
+
+// Close drawer
+document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+drawerOverlay.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+
+// Drawer category filter
+document.querySelectorAll('[data-dcat]').forEach(pill => {
+  pill.addEventListener('click', function() {
+    document.querySelectorAll('[data-dcat]').forEach(p => p.classList.remove('active'));
+    this.classList.add('active');
+    drawerCatFilter = this.dataset.dcat;
+    renderDrawerBody();
+  });
+});
+
+// ── Toggle permission inside drawer ──────────────────────────
+document.getElementById('drawerBody').addEventListener('change', async function(e) {
+  const cb = e.target;
+  if (cb.type !== 'checkbox') return;
+  const role   = cb.dataset.role;
+  const mod    = cb.dataset.module;
+  const action = cb.checked ? 'grant' : 'revoke';
+
+  const row = cb.closest('.module-row');
+  row.style.opacity = '.5';
+  row.style.pointerEvents = 'none';
+
+  try {
+    const fd = new FormData();
+    fd.append('action', action); fd.append('role', role); fd.append('module', mod);
+    const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
+    const data = await res.json();
+    if (data.ok) {
+      permsMap[role + '|' + mod] = cb.checked ? 1 : 0;
+      row.classList.toggle('granted', cb.checked);
+      updateDrawerSub();
+      updateRoleCard(role);
+      recountGrants();
+      resortRoleCards();
+      toast(`${action === 'grant' ? 'Granted' : 'Revoked'} <strong>${mod}</strong> for <strong>${role}</strong>`);
+    } else {
+      toast(data.msg || 'Error saving.', 'error');
+      cb.checked = !cb.checked;
+    }
+  } catch(err) {
+    toast('Network error.', 'error');
+    cb.checked = !cb.checked;
+  }
+  row.style.opacity = '';
+  row.style.pointerEvents = '';
+});
+
+// ── Drawer: Grant All / Revoke All ───────────────────────────
+async function drawerBulkAction(action) {
+  const btn = action === 'grant_all'
+    ? document.getElementById('drawerGrantAll')
+    : document.getElementById('drawerRevokeAll');
+  btn.disabled = true;
+
+  try {
+    const fd = new FormData();
+    fd.append('action', action); fd.append('role', drawerRole);
+    const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
+    const data = await res.json();
+    if (data.ok) {
+      ALL_MODULES.forEach(m => {
+        permsMap[drawerRole + '|' + m.module_key] = action === 'grant_all' ? 1 : 0;
+      });
+      renderDrawerBody();
+      updateRoleCard(drawerRole);
+      recountGrants();
+      resortRoleCards();
+      toast(action === 'grant_all' ? 'All modules granted.' : 'All modules revoked.');
+    } else {
+      toast(data.msg || 'Error.', 'error');
+    }
+  } catch(err) {
+    toast('Network error.', 'error');
+  }
+  btn.disabled = false;
+}
+
+document.getElementById('drawerGrantAll').addEventListener('click',  () => drawerBulkAction('grant_all'));
+document.getElementById('drawerRevokeAll').addEventListener('click', () => drawerBulkAction('revoke_all'));
+
+// ── Add User Type ─────────────────────────────────────────────
+const addRoleModal = document.getElementById('addRoleModal');
+document.getElementById('btnAddRole').addEventListener('click', () => {
+  document.getElementById('r_name').value = '';
+  addRoleModal.classList.add('open');
+});
+document.getElementById('closeAddRole').addEventListener('click',  () => addRoleModal.classList.remove('open'));
+addRoleModal.addEventListener('click', e => { if (e.target === addRoleModal) addRoleModal.classList.remove('open'); });
+
+document.getElementById('saveRole').addEventListener('click', async () => {
+  const name = document.getElementById('r_name').value.trim();
+  if (!name) { toast('Role name is required.', 'error'); return; }
+  if (/\s/.test(name)) { toast('Role name cannot contain spaces.', 'error'); return; }
+
+  // Check duplicate in current grid
+  if (document.querySelector(`.role-card[data-role="${name}"]`)) {
+    toast('User type already exists.', 'error'); return;
+  }
+
+  const fd = new FormData();
+  fd.append('action',    'add_role');
+  fd.append('role_name', name);
+  const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
+  const data = await res.json();
+  if (!data.ok) { toast(data.msg || 'Error creating role.', 'error'); return; }
+
+  addRoleModal.classList.remove('open');
+  toast(`User type <strong>${name}</strong> created.`);
+
+  // Add card to DOM
+  const initials = name.substring(0,2).toUpperCase();
+  const modCount = ALL_MODULES.length;
+  const card = document.createElement('div');
+  card.className = 'role-card';
+  card.dataset.role  = name;
+  card.dataset.total = '0';
+  card.innerHTML = `
+    <button class="role-card-del btn btn-sm btn-danger" data-role="${name}" title="Delete user type" onclick="event.stopPropagation()">
+      <i class="bi bi-trash3"></i>
+    </button>
+    <div class="role-card-top">
+      <div class="role-avatar">${initials}</div>
+      <div class="role-card-info">
+        <div class="role-card-name">${name}</div>
+        <div class="role-card-sub"><em>No users yet</em></div>
+      </div>
+      <i class="bi bi-chevron-right role-card-arrow"></i>
+    </div>
+    <div class="role-grant-bar"><div class="role-grant-fill" style="width:0%"></div></div>
+    <div class="role-card-footer">
+      <span class="role-grant-label"><strong>0</strong> / ${modCount} modules granted</span>
+      <span class="role-grant-label">0%</span>
+    </div>`;
+  document.getElementById('rolesGrid').appendChild(card);
+
+  // Update stat
+  const cnt = document.querySelectorAll('#rolesGrid .role-card').length;
+  document.getElementById('statRoleCount').textContent = cnt;
+  document.getElementById('tabRoleBadge').textContent  = cnt;
+});
+
+// ── Delete Role ───────────────────────────────────────────────
+document.getElementById('rolesGrid').addEventListener('click', async e => {
+  const btn = e.target.closest('.role-card-del');
+  if (!btn) return;
+  const role = btn.dataset.role;
+
+  const confirmed = await confirmDialog(
+    `Delete "${role}"?`,
+    `This will remove the user type and revoke all its module permissions. Users still assigned this role in the users table will not be affected.`
+  );
+  if (!confirmed) return;
+
+  const fd = new FormData();
+  fd.append('action',    'delete_role');
+  fd.append('role_name', role);
+  const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
+  const data = await res.json();
+  if (!data.ok) { toast(data.msg || 'Error deleting role.', 'error'); return; }
+
+  // Remove card
+  btn.closest('.role-card').remove();
+  // Clean permsMap for this role
+  for (const k in permsMap) { if (k.startsWith(role + '|')) delete permsMap[k]; }
+  recountGrants();
+
+  const cnt = document.querySelectorAll('#rolesGrid .role-card').length;
+  document.getElementById('statRoleCount').textContent = cnt;
+  document.getElementById('tabRoleBadge').textContent  = cnt;
+  toast(`User type <strong>${role}</strong> deleted.`);
+});
+
+// ── Bootstrap icon list (autocomplete) ───────────────────────
 const BI_ICONS = [
   'bi-grid','bi-grid-fill','bi-house','bi-house-fill','bi-people','bi-people-fill',
   'bi-person','bi-person-fill','bi-truck','bi-truck-flatbed','bi-cash-stack',
@@ -885,87 +1186,39 @@ const BI_ICONS = [
   'bi-airplane','bi-train-front','bi-bus-front',
 ];
 
-// ── Toast ─────────────────────────────────────────────────────
-function toast(msg, type = 'success') {
-  const wrap = document.getElementById('toastWrap');
-  const el   = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<i class="bi ${type === 'success' ? 'bi-check-circle-fill success' : 'bi-x-circle-fill error'}"></i> ${msg}`;
-  wrap.appendChild(el);
-  setTimeout(() => {
-    el.style.animation = 'toastOut .25s ease forwards';
-    setTimeout(() => el.remove(), 260);
-  }, 2800);
-}
-
-// ── Confirm dialog ────────────────────────────────────────────
-function confirmDialog(title, msg) {
-  return new Promise(resolve => {
-    document.getElementById('confirmTitle').textContent = title;
-    document.getElementById('confirmMsg').textContent   = msg;
-    const overlay = document.getElementById('confirmOverlay');
-    overlay.classList.add('open');
-    const ok     = document.getElementById('confirmOk');
-    const cancel = document.getElementById('confirmCancel');
-    function cleanup(result) {
-      overlay.classList.remove('open');
-      ok.removeEventListener('click', onOk);
-      cancel.removeEventListener('click', onCancel);
-      resolve(result);
-    }
-    const onOk     = () => cleanup(true);
-    const onCancel = () => cleanup(false);
-    ok.addEventListener('click', onOk);
-    cancel.addEventListener('click', onCancel);
-  });
-}
-
-// ── Live preview updater ──────────────────────────────────────
 function updatePreview(prefix) {
-  const icon  = document.getElementById(prefix + '_icon')?.value.trim()  || 'bi-grid';
-  const name  = document.getElementById(prefix + '_name')?.value.trim()  || 'Module Name';
-  const color = document.getElementById(prefix + '_color')?.value        || 'blue';
-  const desc  = document.getElementById(prefix + '_desc')?.value.trim()  || '';
-
-  const iEl = document.getElementById(prefix + 'PrevIcon');
-  const nEl = document.getElementById(prefix + 'PrevName');
-  const dEl = document.getElementById(prefix + 'PrevDesc');
+  const icon  = document.getElementById(prefix + '_icon')?.value.trim() || 'bi-grid';
+  const name  = document.getElementById(prefix + '_name')?.value.trim() || 'Module Name';
+  const color = document.getElementById(prefix + '_color')?.value       || 'blue';
+  const desc  = document.getElementById(prefix + '_desc')?.value.trim() || '';
+  const iEl   = document.getElementById(prefix + 'PrevIcon');
+  const nEl   = document.getElementById(prefix + 'PrevName');
+  const dEl   = document.getElementById(prefix + 'PrevDesc');
   if (!iEl) return;
-
-  iEl.className = `bi ${icon} prev-icon ${color}`;
+  iEl.className   = `bi ${icon} prev-icon ${color}`;
   nEl.textContent = name || 'Module Name';
   dEl.textContent = desc || '';
 }
-
-// Map modal field IDs — add uses m_, edit uses e_
-function wirePreview(prefix, fieldPrefix) {
-  ['_icon', '_name', '_color', '_desc'].forEach(f => {
-    const el = document.getElementById(fieldPrefix + f);
-    if (el) el.addEventListener('input', () => updatePreview(prefix));
+function wirePreview(prefix, fp) {
+  ['_icon','_name','_color','_desc'].forEach(f => {
+    const el = document.getElementById(fp + f);
+    if (el) el.addEventListener('input',  () => updatePreview(prefix));
     if (el && el.tagName === 'SELECT') el.addEventListener('change', () => updatePreview(prefix));
   });
 }
-wirePreview('add', 'm');
-wirePreview('edit', 'e');
+wirePreview('add','m'); wirePreview('edit','e');
 
-// ── Icon autocomplete ─────────────────────────────────────────
-function setupIconSearch(inputId, suggestionsId, previewPrefix, fieldPrefix) {
+function setupIconSearch(inputId, suggestionsId, previewPrefix) {
   const input = document.getElementById(inputId);
   const box   = document.getElementById(suggestionsId);
-
   input.addEventListener('input', () => {
-    const q = input.value.toLowerCase().replace(/^bi-/, '');
+    const q = input.value.toLowerCase().replace(/^bi-/,'');
     if (!q) { box.classList.remove('open'); return; }
-    const matches = BI_ICONS.filter(ic => ic.includes(q)).slice(0, 8);
+    const matches = BI_ICONS.filter(ic => ic.includes(q)).slice(0,8);
     if (!matches.length) { box.classList.remove('open'); return; }
-    box.innerHTML = matches.map(ic =>
-      `<div class="icon-sug-item" data-icon="${ic}">
-         <i class="bi ${ic}"></i><span>${ic}</span>
-       </div>`
-    ).join('');
+    box.innerHTML = matches.map(ic => `<div class="icon-sug-item" data-icon="${ic}"><i class="bi ${ic}"></i><span>${ic}</span></div>`).join('');
     box.classList.add('open');
   });
-
   box.addEventListener('click', e => {
     const item = e.target.closest('.icon-sug-item');
     if (!item) return;
@@ -973,115 +1226,13 @@ function setupIconSearch(inputId, suggestionsId, previewPrefix, fieldPrefix) {
     box.classList.remove('open');
     updatePreview(previewPrefix);
   });
-
-  document.addEventListener('click', e => {
-    if (!input.contains(e.target) && !box.contains(e.target)) box.classList.remove('open');
-  });
+  document.addEventListener('click', e => { if (!input.contains(e.target) && !box.contains(e.target)) box.classList.remove('open'); });
 }
-setupIconSearch('m_icon', 'addIconSuggestions',  'add',  'm');
-setupIconSearch('e_icon', 'editIconSuggestions', 'edit', 'e');
-
-// ── Grant count helper ────────────────────────────────────────
-function recountGrants() {
-  const checked = document.querySelectorAll('#permMatrix input[type=checkbox]:checked').length;
-  document.getElementById('statGrantCount').textContent = checked;
-}
-
-// ── Toggle permission ─────────────────────────────────────────
-document.getElementById('permMatrix').addEventListener('change', async function(e) {
-  const cb = e.target;
-  if (cb.type !== 'checkbox') return;
-  const row    = cb.closest('tr');
-  const role   = cb.dataset.role;
-  const module = cb.dataset.module;
-  const action = cb.checked ? 'grant' : 'revoke';
-
-  row.classList.add('saving');
-  try {
-    const fd = new FormData();
-    fd.append('action', action); fd.append('role', role); fd.append('module', module);
-    const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.ok) {
-      toast(`${action === 'grant' ? 'Granted' : 'Revoked'} <strong>${module}</strong> for <strong>${role}</strong>`);
-      recountGrants();
-    } else {
-      toast(data.msg || 'Error saving.', 'error');
-      cb.checked = !cb.checked;
-    }
-  } catch(err) {
-    toast('Network error.', 'error');
-    cb.checked = !cb.checked;
-  }
-  row.classList.remove('saving');
-});
-
-// ── Grant All / Revoke All ────────────────────────────────────
-document.getElementById('matrixBody').addEventListener('click', async e => {
-  const grantBtn  = e.target.closest('.btn-grant-all');
-  const revokeBtn = e.target.closest('.btn-revoke-all');
-  if (!grantBtn && !revokeBtn) return;
-
-  const btn    = grantBtn || revokeBtn;
-  const role   = btn.dataset.role;
-  const action = grantBtn ? 'grant_all' : 'revoke_all';
-  const label  = grantBtn ? 'Grant all' : 'Revoke all';
-
-  const row = btn.closest('tr');
-  row.classList.add('saving');
-  try {
-    const fd = new FormData();
-    fd.append('action', action);
-    fd.append('role',   role);
-    // NOTE: no 'module' field needed — backend handles all modules internally
-    const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.ok) {
-      // Update ALL toggles in this row — including hidden (filtered) ones
-      row.querySelectorAll('input[type=checkbox]').forEach(cb => {
-        cb.checked = !!grantBtn;
-      });
-      recountGrants();
-      toast(`${label} modules ${grantBtn ? 'granted' : 'revoked'} for <strong>${role}</strong>`);
-    } else {
-      toast(data.msg || 'Error.', 'error');
-    }
-  } catch(err) {
-    toast('Network error.', 'error');
-  }
-  row.classList.remove('saving');
-});
-
-// ── Role search ───────────────────────────────────────────────
-document.getElementById('roleSearch').addEventListener('input', function() {
-  const q = this.value.toLowerCase();
-  document.querySelectorAll('#matrixBody tr').forEach(tr => {
-    tr.style.display = (tr.dataset.role || '').toLowerCase().includes(q) ? '' : 'none';
-  });
-});
-
-// ── Category filter ───────────────────────────────────────────
-document.querySelectorAll('.pill').forEach(pill => {
-  pill.addEventListener('click', function() {
-    document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
-    this.classList.add('active');
-    activeFilter = this.dataset.cat;
-    document.querySelectorAll('th.mod-col, td.toggle-cell').forEach(el => {
-      el.style.display = (activeFilter === 'all' || el.dataset.cat === activeFilter) ? '' : 'none';
-    });
-  });
-});
+setupIconSearch('m_icon','addIconSuggestions','add');
+setupIconSearch('e_icon','editIconSuggestions','edit');
 
 // ── Add Module Modal ──────────────────────────────────────────
 const addModal = document.getElementById('addModuleModal');
-document.getElementById('btnAddModule').addEventListener('click', () => {
-  // Reset form
-  ['m_key','m_name','m_icon','m_desc'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('m_cat').value   = 'general';
-  document.getElementById('m_color').value = 'blue';
-  updatePreview('add');
-  addModal.classList.add('open');
-});
 document.getElementById('closeAddModal').addEventListener('click', () => addModal.classList.remove('open'));
 addModal.addEventListener('click', e => { if (e.target === addModal) addModal.classList.remove('open'); });
 
@@ -1097,38 +1248,28 @@ document.getElementById('saveModule').addEventListener('click', async () => {
   if (/\s/.test(key)) { toast('Module key cannot contain spaces.', 'error'); return; }
 
   const fd = new FormData();
-  fd.append('action',      'add_module');
-  fd.append('module_key',  key);
-  fd.append('module_name', name);
-  fd.append('category',    cat);
-  fd.append('color',       color);
-  fd.append('icon',        icon);
-  fd.append('description', desc);
+  fd.append('action','add_module'); fd.append('module_key',key); fd.append('module_name',name);
+  fd.append('category',cat); fd.append('color',color); fd.append('icon',icon); fd.append('description',desc);
 
-  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
   const data = await res.json();
   if (!data.ok) { toast(data.msg || 'Error adding module.', 'error'); return; }
 
   addModal.classList.remove('open');
   toast(`Module <strong>${name}</strong> added successfully.`);
 
-  // ── 1. Add chip to Module Registry ──────────────────────
-  const catLabels = {hr:'HR', fleet:'Fleet', finance:'Finance', general:'General'};
+  // Add to ALL_MODULES
+  ALL_MODULES.push({ module_key:key, module_name:name, category:cat, icon, color, description:desc });
+
+  // Add chip to registry
+  const catLabels = {hr:'HR',fleet:'Fleet',finance:'Finance',general:'General'};
   const chip = document.createElement('div');
   chip.className = 'module-chip';
-  chip.dataset.key   = key;
-  chip.dataset.name  = name;
-  chip.dataset.cat   = cat;
-  chip.dataset.icon  = icon;
-  chip.dataset.color = color;
-  chip.dataset.desc  = desc;
+  Object.assign(chip.dataset, { key, name, cat, icon, color, desc });
   chip.innerHTML = `
     <div class="chip-top">
       <div class="module-chip-icon ${color}"><i class="bi ${icon}"></i></div>
-      <div class="chip-info">
-        <div class="module-chip-name">${name}</div>
-        <div class="module-chip-key">${key}</div>
-      </div>
+      <div class="chip-info"><div class="module-chip-name">${name}</div><div class="module-chip-key">${key}</div></div>
     </div>
     ${desc ? `<div class="chip-desc">${desc}</div>` : ''}
     <div class="chip-footer">
@@ -1146,71 +1287,27 @@ document.getElementById('saveModule').addEventListener('click', async () => {
     </div>`;
   document.getElementById('modulesGrid').appendChild(chip);
 
-  // ── 2. Inject column into matrix table header ────────────
-  const catColors = {hr:'#34d399', fleet:'#fbbf24', finance:'#a78bfa', general:'#60a5fa'};
-  const catColor  = catColors[cat] || '#60a5fa';
-  const catLabel  = catLabels[cat] || cat;
-  const newTh = document.createElement('th');
-  newTh.className = 'mod-col';
-  newTh.dataset.cat    = cat;
-  newTh.dataset.modKey = key;
-  // Insert before the last th (Actions)
-  const actTh = document.querySelector('thead tr .th-actions');
-  newTh.innerHTML = `
-    <div class="mod-col-inner">
-      <i class="bi ${icon} mod-col-icon" style="color:${catColor}"></i>
-      <div class="mod-col-name">${name}</div>
-      <span class="cat-badge" style="background:${catColor}22;color:${catColor}">${catLabel}</span>
-    </div>`;
-  actTh.before(newTh);
-
-  // ── 3. Inject toggle cell into every data row ─────────────
-  document.querySelectorAll('#matrixBody tr[data-role]').forEach(tr => {
-    const role   = tr.dataset.role;
-    const newTd  = document.createElement('td');
-    newTd.className    = 'toggle-cell';
-    newTd.dataset.cat  = cat;
-    newTd.innerHTML = `
-      <label class="toggle">
-        <input type="checkbox" data-role="${role}" data-module="${key}">
-        <div class="toggle-track"></div>
-        <div class="toggle-thumb"></div>
-      </label>`;
-    // Insert before last td (actions)
-    tr.lastElementChild.before(newTd);
-  });
-
-  // ── 4. Apply current filter to new elements ───────────────
-  if (activeFilter !== 'all') {
-    document.querySelectorAll(`th[data-mod-key="${key}"], td.toggle-cell`).forEach(el => {
-      el.style.display = el.dataset.cat === activeFilter ? '' : 'none';
-    });
-  }
-
-  // ── 5. Update stat counters ───────────────────────────────
-  const modCount = document.querySelectorAll('#modulesGrid .module-chip').length;
-  document.getElementById('statModuleCount').textContent   = modCount;
-  document.getElementById('moduleRegistryCount').textContent = `— ${modCount} portal card${modCount !== 1 ? 's' : ''}`;
+  const cnt = ALL_MODULES.length;
+  document.getElementById('statModuleCount').textContent     = cnt;
+  document.getElementById('tabModBadge').textContent         = cnt;
+  document.getElementById('moduleRegistryCount').textContent = `— ${cnt} portal card${cnt !== 1 ? 's' : ''}`;
+  // Refresh open drawer if needed
+  if (drawer.classList.contains('open')) renderDrawerBody();
 });
 
 // ── Edit Module Modal ─────────────────────────────────────────
 const editModal = document.getElementById('editModuleModal');
-
 document.getElementById('modulesGrid').addEventListener('click', e => {
   const editBtn = e.target.closest('.module-chip-edit');
   if (!editBtn) return;
-
   const chip = editBtn.closest('.module-chip');
   const key  = chip.dataset.key;
-
-  // Pre-fill fields from chip data attributes
   document.getElementById('e_key').value   = key;
   document.getElementById('e_name').value  = chip.dataset.name  || '';
   document.getElementById('e_cat').value   = chip.dataset.cat   || 'general';
   document.getElementById('e_color').value = chip.dataset.color || 'blue';
   document.getElementById('e_icon').value  = chip.dataset.icon  || 'bi-grid';
   document.getElementById('e_desc').value  = chip.dataset.desc  || '';
-
   document.getElementById('editModalKeyBadge').textContent = key;
   updatePreview('edit');
   editModal.classList.add('open');
@@ -1225,74 +1322,45 @@ document.getElementById('updateModule').addEventListener('click', async () => {
   const color = document.getElementById('e_color').value;
   const icon  = document.getElementById('e_icon').value.trim() || 'bi-grid';
   const desc  = document.getElementById('e_desc').value.trim();
-
   if (!name) { toast('Display name is required.', 'error'); return; }
 
   const fd = new FormData();
-  fd.append('action',      'edit_module');
-  fd.append('module_key',  key);
-  fd.append('module_name', name);
-  fd.append('category',    cat);
-  fd.append('color',       color);
-  fd.append('icon',        icon);
-  fd.append('description', desc);
+  fd.append('action','edit_module'); fd.append('module_key',key); fd.append('module_name',name);
+  fd.append('category',cat); fd.append('color',color); fd.append('icon',icon); fd.append('description',desc);
 
-  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
   const data = await res.json();
   if (!data.ok) { toast(data.msg || 'Error updating module.', 'error'); return; }
 
   editModal.classList.remove('open');
   toast(`Module <strong>${name}</strong> updated.`);
 
-  const catColors = {hr:'#34d399', fleet:'#fbbf24', finance:'#a78bfa', general:'#60a5fa'};
-  const catLabels = {hr:'HR', fleet:'Fleet', finance:'Finance', general:'General'};
-  const catColor  = catColors[cat] || '#60a5fa';
-  const catLabel  = catLabels[cat] || cat;
+  // Update ALL_MODULES
+  const idx = ALL_MODULES.findIndex(m => m.module_key === key);
+  if (idx >= 0) Object.assign(ALL_MODULES[idx], { module_name:name, category:cat, icon, color, description:desc });
 
-  // ── Update chip in registry ──────────────────────────────
+  const catColors = {hr:'#34d399',fleet:'#fbbf24',finance:'#a78bfa',general:'#60a5fa'};
+  const catLabels = {hr:'HR',fleet:'Fleet',finance:'Finance',general:'General'};
+
+  // Update chip
   const chip = document.querySelector(`.module-chip[data-key="${key}"]`);
   if (chip) {
-    chip.dataset.name  = name;
-    chip.dataset.cat   = cat;
-    chip.dataset.icon  = icon;
-    chip.dataset.color = color;
-    chip.dataset.desc  = desc;
-
+    Object.assign(chip.dataset, { name, cat, icon, color, desc });
     chip.querySelector('.module-chip-icon').className = `module-chip-icon ${color}`;
     chip.querySelector('.module-chip-icon i').className = `bi ${icon}`;
     chip.querySelector('.module-chip-name').textContent = name;
     chip.querySelector('.chip-desc') && (chip.querySelector('.chip-desc').textContent = desc);
     chip.querySelector('.chip-cat-badge').className   = `chip-cat-badge ${cat}`;
-    chip.querySelector('.chip-cat-badge').textContent  = catLabel;
-
-    // Update homepage preview inside chip
-    const prevIcon = chip.querySelector('.hp-card-preview .prev-icon');
-    const prevName = chip.querySelector('.hp-card-preview .prev-name');
-    const prevDesc = chip.querySelector('.hp-card-preview .prev-desc');
-    if (prevIcon) prevIcon.className  = `bi ${icon} prev-icon ${color}`;
-    if (prevName) prevName.textContent = name;
-    if (prevDesc) prevDesc.textContent = desc;
+    chip.querySelector('.chip-cat-badge').textContent  = catLabels[cat]||cat;
+    const pi = chip.querySelector('.hp-card-preview .prev-icon');
+    const pn = chip.querySelector('.hp-card-preview .prev-name');
+    const pd = chip.querySelector('.hp-card-preview .prev-desc');
+    if (pi) pi.className   = `bi ${icon} prev-icon ${color}`;
+    if (pn) pn.textContent = name;
+    if (pd) pd.textContent = desc;
   }
-
-  // ── Update matrix column header ───────────────────────────
-  const th = document.querySelector(`th.mod-col[data-mod-key="${key}"]`);
-  if (th) {
-    th.dataset.cat = cat;
-    th.innerHTML = `
-      <div class="mod-col-inner">
-        <i class="bi ${icon} mod-col-icon" style="color:${catColor}"></i>
-        <div class="mod-col-name">${name}</div>
-        <span class="cat-badge" style="background:${catColor}22;color:${catColor}">${catLabel}</span>
-      </div>`;
-    // Apply filter
-    th.style.display = (activeFilter === 'all' || th.dataset.cat === activeFilter) ? '' : 'none';
-    // Update toggle-cell data-cat for this column
-    const colIdx = Array.from(th.parentElement.children).indexOf(th);
-    document.querySelectorAll('#matrixBody tr[data-role]').forEach(tr => {
-      const td = tr.children[colIdx];
-      if (td) { td.dataset.cat = cat; td.style.display = th.style.display; }
-    });
-  }
+  // Refresh drawer if open
+  if (drawer.classList.contains('open')) renderDrawerBody();
 });
 
 // ── Delete Module ─────────────────────────────────────────────
@@ -1309,32 +1377,33 @@ document.getElementById('modulesGrid').addEventListener('click', async e => {
   if (!confirmed) return;
 
   const fd = new FormData();
-  fd.append('action',     'delete_module');
-  fd.append('module_key', key);
-  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  fd.append('action','delete_module'); fd.append('module_key',key);
+  const res  = await fetch(ACTION_URL, { method:'POST', body:fd });
   const data = await res.json();
-
   if (!data.ok) { toast(data.msg || 'Error deleting.', 'error'); return; }
 
-  // Remove chip
   btn.closest('.module-chip').remove();
-  // Remove matrix column header
-  const th = document.querySelector(`th.mod-col[data-mod-key="${key}"]`);
-  if (th) {
-    const colIdx = Array.from(th.parentElement.children).indexOf(th);
-    th.remove();
-    document.querySelectorAll('#matrixBody tr[data-role]').forEach(tr => {
-      tr.children[colIdx]?.remove();
-    });
-  }
 
-  const modCount = document.querySelectorAll('#modulesGrid .module-chip').length;
-  document.getElementById('statModuleCount').textContent   = modCount;
-  document.getElementById('moduleRegistryCount').textContent = `— ${modCount} portal card${modCount !== 1 ? 's' : ''}`;
+  // Remove from ALL_MODULES
+  const idx = ALL_MODULES.findIndex(m => m.module_key === key);
+  if (idx >= 0) ALL_MODULES.splice(idx, 1);
+
+  // Clean permsMap
+  for (const k in permsMap) { if (k.endsWith('|' + key)) delete permsMap[k]; }
   recountGrants();
+
+  const cnt = ALL_MODULES.length;
+  document.getElementById('statModuleCount').textContent     = cnt;
+  document.getElementById('tabModBadge').textContent         = cnt;
+  document.getElementById('moduleRegistryCount').textContent = `— ${cnt} portal card${cnt !== 1 ? 's' : ''}`;
+
+  // Refresh all role cards' grant bars
+  document.querySelectorAll('.role-card[data-role]').forEach(card => updateRoleCard(card.dataset.role));
+  // Refresh drawer if open
+  if (drawer.classList.contains('open')) renderDrawerBody();
+
   toast(`Module <strong>${name}</strong> deleted.`);
 });
 </script>
-
 </body>
 </html>

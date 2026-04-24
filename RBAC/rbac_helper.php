@@ -14,7 +14,6 @@
 function rbac_module_urls(): array {
     return [
         // ── RBAC / Access Control ───────────────────────────────────────────
-        // Add whichever key you used in the DB. All three are listed as a safety net.
         'RBAC'            => '/TWM/RBAC/index.php',
 
         // ── Add more overrides here as needed ───────────────────────────────
@@ -91,7 +90,6 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
                 ['cards' => []]
             );
         }
-        // Attach resolved URL — homepage uses $card['url'] instead of route()
         $mod['url'] = rbac_module_url($mod['module_key']);
         $sections[$cat]['cards'][] = $mod;
     }
@@ -111,7 +109,9 @@ function rbac_gate(PDO $pdo, string $moduleKey): void {
 
     http_response_code(403);
     $backUrl = htmlspecialchars($_SERVER['HTTP_REFERER'] ?? '/TWM/');
+
     echo "<!DOCTYPE html><html><head>
+    <meta charset='UTF-8'>
     <script src='" . base_url('assets/vendor/sweetalert2/sweetalert2.all.min.js') . "'></script>
     </head><body style='margin:0;background:#0f172a;'>
     <script>
@@ -126,7 +126,7 @@ function rbac_gate(PDO $pdo, string $moduleKey): void {
         iconColor: '#ef4444',
         allowOutsideClick: false,
         allowEscapeKey: false,
-    }).then(() => { window.location.href = '<?= $backUrl ?>'; });
+    }).then(() => { window.location.href = '{$backUrl}'; });
     </script></body></html>";
     exit;
 }

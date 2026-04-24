@@ -3,7 +3,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once __DIR__ . '/auth_check.php';
 require_once __DIR__ . '/RBAC/rbac_helper.php';
 
-auth_check(['Admin', 'Administrator', 'HR', 'Delivery', 'Logistic']);
+auth_check(); // RBAC handles module-level access; just verify login + session
 
 $userType    = $_SESSION['UserType']    ?? '';
 $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
@@ -298,7 +298,6 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
           </div>
           <div class="section-grid">
             <?php foreach ($section['cards'] as $card): ?>
-              <!-- $card['url'] is resolved by rbac_module_url() in rbac_helper.php -->
               <a href="<?= htmlspecialchars($card['url']) ?>" class="hub-card">
                 <i class="bi <?= htmlspecialchars($card['icon']) ?> card-icon <?= htmlspecialchars($card['color']) ?>"></i>
                 <div class="card-name"><?= htmlspecialchars($card['module_name']) ?></div>

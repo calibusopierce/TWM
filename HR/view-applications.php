@@ -18,6 +18,138 @@ $pdo_rbac = new PDO(
 );
 rbac_gate($pdo_rbac, 'view_applications');
 
+// ══ AJAX: fetch applicant detail + generate FileNo/EmployeeID ══
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['_action']) && $_GET['_action'] === 'fetch_applicant') {
+    header('Content-Type: application/json');
+
+    $appID = isset($_GET['application_id']) ? (int)$_GET['application_id'] : 0;
+    if (!$appID) { echo json_encode(['success' => false, 'message' => 'Missing application ID.']); exit; }
+
+    // ── Fetch full applicant record using exact column names ─
+    $appSql = "
+        SELECT
+            ja.ApplicationID,
+            ja.Fullname,
+            ja.Email,
+            ja.Phone,
+            ja.Position,
+            ja.DateApplied,
+            ja.DepartmentID,
+            ja.TransferredToEmployee,
+            ja.FirstName,
+            ja.MiddleName,
+            ja.LastName,
+            ja.Mobile_Number,
+            ja.Birth_date,
+            ja.Birth_Place,
+            ja.Gender,
+            ja.Civil_Status,
+            ja.Nationality,
+            ja.Religion,
+            ja.Present_Address,
+            ja.Permanent_Address,
+            ja.SSS_Number,
+            ja.TIN_Number,
+            ja.Philhealth_Number,
+            ja.HDMF,
+            ja.Contact_Person,
+            ja.Relationship,
+            ja.Contact_Number_Emergency,
+            ja.Educational_Background,
+            ja.Notes,
+            d.DepartmentName
+        FROM   [dbo].[JobApplications] ja
+        LEFT JOIN [dbo].[Departments] d ON ja.DepartmentID = d.DepartmentID
+        WHERE  ja.ApplicationID = ?";
+
+    $appStmt = sqlsrv_query($conn, $appSql, [$appID]);
+    if (!$appStmt) {
+        $err = sqlsrv_errors();
+        echo json_encode(['success' => false, 'message' => $err[0]['message'] ?? 'Query failed.']);
+        exit;
+    }
+    $app = sqlsrv_fetch_array($appStmt, SQLSRV_FETCH_ASSOC);
+    sqlsrv_free_stmt($appStmt);
+    if (!$app) {
+        echo json_encode(['success' => false, 'message' => 'Applicant not found.']); exit;
+    }
+
+    // ── Serialize DateTime fields ────────────────────────────
+    foreach (['DateApplied', 'Birth_date'] as $df) {
+        if (isset($app[$df]) && $app[$df] instanceof DateTime) {
+            $app[$df] = $app[$df]->format('Y-m-d');
+        } elseif (isset($app[$df]) && is_string($app[$df]) && $app[$df]) {
+            $app[$df] = substr($app[$df], 0, 10);
+        } else {
+            $app[$df] = null;
+        }
+    }
+
+    // ── Name fallback: if FirstName/LastName empty, parse Fullname
+    $firstName  = trim($app['FirstName']  ?? '');
+    $lastName   = trim($app['LastName']   ?? '');
+    $middleName = trim($app['MiddleName'] ?? '');
+    if ($firstName === '' && $lastName === '') {
+        $parts     = array_values(array_filter(explode(' ', trim($app['Fullname'] ?? ''))));
+        $firstName = $parts[0] ?? '';
+        $lastName  = isset($parts[1]) ? implode(' ', array_slice($parts, 1)) : '';
+    }
+
+    // ── Generate next FileNo (MAX + 1) ───────────────────────
+    $fnStmt = sqlsrv_query($conn,
+        "SELECT ISNULL(MAX(CAST(FileNo AS INT)), 0) + 1 AS NextFileNo
+         FROM [dbo].[TBL_HREmployeeList]");
+    $fnRow      = $fnStmt ? sqlsrv_fetch_array($fnStmt, SQLSRV_FETCH_ASSOC) : null;
+    $nextFileNo = (int)($fnRow['NextFileNo'] ?? 1);
+    if ($fnStmt) sqlsrv_free_stmt($fnStmt);
+
+    // ── Build EmployeeID: TID-{FileNo}-{Year} ────────────────
+    $generatedEmployeeID = 'TID-' . $nextFileNo . '-' . date('Y');
+
+    echo json_encode([
+        'success'                  => true,
+        // Generated IDs (shown read-only at top of modal)
+        'NextFileNo'               => $nextFileNo,
+        'GeneratedEmpID'           => $generatedEmployeeID,
+        // Transfer status
+        'TransferredToEmployee'    => !empty($app['TransferredToEmployee']),
+        // Core
+        'ApplicationID'            => (int)$app['ApplicationID'],
+        'FullName'                 => $app['Fullname']         ?? '',
+        'FirstName'                => $firstName,
+        'MiddleName'               => $middleName,
+        'LastName'                 => $lastName,
+        'Email'                    => $app['Email']            ?? '',
+        'Phone'                    => $app['Phone']            ?? '',
+        'Mobile_Number'            => $app['Mobile_Number']    ?? '',
+        'Position'                 => $app['Position']         ?? '',
+        'DepartmentName'           => $app['DepartmentName']   ?? '',
+        // Personal
+        'Birth_date'               => $app['Birth_date'],
+        'Birth_Place'              => $app['Birth_Place']      ?? '',
+        'Gender'                   => $app['Gender']           ?? '',
+        'Civil_Status'             => $app['Civil_Status']     ?? '',
+        'Nationality'              => $app['Nationality'] !== '' ? $app['Nationality'] : 'Filipino',
+        'Religion'                 => $app['Religion']         ?? '',
+        // Address
+        'Present_Address'          => $app['Present_Address']  ?? '',
+        'Permanent_Address'        => $app['Permanent_Address'] ?? '',
+        // Government IDs
+        'SSS_Number'               => $app['SSS_Number']       ?? '',
+        'TIN_Number'               => $app['TIN_Number']       ?? '',
+        'Philhealth_Number'        => $app['Philhealth_Number'] ?? '',
+        'HDMF'                     => $app['HDMF']             ?? '',
+        // Emergency
+        'Contact_Person'           => $app['Contact_Person']   ?? '',
+        'Relationship'             => $app['Relationship']     ?? '',
+        'Contact_Number_Emergency' => $app['Contact_Number_Emergency'] ?? '',
+        // Others
+        'Educational_Background'   => $app['Educational_Background'] ?? '',
+        'Notes'                    => $app['Notes']            ?? '',
+    ]);
+    exit;
+}
+
 // ── Session context ────────────────────────────────────────────
 $_userType   = $_SESSION['UserType']     ?? '';
 $_userDept   = $_SESSION['Department']   ?? '';
@@ -139,6 +271,7 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
     SELECT
         ja.ApplicationID, ja.FullName, ja.Email, ja.Phone,
         ja.Position, ja.Status, ja.DateApplied, ja.DepartmentID,
+        ja.TransferredToEmployee,
         d.DepartmentName, d.ColorCode,
         af.FileID, af.FileName, af.FilePath,
         fc.CategoryName AS FileCategory,
@@ -171,10 +304,11 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
                 'Position'          => $r['Position']     ?? '',
                 'Status'            => (int)($r['Status'] ?? 0),
                 'DateApplied'       => $r['DateApplied']  ?? null,
-                'DepartmentID'      => isset($r['DepartmentID']) ? (int)$r['DepartmentID'] : null,
-                'DepartmentName'    => $r['DepartmentName']    ?? null,
-                'ColorCode'         => $r['ColorCode']         ?? null,
-                'InterviewDateTime' => $r['InterviewDateTime'] ?? null,
+                'DepartmentID'          => isset($r['DepartmentID']) ? (int)$r['DepartmentID'] : null,
+                'DepartmentName'        => $r['DepartmentName']    ?? null,
+                'ColorCode'             => $r['ColorCode']         ?? null,
+                'TransferredToEmployee' => !empty($r['TransferredToEmployee']),
+                'InterviewDateTime'     => $r['InterviewDateTime'] ?? null,
                 'InterviewAddress'  => $r['OfficeAddress']     ?? null,
                 'HRContactFileNo'   => $r['HRContactFileNo']   ?? null,
                 'Files'             => [],
@@ -291,8 +425,29 @@ if ($dateTo !== '') {
 // ── Flash ──────────────────────────────────────────────────────
 function resolveFlash(): array
 {
-    $updated = $_GET['updated'] ?? null;
-    $info    = $_GET['info']    ?? '';
+    $updated    = $_GET['updated']     ?? null;
+    $transferred = $_GET['transferred'] ?? null;
+    $info       = $_GET['info']        ?? '';
+
+    // Transfer flash messages
+    if ($transferred !== null) {
+        if ($transferred === '1') return [
+            'type' => 'success',
+            'msg'  => '<i class="bi bi-person-check-fill me-1"></i> Applicant successfully transferred to the Employee List.',
+        ];
+        $errMessages = [
+            'missing_required'   => 'Transfer failed: required fields (Name, Department, Position, Hired Date) are missing.',
+            'already_transferred'=> 'This applicant has already been transferred to the Employee List.',
+            'fileno_conflict'    => 'Transfer failed: File No conflict detected. Please try again to get a fresh File Number.',
+            'db_error'           => 'Transfer failed: a database error occurred. Please check the error log.',
+        ];
+        return [
+            'type' => 'danger',
+            'msg'  => '<i class="bi bi-exclamation-triangle-fill me-1"></i> ' . ($errMessages[$info] ?? 'Transfer failed. Please try again.'),
+        ];
+    }
+
+    // Existing status-update flash
     if ($updated === '1') return [
         'type' => 'success',
         'msg'  => '<i class="bi bi-check-circle-fill me-1"></i> Application updated successfully.',
@@ -468,44 +623,92 @@ function fmtInterview($dt): string
   <link href="<?= base_url('assets/css/admin.css') ?>" rel="stylesheet">
   <link href="<?= base_url('assets/css/topbar.css') ?>" rel="stylesheet">
   <style>
+    /* ── Stage row ─────────────────────────────────────────────── */
     .interview-stage-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-      margin: 0;
-      padding: 0.25rem 0;
+      display: flex; flex-wrap: wrap; align-items: center;
+      gap: 0.5rem; margin: 0; padding: 0.25rem 0;
     }
     .interview-stage-row .stage-label {
-      white-space: nowrap;
-      font-size: 0.87rem;
-      font-weight: 600;
-      color: var(--text-muted);
+      white-space: nowrap; font-size: 0.87rem;
+      font-weight: 600; color: var(--text-muted);
     }
+    .interview-stage-row .stage-pill { white-space: nowrap; }
+
+    /* ── Page layout ───────────────────────────────────────────── */
     .page-header {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 1rem;
+      display: flex; flex-wrap: wrap; align-items: flex-start;
+      justify-content: space-between; gap: 1rem;
     }
-    .page-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-top: 0.35rem;
+    .page-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.35rem; }
+
+    /* ── Applicant avatar (mirrors employee-list) ──────────────── */
+    .app-avatar {
+      width: 44px; height: 44px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: .82rem; font-weight: 800; color: #fff; flex-shrink: 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,.15);
     }
-    .interview-stage-row .stage-pill {
+    .app-name-wrap  { display: flex; align-items: center; gap: .65rem; }
+    .app-name       { font-weight: 700; font-size: .88rem; color: var(--text-primary); line-height: 1.2; }
+    .app-sub        { font-size: .72rem; color: var(--text-muted); margin-top: .1rem; }
+    .app-row        { cursor: default; transition: background .12s; }
+    .app-row:hover td { background: rgba(67,128,226,.04); }
+
+    /* ── Transfer button ───────────────────────────────────────── */
+    .btn-transfer {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .25rem .6rem; border-radius: 999px;
+      font-size: .68rem; font-weight: 700; text-transform: uppercase;
+      background: rgba(16,185,129,.1); color: #059669;
+      border: 1px solid rgba(16,185,129,.35);
+      transition: background .15s, border-color .15s;
       white-space: nowrap;
     }
+    .btn-transfer:hover { background: rgba(16,185,129,.2); border-color: rgba(16,185,129,.6); }
+    .btn-transfer:disabled,
+    .btn-transfer.transferred {
+      background: rgba(100,116,139,.08); color: #94a3b8;
+      border-color: rgba(100,116,139,.25); cursor: default; pointer-events: none;
+    }
+
+    /* ── Transferred badge ─────────────────────────────────────── */
+    .badge-transferred {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .25rem .65rem; border-radius: 999px;
+      font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+      background: rgba(16,185,129,.08); color: #059669;
+      border: 1px solid rgba(16,185,129,.3);
+      white-space: nowrap;
+    }
+    .badge-transferred .tf-checkmark {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #059669; color: #fff;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: .6rem; flex-shrink: 0;
+    }
+
+    /* ── Transfer modal ────────────────────────────────────────── */
+    .transfer-modal .modal-content { border-radius: 16px; border: none; box-shadow: 0 24px 80px rgba(0,0,0,.2); }
+    .transfer-modal .modal-header  { background: var(--bs-body-bg,#fff); border-bottom: 1px solid #e2e8f0; border-radius: 16px 16px 0 0; padding: 1rem 1.5rem; }
+    .transfer-modal .modal-title   { font-weight: 700; color: #0f172a; font-size: 1rem; }
+    .transfer-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .75rem; }
+    .transfer-form-grid .tf-full   { grid-column: 1 / -1; }
+    .tf-section-title {
+      font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+      color: #475569; margin-bottom: .6rem; padding-left: .6rem;
+      border-left: 3px solid #3b82f6; display: flex; align-items: center; gap: .4rem;
+    }
+    .tf-label {
+      font-size: .72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: #94a3b8; display: block; margin-bottom: .25rem;
+    }
+    @media(max-width: 576px) {
+      .transfer-form-grid { grid-template-columns: 1fr; }
+    }
+
     @media (max-width: 768px) {
-      .interview-stage-row {
-        justify-content: flex-start;
-      }
-      .interview-stage-row .stage-pill {
-        font-size: 0.78rem;
-        padding: 0.35rem 0.7rem;
-      }
+      .interview-stage-row { justify-content: flex-start; }
+      .interview-stage-row .stage-pill { font-size: .78rem; padding: .35rem .7rem; }
     }
   </style>
 </head>
@@ -665,59 +868,103 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
   <div class="table-card">
     <div class="table-responsive">
-      <table class="apps-table">
+      <table class="apps-table" id="applicantsTable">
         <thead>
-          <tr><th>Applicant</th><th>Contact</th><th>Position</th><th>Date Applied</th><th>Files</th><th>Interview</th><th style="text-align:center;">Status</th></tr>
+          <tr>
+            <th>Applicant</th>
+            <th>Contact</th>
+            <th>Position &amp; Department</th>
+            <th>Date Applied</th>
+            <th>Files</th>
+            <th>Interview</th>
+            <th style="text-align:center;">Status</th>
+            <?php if ($activeTab === 'hired'): ?><th style="text-align:center;">Action</th><?php endif; ?>
+          </tr>
         </thead>
         <tbody>
-        <?php if (!empty($tabApps)): foreach ($tabApps as $app):
+        <?php
+        // Avatar helpers (mirrors employee-list)
+        $avatarColors = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#ef4444','#06b6d4','#f97316'];
+        function appAvatarColor(string $name, array $colors): string {
+            return $colors[abs(crc32($name)) % count($colors)];
+        }
+        function appInitials(string $fullName): string {
+            $parts = array_filter(explode(' ', trim($fullName)));
+            if (count($parts) >= 2) return strtoupper(substr($parts[0],0,1).substr(end($parts),0,1));
+            return strtoupper(substr($fullName,0,2));
+        }
+        if (!empty($tabApps)): foreach ($tabApps as $app):
             $sv        = $app['Status'];
             $labelText = $statusLabels[$sv] ?? 'Unknown';
             $pillClass = $statusBadgeClass[$sv] ?? 's-0';
             $color     = $app['ColorCode'] ?? null;
+            $fullName  = $app['FullName'] ?? '';
+            $bgColor   = appAvatarColor($fullName, $avatarColors);
+            $initials  = appInitials($fullName);
         ?>
-          <tr <?= deptRowStyle($app['DepartmentName'] ?? null, $color) ?>>
+          <tr class="app-row" <?= deptRowStyle($app['DepartmentName'] ?? null, $color) ?>>
+            <!-- Applicant column: avatar + name + dept badge -->
             <td>
-              <div class="applicant-name"><?= htmlspecialchars($app['FullName']) ?></div>
-              <?php if ($app['DepartmentName']): ?>
-                <span <?= deptBadgeStyle($app['DepartmentName'], $color) ?>>
-                  <i class="bi bi-building" style="font-size:.6rem;"></i>
-                  <?= htmlspecialchars($app['DepartmentName']) ?>
-                </span>
-              <?php endif; ?>
+              <div class="app-name-wrap">
+                <div class="app-avatar" style="background:<?= $bgColor ?>;"><?= htmlspecialchars($initials) ?></div>
+                <div>
+                  <div class="app-name"><?= htmlspecialchars($fullName) ?></div>
+                  <?php if ($app['DepartmentName']): ?>
+                    <span <?= deptBadgeStyle($app['DepartmentName'], $color) ?>>
+                      <i class="bi bi-building" style="font-size:.6rem;"></i>
+                      <?= htmlspecialchars($app['DepartmentName']) ?>
+                    </span>
+                  <?php else: ?>
+                    <div class="app-sub"><i class="bi bi-building" style="font-size:.65rem;"></i> No Department</div>
+                  <?php endif; ?>
+                </div>
+              </div>
             </td>
+
+            <!-- Contact column -->
             <td>
               <div>
-                <a href="mailto:<?= htmlspecialchars($app['Email']) ?>" class="text-link">
-                  <i class="bi bi-envelope" style="font-size:.75rem;"></i> <?= htmlspecialchars($app['Email']) ?>
+                <a href="mailto:<?= htmlspecialchars($app['Email']) ?>" class="text-link" style="font-size:.78rem;">
+                  <i class="bi bi-envelope" style="font-size:.7rem;"></i> <?= htmlspecialchars($app['Email']) ?>
                 </a>
               </div>
-              <div class="applicant-meta">
-                <i class="bi bi-telephone" style="font-size:.7rem;"></i>
+              <div class="app-sub">
+                <i class="bi bi-telephone" style="font-size:.65rem;"></i>
                 <?= htmlspecialchars($app['Phone'] ?: '—') ?>
               </div>
             </td>
-            <td><span style="font-weight:500;"><?= htmlspecialchars($app['Position']) ?></span></td>
+
+            <!-- Position & Department column -->
+            <td>
+              <div style="font-size:.82rem;font-weight:600;"><?= htmlspecialchars($app['Position']) ?></div>
+              <div class="app-sub"><?= htmlspecialchars($app['DepartmentName'] ?: '—') ?></div>
+            </td>
+
+            <!-- Date Applied -->
             <td class="date-cell">
               <?php if ($app['DateApplied'] instanceof DateTime): ?>
                 <div class="date-day"><?= $app['DateApplied']->format('M j, Y') ?></div>
                 <div class="date-time"><?= $app['DateApplied']->format('g:i A') ?></div>
               <?php endif; ?>
             </td>
+
+            <!-- Files -->
             <td><?= renderFiles($app['Files']) ?></td>
+
+            <!-- Interview -->
             <td>
               <?php $idtStr = fmtInterview($app['InterviewDateTime']); ?>
               <?php if ($idtStr): ?>
                 <div style="font-size:.78rem;font-weight:600;color:var(--text-primary);"><?= $idtStr ?></div>
                 <?php if ($app['InterviewAddress']): ?>
-                  <div style="font-size:.72rem;color:var(--text-muted);">
-                    <i class="bi bi-geo-alt"></i> <?= htmlspecialchars($app['InterviewAddress']) ?>
-                  </div>
+                  <div class="app-sub"><i class="bi bi-geo-alt"></i> <?= htmlspecialchars($app['InterviewAddress']) ?></div>
                 <?php endif; ?>
               <?php else: ?>
                 <span style="color:var(--text-muted);font-size:.75rem;">—</span>
               <?php endif; ?>
             </td>
+
+            <!-- Status pill -->
             <td style="text-align:center;">
               <button type="button" class="status-pill <?= htmlspecialchars($pillClass) ?>"
                 data-bs-toggle="modal" data-bs-target="#updateStatusModal"
@@ -728,9 +975,26 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
                 <i class="bi bi-pencil-fill" style="font-size:.6rem;opacity:.5;"></i>
               </button>
             </td>
+
+            <!-- Transfer button — Hired tab only -->
+            <?php if ($activeTab === 'hired'): ?>
+            <td style="text-align:center;">
+              <?php if (!empty($app['TransferredToEmployee'])): ?>
+                <span class="badge-transferred" title="Already added to Employee List">
+                  <span class="tf-checkmark"><i class="bi bi-check-lg"></i></span>
+                  Transferred
+                </span>
+              <?php else: ?>
+                <a href="employee-list.php?from_app=<?= (int)$app['ApplicationID'] ?>"
+                   class="btn-transfer">
+                  <i class="bi bi-person-plus-fill"></i> Add to Employee List
+                </a>
+              <?php endif; ?>
+            </td>
+            <?php endif; ?>
           </tr>
         <?php endforeach; else: ?>
-          <tr><td colspan="7">
+          <tr><td colspan="<?= $activeTab === 'hired' ? 8 : 7 ?>">
             <div class="empty-state"><i class="bi bi-folder2-open"></i><p>No applications found for the selected filters.</p></div>
           </td></tr>
         <?php endif; ?>
@@ -851,6 +1115,282 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
 <script src="<?= base_url('assets/vendor/bootstrap/js/bootstrap.bundle.min.js') ?>"></script>
 <script src="<?= base_url('assets/vendor/sweetalert2/sweetalert2.all.min.js') ?>"></script>
+
+<!-- ══ TRANSFER TO EMPLOYEE LIST MODAL ════════════════════════ -->
+<div class="modal fade transfer-modal" id="transferModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <form id="transferForm" method="post" action="transfer-applicant.php">
+      <div class="modal-content">
+
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="bi bi-person-plus-fill me-2" style="color:#059669;"></i>Transfer to Employee List
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+
+        <!-- Loading overlay -->
+        <div id="transferLoadingOverlay" style="
+          display:none; position:absolute; inset:0; z-index:10;
+          background:rgba(255,255,255,.88); border-radius:16px;
+          align-items:center; justify-content:center; flex-direction:column; gap:.75rem;">
+          <div class="spinner-border text-success" style="width:2.5rem;height:2.5rem;"></div>
+          <div style="font-size:.82rem;color:#475569;font-weight:600;">Loading applicant details…</div>
+        </div>
+
+        <div class="modal-body" id="transferModalBody" style="padding:1.25rem 1.5rem;">
+          <input type="hidden" name="applicationID" id="transferAppID">
+
+          <!-- ── Auto-generated IDs banner ── -->
+          <div style="
+            background: linear-gradient(135deg,#f0fdf4,#dcfce7);
+            border: 1px solid #bbf7d0; border-radius: 12px;
+            padding: .85rem 1.1rem; margin-bottom: 1.1rem;
+            display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+            <div style="flex:1;min-width:160px;">
+              <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#059669;margin-bottom:.2rem;">
+                <i class="bi bi-hash"></i> File No <span style="color:#94a3b8;font-weight:400;">(auto-generated)</span>
+              </div>
+              <div id="tf-display-FileNo" style="font-size:1.1rem;font-weight:800;color:#065f46;letter-spacing:.03em;">—</div>
+              <input type="hidden" name="FileNo" id="tf-FileNo">
+            </div>
+            <div style="width:1px;background:#bbf7d0;align-self:stretch;"></div>
+            <div style="flex:2;min-width:200px;">
+              <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#059669;margin-bottom:.2rem;">
+                <i class="bi bi-person-badge"></i> System / Employee ID <span style="color:#94a3b8;font-weight:400;">(auto-generated)</span>
+              </div>
+              <div id="tf-display-EmployeeID" style="font-size:1.1rem;font-weight:800;color:#065f46;letter-spacing:.03em;">—</div>
+              <input type="hidden" name="EmployeeID" id="tf-EmployeeID">
+            </div>
+          </div>
+
+          <!-- Info note -->
+          <div class="alert alert-info d-flex align-items-start gap-2 py-2 mb-3" style="font-size:.79rem;border-radius:10px;">
+            <i class="bi bi-info-circle-fill" style="margin-top:.1rem;flex-shrink:0;"></i>
+            <span>All fields below are pre-filled from the applicant's submitted information. Review and complete any missing details before confirming the transfer.</span>
+          </div>
+
+          <!-- ── IDENTIFICATION ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-fingerprint"></i> Identification</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Assigned Employee ID</label>
+                <input type="text" class="form-control form-control-sm" name="EmployeeID1" id="tf-EmployeeID1" placeholder="e.g. EMP-0001">
+              </div>
+              <div>
+                <label class="tf-label">Office</label>
+                <select class="form-select form-select-sm" name="OfficeID" id="tf-OfficeID">
+                  <option value="">— Select Office —</option>
+                  <?php
+                  $tfOfficeStmt = sqlsrv_query($conn, "SELECT [ID], [OfficeName] FROM [dbo].[Tbl_Office_Information] ORDER BY [OfficeName]");
+                  if ($tfOfficeStmt) {
+                      while ($or = sqlsrv_fetch_array($tfOfficeStmt, SQLSRV_FETCH_ASSOC))
+                          echo '<option value="'.(int)$or['ID'].'">'.htmlspecialchars($or['OfficeName']).'</option>';
+                      sqlsrv_free_stmt($tfOfficeStmt);
+                  }
+                  ?>
+                </select>
+              </div>
+              <div>
+                <label class="tf-label">SSS Number</label>
+                <input type="text" class="form-control form-control-sm" name="SSS_Number" id="tf-SSS_Number">
+              </div>
+              <div>
+                <label class="tf-label">TIN Number</label>
+                <input type="text" class="form-control form-control-sm" name="TIN_Number" id="tf-TIN_Number">
+              </div>
+              <div>
+                <label class="tf-label">PhilHealth</label>
+                <input type="text" class="form-control form-control-sm" name="Philhealth_Number" id="tf-Philhealth_Number">
+              </div>
+              <div>
+                <label class="tf-label">HDMF / Pag-IBIG</label>
+                <input type="text" class="form-control form-control-sm" name="HDMF" id="tf-HDMF">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── FULL NAME ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-person-vcard"></i> Full Name</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Last Name <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="LastName" id="tf-LastName" required>
+              </div>
+              <div>
+                <label class="tf-label">First Name <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="FirstName" id="tf-FirstName" required>
+              </div>
+              <div>
+                <label class="tf-label">Middle Name</label>
+                <input type="text" class="form-control form-control-sm" name="MiddleName" id="tf-MiddleName">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── WORK INFORMATION ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-briefcase"></i> Work Information</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Department <span style="color:#dc2626;">*</span></label>
+                <select class="form-select form-select-sm" name="Department" id="tf-Department" required>
+                  <option value="">— Select Department —</option>
+                  <?php foreach ($departments as $d): ?>
+                    <option value="<?= htmlspecialchars($d['DepartmentName']) ?>"><?= htmlspecialchars($d['DepartmentName']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div>
+                <label class="tf-label">Position <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="Position_held" id="tf-Position_held" required>
+              </div>
+              <div>
+                <label class="tf-label">Job Title</label>
+                <input type="text" class="form-control form-control-sm" name="Job_tittle" id="tf-Job_tittle">
+              </div>
+              <div>
+                <label class="tf-label">Category</label>
+                <input type="text" class="form-control form-control-sm" name="Category" id="tf-Category">
+              </div>
+              <div>
+                <label class="tf-label">Branch</label>
+                <input type="text" class="form-control form-control-sm" name="Branch" id="tf-Branch">
+              </div>
+              <div>
+                <label class="tf-label">Employee Status</label>
+                <input type="text" class="form-control form-control-sm" name="Employee_Status" id="tf-Employee_Status" placeholder="e.g. Regular, Probationary">
+              </div>
+              <div>
+                <label class="tf-label">Hired Date <span style="color:#dc2626;">*</span></label>
+                <input type="date" class="form-control form-control-sm" name="Hired_date" id="tf-Hired_date" required>
+              </div>
+              <div>
+                <label class="tf-label">Cut-Off</label>
+                <input type="text" class="form-control form-control-sm" name="CutOff" id="tf-CutOff" placeholder="e.g. 15th/30th">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── CONTACT INFORMATION ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-telephone"></i> Contact Information</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Mobile Number</label>
+                <input type="text" class="form-control form-control-sm" name="Mobile_Number" id="tf-Mobile_Number">
+              </div>
+              <div>
+                <label class="tf-label">Phone Number</label>
+                <input type="text" class="form-control form-control-sm" name="Phone_Number" id="tf-Phone_Number">
+              </div>
+              <div>
+                <label class="tf-label">Email Address</label>
+                <input type="email" class="form-control form-control-sm" name="Email_Address" id="tf-Email_Address">
+              </div>
+              <div class="tf-full">
+                <label class="tf-label">Present Address</label>
+                <input type="text" class="form-control form-control-sm" name="Present_Address" id="tf-Present_Address">
+              </div>
+              <div class="tf-full">
+                <label class="tf-label">Permanent Address</label>
+                <input type="text" class="form-control form-control-sm" name="Permanent_Address" id="tf-Permanent_Address">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── PERSONAL INFORMATION ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-person"></i> Personal Information</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Birth Date</label>
+                <input type="date" class="form-control form-control-sm" name="Birth_date" id="tf-Birth_date">
+              </div>
+              <div>
+                <label class="tf-label">Birth Place</label>
+                <input type="text" class="form-control form-control-sm" name="Birth_Place" id="tf-Birth_Place">
+              </div>
+              <div>
+                <label class="tf-label">Gender</label>
+                <select class="form-select form-select-sm" name="Gender" id="tf-Gender">
+                  <option value="">— Select —</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label class="tf-label">Civil Status</label>
+                <select class="form-select form-select-sm" name="Civil_Status" id="tf-Civil_Status">
+                  <option value="">— Select —</option>
+                  <option value="Single">Single</option>
+                  <option value="Married">Married</option>
+                  <option value="Widowed">Widowed</option>
+                  <option value="Separated">Separated</option>
+                  <option value="Divorced">Divorced</option>
+                </select>
+              </div>
+              <div>
+                <label class="tf-label">Nationality</label>
+                <input type="text" class="form-control form-control-sm" name="Nationality" id="tf-Nationality">
+              </div>
+              <div>
+                <label class="tf-label">Religion</label>
+                <input type="text" class="form-control form-control-sm" name="Religion" id="tf-Religion">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── EMERGENCY CONTACT ── -->
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-heart-pulse"></i> Emergency Contact</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Contact Person</label>
+                <input type="text" class="form-control form-control-sm" name="Contact_Person" id="tf-Contact_Person">
+              </div>
+              <div>
+                <label class="tf-label">Relationship</label>
+                <input type="text" class="form-control form-control-sm" name="Relationship" id="tf-Relationship">
+              </div>
+              <div>
+                <label class="tf-label">Contact Number</label>
+                <input type="text" class="form-control form-control-sm" name="Contact_Number_Emergency" id="tf-Contact_Number_Emergency">
+              </div>
+            </div>
+          </div>
+
+          <!-- ── EDUCATION & NOTES ── -->
+          <div class="mb-0">
+            <div class="tf-section-title"><i class="bi bi-book"></i> Education &amp; Notes</div>
+            <div class="transfer-form-grid">
+              <div class="tf-full">
+                <label class="tf-label">Educational Background</label>
+                <input type="text" class="form-control form-control-sm" name="Educational_Background" id="tf-Educational_Background">
+              </div>
+              <div class="tf-full">
+                <label class="tf-label">Notes</label>
+                <textarea class="form-control form-control-sm" name="Notes" id="tf-Notes" rows="2"></textarea>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /modal-body -->
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" id="transferSubmitBtn" name="transferApplicant" class="btn btn-success">
+            <i class="bi bi-person-plus-fill"></i> Confirm Transfer to Employee List
+          </button>
+        </div>
+
+      </div><!-- /modal-content -->
+    </form>
+  </div>
+</div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const modalEl        = document.getElementById('updateStatusModal');
@@ -1051,6 +1591,168 @@ if (filesModal && filesModalBody) {
       if (!w.contains(e.target)) w.classList.remove('open');
     });
   });
+
+  // ══ Transfer Modal ═════════════════════════════════════════
+  const transferModalEl = document.getElementById('transferModal');
+  if (transferModalEl) {
+
+    // Helper: set value of any input/select/textarea by id
+    function tfSet(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.tagName === 'SELECT') {
+        // Try exact match first, fallback to case-insensitive
+        let matched = false;
+        for (const opt of el.options) {
+          if (opt.value === value) { opt.selected = true; matched = true; break; }
+        }
+        if (!matched && value) {
+          for (const opt of el.options) {
+            if (opt.value.toLowerCase() === value.toLowerCase()) { opt.selected = true; break; }
+          }
+        }
+      } else {
+        el.value = value || '';
+      }
+    }
+
+    transferModalEl.addEventListener('show.bs.modal', async e => {
+      const btn   = e.relatedTarget;
+      if (!btn) return;
+      const appId = btn.dataset.appId;
+      if (!appId) return;
+
+      // Show loading overlay, disable submit
+      const overlay    = document.getElementById('transferLoadingOverlay');
+      const submitBtn  = document.getElementById('transferSubmitBtn');
+      overlay.style.display    = 'flex';
+      submitBtn.disabled       = true;
+
+      // Reset all fields first
+      document.getElementById('transferAppID').value       = '';
+      document.getElementById('tf-display-FileNo').textContent     = '…';
+      document.getElementById('tf-display-EmployeeID').textContent = '…';
+      document.getElementById('tf-FileNo').value      = '';
+      document.getElementById('tf-EmployeeID').value  = '';
+
+      try {
+        const res  = await fetch(`?_action=fetch_applicant&application_id=${encodeURIComponent(appId)}`);
+        const data = await res.json();
+
+        if (!data.success) {
+          Swal.fire({
+            icon: 'error', title: 'Failed to load',
+            text: data.message || 'Could not fetch applicant details.',
+            background: '#fff', color: '#0f172a',
+          });
+          bootstrap.Modal.getInstance(transferModalEl).hide();
+          return;
+        }
+
+        // ── Guard: already transferred ───────────────────────
+        if (data.TransferredToEmployee) {
+          bootstrap.Modal.getInstance(transferModalEl).hide();
+          Swal.fire({
+            icon: 'info',
+            title: 'Already Transferred',
+            html: 'This applicant has already been added to the Employee List.',
+            confirmButtonColor: '#059669',
+            background: '#fff', color: '#0f172a',
+          });
+          return;
+        }
+
+        // ── Auto-generated IDs (display + hidden) ────────────
+        document.getElementById('tf-display-FileNo').textContent     = data.NextFileNo;
+        document.getElementById('tf-display-EmployeeID').textContent = data.GeneratedEmpID;
+        document.getElementById('tf-FileNo').value     = data.NextFileNo;
+        document.getElementById('tf-EmployeeID').value = data.GeneratedEmpID;
+        document.getElementById('transferAppID').value = data.ApplicationID;
+
+        // ── Name ─────────────────────────────────────────────
+        tfSet('tf-LastName',   data.LastName);
+        tfSet('tf-FirstName',  data.FirstName);
+        tfSet('tf-MiddleName', data.MiddleName);
+
+        // ── Work ─────────────────────────────────────────────
+        tfSet('tf-Position_held', data.Position);
+        tfSet('tf-Department',    data.DepartmentName);
+        // Hired date = today
+        document.getElementById('tf-Hired_date').value = new Date().toISOString().slice(0, 10);
+
+        // ── Contact ───────────────────────────────────────────
+        tfSet('tf-Mobile_Number',   data.Mobile_Number || data.Phone);
+        tfSet('tf-Phone_Number',    data.Phone);
+        tfSet('tf-Email_Address',   data.Email);
+        tfSet('tf-Present_Address', data.Present_Address);
+        tfSet('tf-Permanent_Address', data.Permanent_Address);
+
+        // ── Government IDs ───────────────────────────────────
+        tfSet('tf-SSS_Number',        data.SSS_Number);
+        tfSet('tf-TIN_Number',        data.TIN_Number);
+        tfSet('tf-Philhealth_Number', data.Philhealth_Number);
+        tfSet('tf-HDMF',              data.HDMF);
+
+        // ── Personal ─────────────────────────────────────────
+        tfSet('tf-Birth_date',  data.Birth_date);
+        tfSet('tf-Birth_Place', data.Birth_Place);
+        tfSet('tf-Gender',      data.Gender);
+        tfSet('tf-Civil_Status',data.Civil_Status);
+        tfSet('tf-Nationality', data.Nationality || 'Filipino');
+        tfSet('tf-Religion',    data.Religion);
+
+        // ── Emergency ─────────────────────────────────────────
+        tfSet('tf-Contact_Person',           data.Contact_Person);
+        tfSet('tf-Relationship',             data.Relationship);
+        tfSet('tf-Contact_Number_Emergency', data.Contact_Number_Emergency);
+
+        // ── Education & Notes ─────────────────────────────────
+        tfSet('tf-Educational_Background', data.Educational_Background);
+        tfSet('tf-Notes',                  data.Notes);
+
+      } catch (err) {
+        console.error('Transfer fetch error:', err);
+        Swal.fire({
+          icon: 'error', title: 'Network Error',
+          text: 'Could not connect to the server. Please try again.',
+          background: '#fff', color: '#0f172a',
+        });
+        bootstrap.Modal.getInstance(transferModalEl).hide();
+      } finally {
+        overlay.style.display = 'none';
+        submitBtn.disabled    = false;
+      }
+    });
+
+    // ── Confirm before submit ──────────────────────────────
+    document.getElementById('transferForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const form     = this;
+      const fileNo   = document.getElementById('tf-display-FileNo').textContent;
+      const empID    = document.getElementById('tf-display-EmployeeID').textContent;
+      const fullName = [
+        document.getElementById('tf-LastName').value,
+        document.getElementById('tf-FirstName').value,
+      ].filter(Boolean).join(', ');
+
+      Swal.fire({
+        title: 'Confirm Transfer',
+        html: `Create a new employee record for <strong>${fullName}</strong>?<br>
+               <span style="font-size:.82rem;color:#64748b;">File No: <strong>${fileNo}</strong> &nbsp;·&nbsp; System ID: <strong>${empID}</strong></span>`,
+        icon:  'question',
+        showCancelButton:   true,
+        confirmButtonColor: '#059669',
+        cancelButtonColor:  '#64748b',
+        confirmButtonText:  '<i class="bi bi-person-plus-fill"></i> Yes, Transfer',
+        background: '#fff', color: '#0f172a',
+      }).then(r => {
+        if (r.isConfirmed) {
+          bootstrap.Modal.getInstance(transferModalEl).hide();
+          setTimeout(() => form.submit(), 300);
+        }
+      });
+    });
+  }
 });
 </script>
 </body>

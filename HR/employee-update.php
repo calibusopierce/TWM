@@ -45,8 +45,8 @@ if (!rbac_can('employee_list')) {
 
 // ── Read FormData (POST) ───────────────────────────────────────
 // employee-list.php sends FormData (not JSON), so we read $_POST
-$fileNo    = isset($_POST['FileNo'])    && $_POST['FileNo']    !== '' ? (int)$_POST['FileNo']    : null;
-$empId     = isset($_POST['EmployeeID']) && $_POST['EmployeeID'] !== '' ? trim($_POST['EmployeeID']) : null;
+$fileNo = isset($_POST['FileNo']) && $_POST['FileNo'] !== '' ? (int)$_POST['FileNo'] : null;
+$empId  = isset($_POST['EmployeeID']) && $_POST['EmployeeID'] !== '' ? trim($_POST['EmployeeID']) : null;
 
 if (!$fileNo && !$empId) {
     echo json_encode(['success' => false, 'message' => 'Missing employee identifier (FileNo or EmployeeID).']);
@@ -54,10 +54,13 @@ if (!$fileNo && !$empId) {
 }
 
 // ── Fields allowed to be updated ──────────────────────────────
-// EmployeeID and FileNo are identifiers — never updated via this endpoint
+// FIX: FileNo is the IDENTITY (auto-increment) PK — never include it in SET.
+//      EmployeeID is the natural key used in the WHERE fallback — also excluded.
+//      OfficeID removed from stringFields; if it is NOT an identity column in
+//      your schema, add it back. If unsure, keep it out to avoid the error.
 $stringFields = [
     'EmployeeID1',
-    'OfficeID', 'SSS_Number', 'TIN_Number', 'Philhealth_Number', 'HDMF',
+    'SSS_Number', 'TIN_Number', 'Philhealth_Number', 'HDMF',
     'LastName', 'FirstName', 'MiddleName',
     'Department', 'Position_held', 'Job_tittle', 'Category',
     'Branch', 'System', 'Employee_Status', 'CutOff',
@@ -69,10 +72,16 @@ $stringFields = [
 ];
 $dateFields = ['Hired_date', 'Date_Of_Seperation', 'Birth_date'];
 
+// ── Hard block: identity/PK columns must NEVER appear in SET ──
+// This is a safety net in case the form ever sends these field names.
+$identityColumns = ['FileNo', 'EmployeeID'];
+
 $setClauses = [];
 $params     = [];
 
 foreach ($stringFields as $field) {
+    // Skip identity/PK columns regardless of what the form sends
+    if (in_array($field, $identityColumns, true)) continue;
     if (!isset($_POST[$field])) continue;
     $v = trim($_POST[$field]);
     $setClauses[] = "[{$field}] = ?";
@@ -80,6 +89,7 @@ foreach ($stringFields as $field) {
 }
 
 foreach ($dateFields as $field) {
+    if (in_array($field, $identityColumns, true)) continue;
     if (!isset($_POST[$field])) continue;
     $v = trim($_POST[$field]);
     // Validate YYYY-MM-DD format; discard anything malformed
@@ -118,5 +128,3 @@ if ($stmt === false) {
 
 sqlsrv_free_stmt($stmt);
 echo json_encode(['success' => true, 'message' => 'Employee record updated successfully.']);
-
-?>

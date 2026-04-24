@@ -55,16 +55,23 @@ if (!sqlsrv_begin_transaction($conn)) {
 try {
 
     // ── Fetch applicant ────────────────────────────────────────
+    // Also pull Department name for pre-filling add-employee
     $fetchStmt = sqlsrv_query($conn,
-        "SELECT FullName, Email, Position, Status FROM JobApplications WHERE ApplicationID = ?",
+        "SELECT ja.FullName, ja.Email, ja.Phone, ja.Position, ja.Status,
+                d.DepartmentName
+         FROM   JobApplications ja
+         LEFT JOIN Departments d ON ja.DepartmentID = d.DepartmentID
+         WHERE  ja.ApplicationID = ?",
         [$applicationID]);
     if (!$fetchStmt || !($applicant = sqlsrv_fetch_array($fetchStmt, SQLSRV_FETCH_ASSOC))) {
         throw new Exception('not_found');
     }
-    $fullname      = $applicant['FullName'];
-    $email         = $applicant['Email'];
-    $position      = $applicant['Position'];
-    $currentStatus = (int)$applicant['Status'];
+    $fullname       = $applicant['FullName'];
+    $email          = $applicant['Email'];
+    $phone          = $applicant['Phone'];
+    $position       = $applicant['Position'];
+    $currentStatus  = (int)$applicant['Status'];
+    $departmentName = $applicant['DepartmentName'] ?? '';
     sqlsrv_free_stmt($fetchStmt);
 
     // No meaningful change — skip DB write
@@ -316,6 +323,31 @@ HTML;
     $headers .= "From: {$fromName} <{$fromEmail}>\r\n";
     $headers .= "Reply-To: hr.tradewell@gmail.com\r\n";
     @mail($email, $subject, $htmlMessage, $headers);
+}
+
+// ── Redirect ───────────────────────────────────────────────────
+// If hired → go to add-employee.php pre-filled with applicant data
+if ($status === S_HIRED) {
+    // Split FullName into parts (best-effort: "First Last" or "Last, First")
+    $nameParts  = explode(' ', trim($fullname), 3);
+    $firstName  = $nameParts[0] ?? '';
+    $middleName = isset($nameParts[2]) ? $nameParts[1] : '';
+    $lastName   = isset($nameParts[2]) ? $nameParts[2] : ($nameParts[1] ?? '');
+
+    $params = http_build_query([
+        'from_app'   => 1,
+        'app_id'     => $applicationID,
+        'FirstName'  => $firstName,
+        'MiddleName' => $middleName,
+        'LastName'   => $lastName,
+        'Email_Address'  => $email,
+        'Mobile_Number'  => $phone,
+        'Position_held'  => $position,
+        'Department'     => $departmentName,
+        'hired_flash'    => 1,
+    ]);
+    header('Location: employee-list.php?from_app=' . $applicationID . '&tab=hired');
+    exit;
 }
 
 header('Location: view-applications.php?tab=' . $returnTab . '&updated=1');

@@ -183,6 +183,201 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
         exit;
     }
 
+    // ── FETCH next FileNo/EmployeeID only (for blank Add Employee) ─
+    if ($_POST['_action'] === 'fetch_next_fileno') {
+        header('Content-Type: application/json');
+        $fnStmt = sqlsrv_query($conn, "SELECT ISNULL(MAX(CAST(FileNo AS INT)),0)+1 AS NextFileNo FROM [dbo].[TBL_HREmployeeList]");
+        $fnRow  = $fnStmt ? sqlsrv_fetch_array($fnStmt, SQLSRV_FETCH_ASSOC) : null;
+        $nfn    = (int)($fnRow['NextFileNo'] ?? 1);
+        if ($fnStmt) sqlsrv_free_stmt($fnStmt);
+        echo json_encode(['success'=>true,'NextFileNo'=>$nfn,'GeneratedEmpID'=>'TID-'.$nfn.'-'.date('Y')]);
+        exit;
+    }
+
+    // ── FETCH applicant data for Add Employee pre-fill ───────
+    if ($_POST['_action'] === 'fetch_applicant_for_add') {
+        header('Content-Type: application/json');
+        $appID = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
+        if (!$appID) { echo json_encode(['success'=>false,'message'=>'Missing application ID.']); exit; }
+
+        $sql = "
+            SELECT ja.ApplicationID, ja.Fullname, ja.Email, ja.Phone,
+                ja.Position, ja.DepartmentID,
+                ja.FirstName, ja.MiddleName, ja.LastName,
+                ja.Mobile_Number, ja.Birth_date, ja.Birth_Place,
+                ja.Gender, ja.Civil_Status, ja.Nationality, ja.Religion,
+                ja.Present_Address, ja.Permanent_Address,
+                ja.SSS_Number, ja.TIN_Number, ja.Philhealth_Number, ja.HDMF,
+                ja.Contact_Person, ja.Relationship, ja.Contact_Number_Emergency,
+                ja.Educational_Background, ja.Notes,
+                ja.TransferredToEmployee,
+                d.DepartmentName
+            FROM [dbo].[JobApplications] ja
+            LEFT JOIN [dbo].[Departments] d ON ja.DepartmentID = d.DepartmentID
+            WHERE ja.ApplicationID = ?";
+        $stmt = sqlsrv_query($conn, $sql, [$appID]);
+        if (!$stmt) { $e = sqlsrv_errors(); echo json_encode(['success'=>false,'message'=>$e[0]['message']??'Query failed.']); exit; }
+        $app = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+        sqlsrv_free_stmt($stmt);
+        if (!$app) { echo json_encode(['success'=>false,'message'=>'Applicant not found.']); exit; }
+
+        // Serialize dates
+        foreach (['Birth_date'] as $df) {
+            if (isset($app[$df]) && $app[$df] instanceof DateTime) $app[$df] = $app[$df]->format('Y-m-d');
+            elseif (isset($app[$df]) && is_string($app[$df]) && $app[$df]) $app[$df] = substr($app[$df],0,10);
+            else $app[$df] = null;
+        }
+
+        // Name fallback
+        $firstName  = trim($app['FirstName']  ?? '');
+        $lastName   = trim($app['LastName']   ?? '');
+        $middleName = trim($app['MiddleName'] ?? '');
+        if ($firstName === '' && $lastName === '') {
+            $parts = array_values(array_filter(explode(' ', trim($app['Fullname'] ?? ''))));
+            $firstName = $parts[0] ?? '';
+            $lastName  = isset($parts[1]) ? implode(' ', array_slice($parts, 1)) : '';
+        }
+
+        // Generate next FileNo and EmployeeID
+        $fnStmt = sqlsrv_query($conn, "SELECT ISNULL(MAX(CAST(FileNo AS INT)),0)+1 AS NextFileNo FROM [dbo].[TBL_HREmployeeList]");
+        $fnRow  = $fnStmt ? sqlsrv_fetch_array($fnStmt, SQLSRV_FETCH_ASSOC) : null;
+        $nextFileNo = (int)($fnRow['NextFileNo'] ?? 1);
+        if ($fnStmt) sqlsrv_free_stmt($fnStmt);
+        $generatedEmpID = 'TID-' . $nextFileNo . '-' . date('Y');
+
+        echo json_encode([
+            'success'                  => true,
+            'TransferredToEmployee'    => !empty($app['TransferredToEmployee']),
+            'ApplicationID'            => (int)$app['ApplicationID'],
+            'NextFileNo'               => $nextFileNo,
+            'GeneratedEmpID'           => $generatedEmpID,
+            'FirstName'                => $firstName,
+            'MiddleName'               => $middleName,
+            'LastName'                 => $lastName,
+            'Email_Address'            => $app['Email']            ?? '',
+            'Phone_Number'             => $app['Phone']            ?? '',
+            'Mobile_Number'            => $app['Mobile_Number']    ?? '',
+            'Position_held'            => $app['Position']         ?? '',
+            'Department'               => $app['DepartmentName']   ?? '',
+            'Birth_date'               => $app['Birth_date'],
+            'Birth_Place'              => $app['Birth_Place']      ?? '',
+            'Gender'                   => $app['Gender']           ?? '',
+            'Civil_Status'             => $app['Civil_Status']     ?? '',
+            'Nationality'              => !empty($app['Nationality']) ? $app['Nationality'] : 'Filipino',
+            'Religion'                 => $app['Religion']         ?? '',
+            'Present_Address'          => $app['Present_Address']  ?? '',
+            'Permanent_Address'        => $app['Permanent_Address'] ?? '',
+            'SSS_Number'               => $app['SSS_Number']       ?? '',
+            'TIN_Number'               => $app['TIN_Number']       ?? '',
+            'Philhealth_Number'        => $app['Philhealth_Number'] ?? '',
+            'HDMF'                     => $app['HDMF']             ?? '',
+            'Contact_Person'           => $app['Contact_Person']   ?? '',
+            'Relationship'             => $app['Relationship']     ?? '',
+            'Contact_Number_Emergency' => $app['Contact_Number_Emergency'] ?? '',
+            'Educational_Background'   => $app['Educational_Background']  ?? '',
+            'Notes'                    => $app['Notes']            ?? '',
+        ]);
+        exit;
+    }
+
+    // ── ADD new employee (from Add Employee modal) ────────────
+    if ($_POST['_action'] === 'add_employee') {
+        header('Content-Type: application/json');
+        if (!$isAdmin) { echo json_encode(['success'=>false,'message'=>'Unauthorized.']); exit; }
+
+        $s    = fn($k) => isset($_POST[$k]) && trim($_POST[$k]) !== '' ? trim($_POST[$k]) : null;
+        $i    = fn($k) => isset($_POST[$k]) && $_POST[$k] !== '' ? (int)$_POST[$k] : null;
+        $d    = fn($k) => (isset($_POST[$k]) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($_POST[$k]))) ? trim($_POST[$k]) : null;
+
+        // Required
+        $fileNo    = $i('FileNo');
+        $empID     = $s('EmployeeID');
+        $lastName  = $s('LastName');
+        $firstName = $s('FirstName');
+        $dept      = $s('Department');
+        $position  = $s('Position_held');
+        $hiredDate = $d('Hired_date');
+        $appID     = $i('ApplicationID'); // may be null if not from applicant
+
+        if (!$fileNo || !$empID || !$lastName || !$firstName || !$dept || !$position || !$hiredDate) {
+            echo json_encode(['success'=>false,'message'=>'Required fields missing: Last Name, First Name, Department, Position, Hired Date.']);
+            exit;
+        }
+
+        // FileNo conflict check
+        $chk = sqlsrv_query($conn, "SELECT TOP 1 FileNo FROM [dbo].[TBL_HREmployeeList] WHERE FileNo=?", [$fileNo]);
+        if ($chk && sqlsrv_fetch_array($chk, SQLSRV_FETCH_ASSOC)) {
+            sqlsrv_free_stmt($chk);
+            echo json_encode(['success'=>false,'message'=>'File No conflict — please refresh and try again.']);
+            exit;
+        }
+        if ($chk) sqlsrv_free_stmt($chk);
+
+        // FIX: FileNo is an IDENTITY column — never insert it explicitly.
+        //      SQL Server auto-generates it; we retrieve it with SCOPE_IDENTITY().
+        $sql = "INSERT INTO [dbo].[TBL_HREmployeeList] (
+            EmployeeID, EmployeeID1, OfficeID,
+            LastName, FirstName, MiddleName,
+            Department, Position_held, Job_tittle, Category,
+            Branch, [System], Employee_Status, CutOff, Hired_date,
+            SSS_Number, TIN_Number, Philhealth_Number, HDMF,
+            Mobile_Number, Phone_Number, Email_Address,
+            Present_Address, Permanent_Address,
+            Birth_date, Birth_Place, Gender, Civil_Status,
+            Nationality, Religion,
+            Contact_Person, Relationship, Contact_Number_Emergency,
+            Educational_Background, Notes,
+            ApplicationID, Active, Blacklisted
+        ) VALUES (
+            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+        ); SELECT SCOPE_IDENTITY() AS NewFileNo";
+
+        $params = [
+            $empID,            $s('EmployeeID1'),  $i('OfficeID'),
+            $lastName,         $firstName,        $s('MiddleName'),
+            $dept,             $position,         $s('Job_tittle'),   $s('Category'),
+            $s('Branch'),      $s('System'),      $s('Employee_Status'), $s('CutOff'), $hiredDate,
+            $s('SSS_Number'),  $s('TIN_Number'),  $s('Philhealth_Number'), $s('HDMF'),
+            $s('Mobile_Number'), $s('Phone_Number'), $s('Email_Address'),
+            $s('Present_Address'), $s('Permanent_Address'),
+            $d('Birth_date'),  $s('Birth_Place'),  $s('Gender'),      $s('Civil_Status'),
+            $s('Nationality') ?? 'Filipino',        $s('Religion'),
+            $s('Contact_Person'), $s('Relationship'), $s('Contact_Number_Emergency'),
+            $s('Educational_Background'), $s('Notes'),
+            $appID, 1, 0,
+        ];
+
+        $stmt = sqlsrv_query($conn, $sql, $params);
+        if ($stmt === false) {
+            $errors = sqlsrv_errors();
+            error_log('Add employee INSERT failed: '.json_encode($errors));
+            echo json_encode(['success'=>false,'message'=>$errors[0]['message']??'Insert failed.']);
+            exit;
+        }
+
+        // Advance to the SELECT result set to read the generated FileNo
+        $generatedFileNo = $fileNo; // fallback to the preview value
+        if (sqlsrv_next_result($stmt)) {
+            $idRow = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+            if ($idRow && isset($idRow['NewFileNo'])) {
+                $generatedFileNo = (int)$idRow['NewFileNo'];
+            }
+        }
+        sqlsrv_free_stmt($stmt);
+
+        // Mark applicant as transferred if linked
+        if ($appID) {
+            $mark = sqlsrv_query($conn,
+                "UPDATE [dbo].[JobApplications] SET [TransferredToEmployee]=1 WHERE [ApplicationID]=?",
+                [$appID]);
+            if ($mark) sqlsrv_free_stmt($mark);
+        }
+
+        echo json_encode(['success'=>true,'message'=>'Employee added successfully.','FileNo'=>$generatedFileNo,'EmployeeID'=>$empID]);
+        exit;
+    }
+
     // ── EXPORT all employees ──────────────────────────────────
     if ($_POST['_action'] === 'export_data') {
         header('Content-Type: application/json');
@@ -326,8 +521,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
     .detail-modal .modal-title{font-weight:700;color:#0f172a;font-size:1rem;}
     .detail-modal .btn-close{filter:none;opacity:.6;}
     .modal-avatar-wrap{display:flex;align-items:center;gap:1rem;padding:1.25rem 1.5rem;border-bottom:1px solid #f1f5f9;}
-    .modal-avatar{width:144px;height:144px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;flex-shrink:0;}
-    .modal-avatar-initials{width:144px;height:144px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:800;color:#fff;flex-shrink:0;}
+    .modal-avatar{width:160px;height:160px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;flex-shrink:0;}
+    .modal-avatar-initials{width:160px;height:160px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:800;color:#fff;flex-shrink:0;}
 
     /* Avatar upload overlay */
     .avatar-upload-wrap{position:relative;flex-shrink:0;cursor:pointer;}
@@ -397,8 +592,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       body > *:not(#printArea):not(#printListArea){display:none !important;}
       #printArea{display:block !important;font-family:'Segoe UI',sans-serif;color:#0f172a;padding:0;margin:0;}
       .print-header{display:flex;align-items:center;gap:1rem;padding:1rem 1.5rem;border-bottom:3px solid #1e40af;margin-bottom:1rem;}
-      .print-avatar{width:140px;height:140px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;}
-      .print-avatar-initials{width:140px;height:140px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.5rem;font-weight:800;color:#fff;}
+      .print-avatar{width:160px;height:160px;border-radius:50%;object-fit:cover;border:3px solid #e2e8f0;}
+      .print-avatar-initials{width:160px;height:160px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.8rem;font-weight:800;color:#fff;}
       .print-name{font-size:1.2rem;font-weight:800;}
       .print-role{font-size:.85rem;color:#475569;}
       .print-section{margin-bottom:1rem;padding:.75rem 1.5rem;page-break-inside:avoid;}
@@ -455,6 +650,12 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       </div>
     </div>
     <div class="action-toolbar">
+      <?php if ($isAdmin): ?>
+      <button class="btn btn-sm btn-success" id="btnAddEmployee"
+        style="background:rgba(16,185,129,.12);color:#059669;border:1px solid rgba(16,185,129,.35);font-weight:600;">
+        <i class="bi bi-person-plus-fill"></i> Add Employee
+      </button>
+      <?php endif; ?>
       <button class="btn btn-sm btn-print-list" id="btnPrintList">
         <i class="bi bi-printer"></i> Print List
       </button>
@@ -648,42 +849,57 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
 
       <div class="modal-body" id="modalBody" style="padding:0;">
 
-        <!-- IDs -->
+        <!-- Personal Info -->
         <div class="detail-section">
-          <div class="detail-section-title">
-            <i class="bi bi-fingerprint"></i> Identification
-            <span id="idMissingBadge" class="missing-count-badge ms-auto" style="display:none;"><i class="bi bi-exclamation-triangle-fill"></i> <span></span> empty</span>
-          </div>
-          <div class="detail-grid-3">
-            <div class="detail-item"><label>Assigned ID</label><span class="d-val" id="d-EmployeeID1">—</span><input class="d-input" id="e-EmployeeID1" data-field="EmployeeID1"></div>
-            <div class="detail-item"><label>System ID</label><span class="d-val" id="d-EmployeeID">—</span><input class="d-input" id="e-EmployeeID" data-field="EmployeeID" readonly></div>
-            <div class="detail-item"><label>File No</label><span class="d-val" id="d-FileNo">—</span><input class="d-input" id="e-FileNo" data-field="FileNo" readonly></div>
-            <div class="detail-item"><label>Office</label><span class="d-val" id="d-OfficeName">—</span>
-              <select class="d-input" id="e-OfficeID" data-field="OfficeID">
-                <option value="">— Select Office —</option>
-                <?php foreach ($offices as $off): ?>
-                <option value="<?= htmlspecialchars($off['ID']) ?>"><?= htmlspecialchars($off['OfficeName']) ?></option>
-                <?php endforeach; ?>
-              </select>
-            </div>
-            <div class="detail-item"><label>SSS Number</label><span class="d-val" id="d-SSS_Number">—</span><input class="d-input" id="e-SSS_Number" data-field="SSS_Number"></div>
-            <div class="detail-item"><label>TIN Number</label><span class="d-val" id="d-TIN_Number">—</span><input class="d-input" id="e-TIN_Number" data-field="TIN_Number"></div>
-            <div class="detail-item"><label>PhilHealth</label><span class="d-val" id="d-Philhealth_Number">—</span><input class="d-input" id="e-Philhealth_Number" data-field="Philhealth_Number"></div>
-            <div class="detail-item"><label>HDMF / Pag-IBIG</label><span class="d-val" id="d-HDMF">—</span><input class="d-input" id="e-HDMF" data-field="HDMF"></div>
-          </div>
-        </div>
-
-        <!-- Name -->
-        <div class="detail-section">
-          <div class="detail-section-title"><i class="bi bi-person-vcard"></i> Full Name</div>
+          <div class="detail-section-title"><i class="bi bi-person"></i> Personal Information</div>
           <div class="detail-grid-3">
             <div class="detail-item"><label>Last Name</label><span class="d-val" id="d-LastName">—</span><input class="d-input" id="e-LastName" data-field="LastName"></div>
             <div class="detail-item"><label>First Name</label><span class="d-val" id="d-FirstName">—</span><input class="d-input" id="e-FirstName" data-field="FirstName"></div>
             <div class="detail-item"><label>Middle Name</label><span class="d-val" id="d-MiddleName">—</span><input class="d-input" id="e-MiddleName" data-field="MiddleName"></div>
+            <div class="detail-item"><label>Birth Date</label><span class="d-val" id="d-Birth_date">—</span><input class="d-input" id="e-Birth_date" data-field="Birth_date" type="date"></div>
+            <div class="detail-item"><label>Birth Place</label><span class="d-val" id="d-Birth_Place">—</span><input class="d-input" id="e-Birth_Place" data-field="Birth_Place"></div>
+            <div class="detail-item"><label>Gender</label><span class="d-val" id="d-Gender">—</span>
+              <select class="d-input" id="e-Gender" data-field="Gender"><option value="">— Select —</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select>
+            </div>
+            <div class="detail-item"><label>Civil Status</label><span class="d-val" id="d-Civil_Status">—</span>
+              <select class="d-input" id="e-Civil_Status" data-field="Civil_Status"><option value="">— Select —</option><option value="Single">Single</option><option value="Married">Married</option><option value="Widowed">Widowed</option><option value="Separated">Separated</option><option value="Divorced">Divorced</option></select>
+            </div>
+            <div class="detail-item"><label>Nationality</label><span class="d-val" id="d-Nationality">—</span><input class="d-input" id="e-Nationality" data-field="Nationality"></div>
+            <div class="detail-item"><label>Religion</label><span class="d-val" id="d-Religion">—</span><input class="d-input" id="e-Religion" data-field="Religion"></div>
           </div>
         </div>
 
-        <!-- Work info -->
+        <!-- Contact Info -->
+        <div class="detail-section">
+          <div class="detail-section-title"><i class="bi bi-telephone"></i> Contact Information</div>
+          <div class="detail-grid">
+            <div class="detail-item"><label>Mobile</label><span class="d-val" id="d-Mobile_Number">—</span><input class="d-input" id="e-Mobile_Number" data-field="Mobile_Number"></div>
+            <div class="detail-item"><label>Phone</label><span class="d-val" id="d-Phone_Number">—</span><input class="d-input" id="e-Phone_Number" data-field="Phone_Number"></div>
+            <div class="detail-item"><label>Email</label><span class="d-val" id="d-Email_Address">—</span><input class="d-input" id="e-Email_Address" data-field="Email_Address" type="email"></div>
+            <div class="detail-item"><label>Present Address</label><span class="d-val" id="d-Present_Address">—</span><input class="d-input" id="e-Present_Address" data-field="Present_Address"></div>
+            <div class="detail-item"><label>Permanent Address</label><span class="d-val" id="d-Permanent_Address">—</span><input class="d-input" id="e-Permanent_Address" data-field="Permanent_Address"></div>
+          </div>
+        </div>
+
+        <!-- Education -->
+        <div class="detail-section">
+          <div class="detail-section-title"><i class="bi bi-book"></i> Education</div>
+          <div class="detail-grid">
+            <div class="detail-item" style="grid-column:1/-1;"><label>Educational Background</label><span class="d-val" id="d-Educational_Background">—</span><input class="d-input" id="e-Educational_Background" data-field="Educational_Background"></div>
+          </div>
+        </div>
+
+        <!-- Emergency -->
+        <div class="detail-section">
+          <div class="detail-section-title"><i class="bi bi-heart-pulse"></i> Emergency Contact</div>
+          <div class="detail-grid">
+            <div class="detail-item"><label>Contact Person</label><span class="d-val" id="d-Contact_Person">—</span><input class="d-input" id="e-Contact_Person" data-field="Contact_Person"></div>
+            <div class="detail-item"><label>Relationship</label><span class="d-val" id="d-Relationship">—</span><input class="d-input" id="e-Relationship" data-field="Relationship"></div>
+            <div class="detail-item"><label>Contact Number</label><span class="d-val" id="d-Contact_Number_Emergency">—</span><input class="d-input" id="e-Contact_Number_Emergency" data-field="Contact_Number_Emergency"></div>
+          </div>
+        </div>
+
+        <!-- Work Information -->
         <div class="detail-section">
           <div class="detail-section-title"><i class="bi bi-briefcase"></i> Work Information</div>
           <div class="detail-grid">
@@ -700,51 +916,43 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
           </div>
         </div>
 
-        <!-- Personal -->
+        <!-- Tradewell Identification ID -->
         <div class="detail-section">
-          <div class="detail-section-title"><i class="bi bi-person"></i> Personal Information</div>
-          <div class="detail-grid">
-            <div class="detail-item"><label>Birth Date</label><span class="d-val" id="d-Birth_date">—</span><input class="d-input" id="e-Birth_date" data-field="Birth_date" type="date"></div>
-            <div class="detail-item"><label>Birth Place</label><span class="d-val" id="d-Birth_Place">—</span><input class="d-input" id="e-Birth_Place" data-field="Birth_Place"></div>
-            <div class="detail-item"><label>Gender</label><span class="d-val" id="d-Gender">—</span>
-              <select class="d-input" id="e-Gender" data-field="Gender"><option value="">— Select —</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select>
+          <div class="detail-section-title">
+            <i class="bi bi-person-badge"></i> Tradewell Identification ID
+            <span id="idMissingBadge" class="missing-count-badge ms-auto" style="display:none;"><i class="bi bi-exclamation-triangle-fill"></i> <span></span> empty</span>
+          </div>
+          <div class="detail-grid-3">
+            <div class="detail-item"><label>Assigned ID</label><span class="d-val" id="d-EmployeeID1">—</span><input class="d-input" id="e-EmployeeID1" data-field="EmployeeID1"></div>
+            <div class="detail-item"><label>System ID</label><span class="d-val" id="d-EmployeeID">—</span><input class="d-input" id="e-EmployeeID" data-field="EmployeeID" readonly></div>
+            <div class="detail-item"><label>File No</label><span class="d-val" id="d-FileNo">—</span><input class="d-input" id="e-FileNo" data-field="FileNo" readonly></div>
+            <div class="detail-item"><label>Office</label><span class="d-val" id="d-OfficeName">—</span>
+              <select class="d-input" id="e-OfficeID" data-field="OfficeID">
+                <option value="">— Select Office —</option>
+                <?php foreach ($offices as $off): ?>
+                <option value="<?= htmlspecialchars($off['ID']) ?>"><?= htmlspecialchars($off['OfficeName']) ?></option>
+                <?php endforeach; ?>
+              </select>
             </div>
-            <div class="detail-item"><label>Civil Status</label><span class="d-val" id="d-Civil_Status">—</span>
-              <select class="d-input" id="e-Civil_Status" data-field="Civil_Status"><option value="">— Select —</option><option value="Single">Single</option><option value="Married">Married</option><option value="Widowed">Widowed</option><option value="Separated">Separated</option><option value="Divorced">Divorced</option></select>
-            </div>
-            <div class="detail-item"><label>Nationality</label><span class="d-val" id="d-Nationality">—</span><input class="d-input" id="e-Nationality" data-field="Nationality"></div>
-            <div class="detail-item"><label>Religion</label><span class="d-val" id="d-Religion">—</span><input class="d-input" id="e-Religion" data-field="Religion"></div>
           </div>
         </div>
 
-        <!-- Contact -->
+        <!-- Government IDs -->
         <div class="detail-section">
-          <div class="detail-section-title"><i class="bi bi-telephone"></i> Contact Information</div>
+          <div class="detail-section-title"><i class="bi bi-fingerprint"></i> Government IDs</div>
           <div class="detail-grid">
-            <div class="detail-item"><label>Mobile</label><span class="d-val" id="d-Mobile_Number">—</span><input class="d-input" id="e-Mobile_Number" data-field="Mobile_Number"></div>
-            <div class="detail-item"><label>Phone</label><span class="d-val" id="d-Phone_Number">—</span><input class="d-input" id="e-Phone_Number" data-field="Phone_Number"></div>
-            <div class="detail-item"><label>Email</label><span class="d-val" id="d-Email_Address">—</span><input class="d-input" id="e-Email_Address" data-field="Email_Address" type="email"></div>
-            <div class="detail-item"><label>Present Address</label><span class="d-val" id="d-Present_Address">—</span><input class="d-input" id="e-Present_Address" data-field="Present_Address"></div>
-            <div class="detail-item"><label>Permanent Address</label><span class="d-val" id="d-Permanent_Address">—</span><input class="d-input" id="e-Permanent_Address" data-field="Permanent_Address"></div>
+            <div class="detail-item"><label>SSS Number</label><span class="d-val" id="d-SSS_Number">—</span><input class="d-input" id="e-SSS_Number" data-field="SSS_Number"></div>
+            <div class="detail-item"><label>TIN Number</label><span class="d-val" id="d-TIN_Number">—</span><input class="d-input" id="e-TIN_Number" data-field="TIN_Number"></div>
+            <div class="detail-item"><label>PhilHealth</label><span class="d-val" id="d-Philhealth_Number">—</span><input class="d-input" id="e-Philhealth_Number" data-field="Philhealth_Number"></div>
+            <div class="detail-item"><label>HDMF / Pag-IBIG</label><span class="d-val" id="d-HDMF">—</span><input class="d-input" id="e-HDMF" data-field="HDMF"></div>
           </div>
         </div>
 
-        <!-- Emergency -->
+        <!-- Note -->
         <div class="detail-section">
-          <div class="detail-section-title"><i class="bi bi-heart-pulse"></i> Emergency Contact</div>
+          <div class="detail-section-title"><i class="bi bi-sticky"></i> Note</div>
           <div class="detail-grid">
-            <div class="detail-item"><label>Contact Person</label><span class="d-val" id="d-Contact_Person">—</span><input class="d-input" id="e-Contact_Person" data-field="Contact_Person"></div>
-            <div class="detail-item"><label>Relationship</label><span class="d-val" id="d-Relationship">—</span><input class="d-input" id="e-Relationship" data-field="Relationship"></div>
-            <div class="detail-item"><label>Contact Number</label><span class="d-val" id="d-Contact_Number_Emergency">—</span><input class="d-input" id="e-Contact_Number_Emergency" data-field="Contact_Number_Emergency"></div>
-          </div>
-        </div>
-
-        <!-- Education & Notes -->
-        <div class="detail-section">
-          <div class="detail-section-title"><i class="bi bi-book"></i> Education &amp; Notes</div>
-          <div class="detail-grid">
-            <div class="detail-item"><label>Educational Background</label><span class="d-val" id="d-Educational_Background">—</span><input class="d-input" id="e-Educational_Background" data-field="Educational_Background"></div>
-            <div class="detail-item"><label>Notes</label><span class="d-val" id="d-Notes">—</span><textarea class="d-input" id="e-Notes" data-field="Notes" rows="2"></textarea></div>
+            <div class="detail-item" style="grid-column:1/-1;"><label>Notes</label><span class="d-val" id="d-Notes">—</span><textarea class="d-input" id="e-Notes" data-field="Notes" rows="2"></textarea></div>
           </div>
         </div>
 
@@ -804,6 +1012,154 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
 <!-- Hidden print areas -->
 <div id="printArea" aria-hidden="true"></div>
 <div id="printListArea" aria-hidden="true"></div>
+
+<!-- ══ ADD EMPLOYEE MODAL ══════════════════════════════════════ -->
+<div class="modal fade" id="addEmpModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content" style="border-radius:16px;border:none;box-shadow:0 24px 80px rgba(0,0,0,.2);">
+
+      <div class="modal-header" style="border-bottom:1px solid #e2e8f0;padding:1rem 1.5rem;">
+        <h5 class="modal-title fw-bold" style="color:#0f172a;font-size:1rem;">
+          <i class="bi bi-person-plus-fill me-2" style="color:#059669;"></i>
+          <span id="addEmpModalTitle">Add New Employee</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <!-- Loading overlay -->
+      <div id="addEmpLoadingOverlay" style="
+        display:none;position:absolute;inset:0;z-index:10;
+        background:rgba(255,255,255,.9);border-radius:16px;
+        align-items:center;justify-content:center;flex-direction:column;gap:.75rem;">
+        <div class="spinner-border text-success" style="width:2.5rem;height:2.5rem;"></div>
+        <div style="font-size:.82rem;color:#475569;font-weight:600;">Loading applicant details…</div>
+      </div>
+
+      <div class="modal-body" style="padding:1.25rem 1.5rem;">
+
+        <!-- from-applicant banner (hidden by default) -->
+        <div id="addEmpAppBanner" style="display:none;
+          background:linear-gradient(135deg,#f0fdf4,#dcfce7);
+          border:1px solid #bbf7d0;border-radius:12px;
+          padding:.75rem 1.1rem;margin-bottom:1rem;
+          font-size:.8rem;color:#065f46;">
+          <i class="bi bi-link-45deg me-1"></i>
+          Pre-filled from applicant record. Review and complete any missing fields.
+        </div>
+
+        <input type="hidden" id="ae-ApplicationID">
+
+        <!-- IDs banner -->
+        <div style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border:1px solid #bbf7d0;border-radius:12px;padding:.85rem 1.1rem;margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:1rem;align-items:center;">
+          <div style="flex:1;min-width:160px;">
+            <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#059669;margin-bottom:.2rem;"><i class="bi bi-hash"></i> File No <span style="color:#94a3b8;font-weight:400;">(auto)</span></div>
+            <div id="ae-display-FileNo" style="font-size:1.1rem;font-weight:800;color:#065f46;">—</div>
+            <input type="hidden" id="ae-FileNo">
+          </div>
+          <div style="width:1px;background:#bbf7d0;align-self:stretch;"></div>
+          <div style="flex:2;min-width:200px;">
+            <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#059669;margin-bottom:.2rem;"><i class="bi bi-person-badge"></i> System / Employee ID <span style="color:#94a3b8;font-weight:400;">(auto)</span></div>
+            <div id="ae-display-EmployeeID" style="font-size:1.1rem;font-weight:800;color:#065f46;">—</div>
+            <input type="hidden" id="ae-EmployeeID">
+          </div>
+        </div>
+
+        <!-- Form grid -->
+        <style>
+          .ae-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .75rem;}
+          .ae-grid .ae-full{grid-column:1/-1;}
+          .ae-label{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8;display:block;margin-bottom:.25rem;}
+          .ae-section{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#475569;margin:.9rem 0 .6rem;padding-left:.6rem;border-left:3px solid #3b82f6;display:flex;align-items:center;gap:.4rem;}
+          @media(max-width:576px){.ae-grid{grid-template-columns:1fr;}}
+        </style>
+
+        <div class="ae-section"><i class="bi bi-fingerprint"></i> Identification</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Assigned Employee ID</label><input class="form-control form-control-sm" id="ae-EmployeeID1" placeholder="e.g. EMP-0001"></div>
+          <div><label class="ae-label">Office</label>
+            <select class="form-select form-select-sm" id="ae-OfficeID">
+              <option value="">— Select Office —</option>
+              <?php foreach ($offices as $off): ?><option value="<?= $off['ID'] ?>"><?= htmlspecialchars($off['OfficeName']) ?></option><?php endforeach; ?>
+            </select>
+          </div>
+          <div><label class="ae-label">SSS Number</label><input class="form-control form-control-sm" id="ae-SSS_Number"></div>
+          <div><label class="ae-label">TIN Number</label><input class="form-control form-control-sm" id="ae-TIN_Number"></div>
+          <div><label class="ae-label">PhilHealth</label><input class="form-control form-control-sm" id="ae-Philhealth_Number"></div>
+          <div><label class="ae-label">HDMF / Pag-IBIG</label><input class="form-control form-control-sm" id="ae-HDMF"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-person-vcard"></i> Full Name</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Last Name <span style="color:#dc2626;">*</span></label><input class="form-control form-control-sm" id="ae-LastName" required></div>
+          <div><label class="ae-label">First Name <span style="color:#dc2626;">*</span></label><input class="form-control form-control-sm" id="ae-FirstName" required></div>
+          <div><label class="ae-label">Middle Name</label><input class="form-control form-control-sm" id="ae-MiddleName"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-briefcase"></i> Work Information</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Department <span style="color:#dc2626;">*</span></label>
+            <select class="form-select form-select-sm" id="ae-Department" required>
+              <option value="">— Select Department —</option>
+              <?php foreach ($departments as $d): ?><option value="<?= htmlspecialchars($d) ?>"><?= htmlspecialchars($d) ?></option><?php endforeach; ?>
+            </select>
+          </div>
+          <div><label class="ae-label">Position <span style="color:#dc2626;">*</span></label><input class="form-control form-control-sm" id="ae-Position_held" required></div>
+          <div><label class="ae-label">Job Title</label><input class="form-control form-control-sm" id="ae-Job_tittle"></div>
+          <div><label class="ae-label">Category</label><input class="form-control form-control-sm" id="ae-Category"></div>
+          <div><label class="ae-label">Branch</label><input class="form-control form-control-sm" id="ae-Branch"></div>
+          <div><label class="ae-label">Employee Status</label><input class="form-control form-control-sm" id="ae-Employee_Status" placeholder="e.g. Regular, Probationary"></div>
+          <div><label class="ae-label">Hired Date <span style="color:#dc2626;">*</span></label><input type="date" class="form-control form-control-sm" id="ae-Hired_date" required></div>
+          <div><label class="ae-label">Cut-Off</label><input class="form-control form-control-sm" id="ae-CutOff" placeholder="e.g. 15th/30th"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-telephone"></i> Contact Information</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Mobile Number</label><input class="form-control form-control-sm" id="ae-Mobile_Number"></div>
+          <div><label class="ae-label">Phone Number</label><input class="form-control form-control-sm" id="ae-Phone_Number"></div>
+          <div><label class="ae-label">Email Address</label><input type="email" class="form-control form-control-sm" id="ae-Email_Address"></div>
+          <div class="ae-full"><label class="ae-label">Present Address</label><input class="form-control form-control-sm" id="ae-Present_Address"></div>
+          <div class="ae-full"><label class="ae-label">Permanent Address</label><input class="form-control form-control-sm" id="ae-Permanent_Address"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-person"></i> Personal Information</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Birth Date</label><input type="date" class="form-control form-control-sm" id="ae-Birth_date"></div>
+          <div><label class="ae-label">Birth Place</label><input class="form-control form-control-sm" id="ae-Birth_Place"></div>
+          <div><label class="ae-label">Gender</label>
+            <select class="form-select form-select-sm" id="ae-Gender"><option value="">— Select —</option><option>Male</option><option>Female</option><option>Other</option></select>
+          </div>
+          <div><label class="ae-label">Civil Status</label>
+            <select class="form-select form-select-sm" id="ae-Civil_Status"><option value="">— Select —</option><option>Single</option><option>Married</option><option>Widowed</option><option>Separated</option><option>Divorced</option></select>
+          </div>
+          <div><label class="ae-label">Nationality</label><input class="form-control form-control-sm" id="ae-Nationality"></div>
+          <div><label class="ae-label">Religion</label><input class="form-control form-control-sm" id="ae-Religion"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-heart-pulse"></i> Emergency Contact</div>
+        <div class="ae-grid">
+          <div><label class="ae-label">Contact Person</label><input class="form-control form-control-sm" id="ae-Contact_Person"></div>
+          <div><label class="ae-label">Relationship</label><input class="form-control form-control-sm" id="ae-Relationship"></div>
+          <div><label class="ae-label">Contact Number</label><input class="form-control form-control-sm" id="ae-Contact_Number_Emergency"></div>
+        </div>
+
+        <div class="ae-section"><i class="bi bi-book"></i> Education &amp; Notes</div>
+        <div class="ae-grid">
+          <div class="ae-full"><label class="ae-label">Educational Background</label><input class="form-control form-control-sm" id="ae-Educational_Background"></div>
+          <div class="ae-full"><label class="ae-label">Notes</label><textarea class="form-control form-control-sm" id="ae-Notes" rows="2"></textarea></div>
+        </div>
+
+      </div><!-- /modal-body -->
+
+      <div class="modal-footer" style="gap:.5rem;">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" id="ae-SubmitBtn" class="btn btn-success btn-sm">
+          <i class="bi bi-person-plus-fill"></i> Add to Employee List
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 <script src="<?= base_url('assets/vendor/bootstrap/js/bootstrap.bundle.min.js') ?>"></script>
 <script>
@@ -1272,12 +1628,14 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="print-role">${pv(emp.Position_held)} · ${pv(emp.Department)}</div>
         <div style="font-size:.75rem;margin-top:.25rem;color:#475569;">${statusText}</div>
       </div></div>
-      ${section('Identification',[['Assigned ID',pv(emp.EmployeeID1)],['System ID',pv(emp.EmployeeID)],['File No',pv(emp.FileNo)],['Office',pv(emp.OfficeName)],['SSS Number',pv(emp.SSS_Number)],['TIN Number',pv(emp.TIN_Number)],['PhilHealth',pv(emp.Philhealth_Number)],['HDMF / Pag-IBIG',pv(emp.HDMF)]])}
-      ${section('Work Information',[['Department',pv(emp.Department)],['Position',pv(emp.Position_held)],['Job Title',pv(emp.Job_tittle)],['Category',pv(emp.Category)],['Branch',pv(emp.Branch)],['System',pv(emp.System)],['Hired Date',pDate(emp.Hired_date)],['Separation Date',pDate(emp.Date_Of_Seperation)],['Employee Status',pv(emp.Employee_Status)],['Cut-Off',pv(emp.CutOff)]])}
-      ${section('Personal Information',[['Birth Date',pDate(emp.Birth_date)],['Birth Place',pv(emp.Birth_Place)],['Gender',pv(emp.Gender)],['Civil Status',pv(emp.Civil_Status)],['Nationality',pv(emp.Nationality)],['Religion',pv(emp.Religion)]])}
+      ${section('Personal Information',[['Last Name',pv(emp.LastName)],['First Name',pv(emp.FirstName)],['Middle Name',pv(emp.MiddleName)],['Birth Date',pDate(emp.Birth_date)],['Birth Place',pv(emp.Birth_Place)],['Gender',pv(emp.Gender)],['Civil Status',pv(emp.Civil_Status)],['Nationality',pv(emp.Nationality)],['Religion',pv(emp.Religion)]])}
       ${section('Contact Information',[['Mobile',pv(emp.Mobile_Number)],['Phone',pv(emp.Phone_Number)],['Email',pv(emp.Email_Address)],['Present Address',pv(emp.Present_Address)],['Permanent Address',pv(emp.Permanent_Address)]])}
+      ${section('Education',[['Educational Background',pv(emp.Educational_Background)]])}
       ${section('Emergency Contact',[['Contact Person',pv(emp.Contact_Person)],['Relationship',pv(emp.Relationship)],['Contact Number',pv(emp.Contact_Number_Emergency)]])}
-      ${section('Education & Notes',[['Educational Background',pv(emp.Educational_Background)],['Notes',pv(emp.Notes)]])}
+      ${section('Work Information',[['Department',pv(emp.Department)],['Position',pv(emp.Position_held)],['Job Title',pv(emp.Job_tittle)],['Category',pv(emp.Category)],['Branch',pv(emp.Branch)],['System',pv(emp.System)],['Hired Date',pDate(emp.Hired_date)],['Separation Date',pDate(emp.Date_Of_Seperation)],['Employee Status',pv(emp.Employee_Status)],['Cut-Off',pv(emp.CutOff)]])}
+      ${section('Tradewell Identification ID',[['Assigned ID',pv(emp.EmployeeID1)],['System ID',pv(emp.EmployeeID)],['File No',pv(emp.FileNo)],['Office',pv(emp.OfficeName)]])}
+      ${section('Government IDs',[['SSS Number',pv(emp.SSS_Number)],['TIN Number',pv(emp.TIN_Number)],['PhilHealth',pv(emp.Philhealth_Number)],['HDMF / Pag-IBIG',pv(emp.HDMF)]])}
+      ${section('Note',[['Notes',pv(emp.Notes)]])}
       <div class="print-footer">Printed on ${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})} · HR Employee List</div>`;
   }
 
@@ -1415,6 +1773,224 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.innerHTML = '<i class="bi bi-file-earmark-excel"></i> Export Excel';
     }
   });
+
+  // ══ Add Employee Modal ════════════════════════════════════════
+  const addEmpModalEl = document.getElementById('addEmpModal');
+  const addEmpModal   = addEmpModalEl ? new bootstrap.Modal(addEmpModalEl) : null;
+
+  function aeSet(id, value) {
+    const el = document.getElementById(id); if (!el) return;
+    if (el.tagName === 'SELECT') {
+      el.value = value || '';
+      if (el.value === '' && value) {
+        for (const opt of el.options) {
+          if (opt.text.toLowerCase() === String(value).toLowerCase()) { el.value = opt.value; break; }
+        }
+      }
+    } else { el.value = value || ''; }
+  }
+
+  async function loadNextIds() {
+    const res  = await fetch(window.location.pathname, {
+      method: 'POST',
+      body: (() => { const f = new FormData(); f.append('_action','fetch_applicant_for_add'); f.append('application_id','0'); return f; })()
+    });
+    // fallback: just generate client-side hint — server handles real value on submit
+  }
+
+  async function openAddEmpModal(applicationId) {
+    if (!addEmpModal) return;
+
+    // Reset form
+    document.getElementById('ae-ApplicationID').value = '';
+    document.getElementById('ae-display-FileNo').textContent = '…';
+    document.getElementById('ae-display-EmployeeID').textContent = '…';
+    document.getElementById('ae-FileNo').value = '';
+    document.getElementById('ae-EmployeeID').value = '';
+    document.getElementById('addEmpAppBanner').style.display = 'none';
+    document.getElementById('addEmpModalTitle').textContent = 'Add New Employee';
+    addEmpModalEl.querySelectorAll('input:not([type=hidden]),select,textarea').forEach(el => {
+      if (el.tagName === 'SELECT') el.value = '';
+      else el.value = '';
+    });
+    // Default hired date to today
+    document.getElementById('ae-Hired_date').value = new Date().toISOString().slice(0,10);
+
+    addEmpModal.show();
+    const overlay = document.getElementById('addEmpLoadingOverlay');
+
+    if (applicationId) {
+      overlay.style.display = 'flex';
+      try {
+        const fd = new FormData();
+        fd.append('_action', 'fetch_applicant_for_add');
+        fd.append('application_id', applicationId);
+        const res  = await fetch(window.location.pathname, { method:'POST', body:fd });
+        const data = await res.json();
+
+        if (!data.success) {
+          showToast(data.message || 'Could not load applicant data.', 'warning');
+        } else if (data.TransferredToEmployee) {
+          addEmpModal.hide();
+          showToast('This applicant has already been added to the Employee List.', 'info');
+          return;
+        } else {
+          document.getElementById('addEmpAppBanner').style.display = 'block';
+          document.getElementById('addEmpModalTitle').textContent = 'Add Employee from Applicant';
+          document.getElementById('ae-ApplicationID').value = data.ApplicationID;
+          document.getElementById('ae-display-FileNo').textContent     = data.NextFileNo;
+          document.getElementById('ae-display-EmployeeID').textContent = data.GeneratedEmpID;
+          document.getElementById('ae-FileNo').value     = data.NextFileNo;
+          document.getElementById('ae-EmployeeID').value = data.GeneratedEmpID;
+
+          aeSet('ae-LastName',   data.LastName);
+          aeSet('ae-FirstName',  data.FirstName);
+          aeSet('ae-MiddleName', data.MiddleName);
+          aeSet('ae-Department', data.Department);
+          aeSet('ae-Position_held', data.Position_held);
+          aeSet('ae-Mobile_Number', data.Mobile_Number || data.Phone_Number);
+          aeSet('ae-Phone_Number',  data.Phone_Number);
+          aeSet('ae-Email_Address', data.Email_Address);
+          aeSet('ae-Present_Address',   data.Present_Address);
+          aeSet('ae-Permanent_Address', data.Permanent_Address);
+          aeSet('ae-SSS_Number',        data.SSS_Number);
+          aeSet('ae-TIN_Number',        data.TIN_Number);
+          aeSet('ae-Philhealth_Number', data.Philhealth_Number);
+          aeSet('ae-HDMF',             data.HDMF);
+          aeSet('ae-Birth_date',  data.Birth_date);
+          aeSet('ae-Birth_Place', data.Birth_Place);
+          aeSet('ae-Gender',      data.Gender);
+          aeSet('ae-Civil_Status',data.Civil_Status);
+          aeSet('ae-Nationality', data.Nationality || 'Filipino');
+          aeSet('ae-Religion',    data.Religion);
+          aeSet('ae-Contact_Person',           data.Contact_Person);
+          aeSet('ae-Relationship',             data.Relationship);
+          aeSet('ae-Contact_Number_Emergency', data.Contact_Number_Emergency);
+          aeSet('ae-Educational_Background',   data.Educational_Background);
+          aeSet('ae-Notes',                    data.Notes);
+        }
+      } catch(err) {
+        console.error(err);
+        showToast('Failed to load applicant data.', 'warning');
+      } finally {
+        overlay.style.display = 'none';
+      }
+    } else {
+      // Fresh add — fetch next IDs only
+      try {
+        const fd = new FormData();
+        fd.append('_action','fetch_applicant_for_add');
+        fd.append('application_id','0');
+        // We reuse the endpoint — it will fail on app lookup but we only need the IDs
+        // So do a direct FileNo query instead:
+        const fd2 = new FormData();
+        fd2.append('_action','fetch_next_ids');
+        // Actually just fetch via a known zero appid — server returns NextFileNo regardless
+        // Simpler: use a separate lightweight call
+      } catch {}
+
+      // Generate IDs via a small inline fetch
+      const fd = new FormData();
+      fd.append('_action','fetch_applicant_for_add');
+      fd.append('application_id','0');
+      try {
+        const res  = await fetch(window.location.pathname, {method:'POST',body:fd});
+        const data = await res.json();
+        // data.success will be false (app not found) but NextFileNo comes from a separate query
+        // So we need the success path — send a real appID of 0 will fail, just re-query FileNo:
+      } catch {}
+
+      // Just hit the server for next FileNo directly
+      overlay.style.display = 'flex';
+      try {
+        const fd3 = new FormData();
+        fd3.append('_action','fetch_next_fileno');
+        const res3  = await fetch(window.location.pathname, {method:'POST',body:fd3});
+        const data3 = await res3.json();
+        if (data3.success) {
+          document.getElementById('ae-display-FileNo').textContent     = data3.NextFileNo;
+          document.getElementById('ae-display-EmployeeID').textContent = data3.GeneratedEmpID;
+          document.getElementById('ae-FileNo').value     = data3.NextFileNo;
+          document.getElementById('ae-EmployeeID').value = data3.GeneratedEmpID;
+        }
+      } catch {}
+      overlay.style.display = 'none';
+    }
+  }
+
+  // "Add Employee" button
+  document.getElementById('btnAddEmployee')?.addEventListener('click', () => openAddEmpModal(null));
+
+  // Submit
+  document.getElementById('ae-SubmitBtn')?.addEventListener('click', async () => {
+    const lastName  = document.getElementById('ae-LastName').value.trim();
+    const firstName = document.getElementById('ae-FirstName').value.trim();
+    const dept      = document.getElementById('ae-Department').value.trim();
+    const position  = document.getElementById('ae-Position_held').value.trim();
+    const hiredDate = document.getElementById('ae-Hired_date').value.trim();
+    const fileNo    = document.getElementById('ae-FileNo').value.trim();
+    const empID     = document.getElementById('ae-EmployeeID').value.trim();
+
+    if (!lastName || !firstName || !dept || !position || !hiredDate || !fileNo || !empID) {
+      showToast('Please fill in all required fields (marked with *) and ensure IDs are loaded.', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('ae-SubmitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…';
+
+    const fd = new FormData();
+    fd.append('_action',      'add_employee');
+    fd.append('ApplicationID', document.getElementById('ae-ApplicationID').value);
+    fd.append('FileNo',        fileNo);
+    fd.append('EmployeeID',    empID);
+
+    const fields = ['EmployeeID1','OfficeID','LastName','FirstName','MiddleName',
+      'Department','Position_held','Job_tittle','Category','Branch','Employee_Status',
+      'CutOff','Hired_date','SSS_Number','TIN_Number','Philhealth_Number','HDMF',
+      'Mobile_Number','Phone_Number','Email_Address','Present_Address','Permanent_Address',
+      'Birth_date','Birth_Place','Gender','Civil_Status','Nationality','Religion',
+      'Contact_Person','Relationship','Contact_Number_Emergency',
+      'Educational_Background','Notes'];
+    fields.forEach(f => {
+      const el = document.getElementById('ae-'+f);
+      if (el) fd.append(f, el.value);
+    });
+
+    try {
+      const res  = await fetch(window.location.pathname, {method:'POST', body:fd});
+      const json = await res.json();
+      if (json.success) {
+        addEmpModal.hide();
+        showToast('Employee added successfully! File No: ' + json.FileNo, 'success');
+        setTimeout(() => location.reload(), 1200);
+      } else {
+        showToast('Error: ' + (json.message||'Save failed.'), 'danger');
+      }
+    } catch(err) {
+      console.error(err);
+      showToast('Network error — please try again.', 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-person-plus-fill"></i> Add to Employee List';
+    }
+  });
+
+  // ── Auto-open from ?from_app=ID (redirected from view-applications) ──
+  const urlParams = new URLSearchParams(window.location.search);
+  const fromApp   = urlParams.get('from_app');
+  if (fromApp) {
+    openAddEmpModal(fromApp);
+    // Clean URL without reloading
+    history.replaceState(null,'', window.location.pathname +
+      (window.location.search.replace(/[?&]from_app=[^&]*/,'').replace(/^&/,'?') || ''));
+  }
+
+  // ── Show toast if ?added=1 in URL ──────────────────────────
+  if (urlParams.get('added') === '1') {
+    showToast('Employee added to the list successfully!', 'success');
+  }
 
 });
 </script>

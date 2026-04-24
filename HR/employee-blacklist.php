@@ -21,7 +21,7 @@ rbac_gate($pdo_rbac, 'employee_list');
 
 // ── Session context ────────────────────────────────────────────
 $_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator']);
+$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
 
 // ── Pagination & filters ───────────────────────────────────────
 $perPage    = 20;

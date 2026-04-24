@@ -21,7 +21,7 @@ rbac_gate($pdo_rbac, 'employee_list');
 
 // ── Session context ────────────────────────────────────────────
 $_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator']);
+$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
 
 // ══════════════════════════════════════════════════════════════
 //  AJAX / POST handlers (must run before any output)
@@ -178,19 +178,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
         exit;
     }
 
-    // ─── DELETE ───────────────────────────────────────────────
-    if ($action === 'delete' && $fileNo > 0 && $isAdmin) {
-        $delStmt = sqlsrv_query($conn,
-            "DELETE FROM [dbo].[TBL_HREmployeeList] WHERE FileNo = ?",
-            [$fileNo]);
-        if ($delStmt === false) {
-            echo json_encode(['success' => false, 'message' => 'Delete failed.']);
-        } else {
-            echo json_encode(['success' => true, 'message' => 'Employee record deleted.']);
-            sqlsrv_free_stmt($delStmt);
-        }
-        exit;
-    }
+    // ─── DELETE ───Removed Pansamantagal
+      //if ($action === 'delete' && $fileNo > 0 && $isAdmin) {
+          //$delStmt = sqlsrv_query($conn,
+              //"DELETE FROM [dbo].[TBL_HREmployeeList] WHERE FileNo = ?",
+              //[$fileNo]);
+          //if ($delStmt === false) {
+              //echo json_encode(['success' => false, 'message' => 'Delete failed.']);
+          //} else {
+              //echo json_encode(['success' => true, 'message' => 'Employee record deleted.']);
+              //sqlsrv_free_stmt($delStmt);
+          //}
+          //exit;
+      //}
 
     // ─── REACTIVATE ───────────────────────────────────────────
     if ($action === 'reactivate' && $fileNo > 0) {
@@ -1026,13 +1026,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <button type="button" class="btn btn-sm btn-primary" id="btnEdit" onclick="enterEditMode()">
             <i class="bi bi-pencil"></i> Edit
           </button>
-          <?php if ($isAdmin): ?>
+          <!-- Removed Pansamantagal 
           <button type="button" class="btn btn-sm btn-danger" id="btnDelete" onclick="deleteEmp()">
             <i class="bi bi-trash"></i> Delete
           </button>
-          <?php endif; ?>
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-        </div>
+          </div> -->
         <!-- Edit mode buttons -->
         <div id="editModeActions" style="display:none;gap:.5rem;flex-wrap:wrap;width:100%;justify-content:flex-end;">
           <button type="button" class="btn btn-sm btn-primary" id="btnSave" onclick="saveEmp()">

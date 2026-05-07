@@ -8,19 +8,6 @@ require_once __DIR__ . '/rbac_helper.php';
 
 auth_check(); // login + session guard only
 
-// DB needed for rbac_gate
-try {
-    $pdo = new PDO(
-        "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-        null, null,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-} catch (PDOException $e) {
-    header('Content-Type: application/json');
-    echo json_encode(['ok' => false, 'msg' => 'DB connection failed: ' . $e->getMessage()]);
-    exit;
-}
-
 rbac_gate($pdo, 'RBAC'); // DB-driven — only roles with can_access=1 for 'RBAC' get in
 
 header('Content-Type: application/json');
@@ -34,6 +21,9 @@ $moduleOnlyActions = ['add_module', 'edit_module', 'delete_module'];
 // ── Actions that need role but NOT a specific module ──────────────────────
 $roleOnlyActions = ['grant_all', 'revoke_all', 'add_role', 'delete_role'];
 
+// ── Actions that handle their own validation inside the switch ────────────
+$selfValidatedActions = ['change_user_type', 'reorder_modules', 'manage_dept_access'];
+
 if (in_array($action, $roleOnlyActions)) {
     // These actions operate on a whole role — only role is required
     $roleName  = trim($_POST['role_name'] ?? $_POST['role'] ?? '');
@@ -42,7 +32,7 @@ if (in_array($action, $roleOnlyActions)) {
         echo json_encode(['ok' => false, 'msg' => 'Missing role.']);
         exit;
     }
-} elseif (!in_array($action, $moduleOnlyActions)) {
+} elseif (!in_array($action, $moduleOnlyActions) && !in_array($action, $selfValidatedActions)) {
     // Standard toggle/grant/revoke — both role and module are required
     $roleName  = trim($_POST['role']   ?? '');
     $moduleKey = trim($_POST['module'] ?? '');
@@ -241,6 +231,102 @@ try {
             $pdo->prepare("DELETE FROM rbac_permissions WHERE role_name = ?")->execute([$roleName]);
             $pdo->prepare("DELETE FROM rbac_roles WHERE role_name = ?")->execute([$roleName]);
             echo json_encode(['ok' => true]);
+            break;
+
+        // ── Reorder modules (drag-and-drop) ────────────────────────
+        case 'reorder_modules':
+            $orderJson = $_POST['order'] ?? '';
+            $keys      = json_decode($orderJson, true);
+
+            if (!is_array($keys) || empty($keys)) {
+                echo json_encode(['ok' => false, 'msg' => 'Invalid order data.']);
+                exit;
+            }
+
+            // Update sort_order for each key in the submitted sequence
+            $stmt = $pdo->prepare("
+                UPDATE rbac_modules SET sort_order = ? WHERE module_key = ?
+            ");
+            foreach ($keys as $idx => $key) {
+                $stmt->execute([($idx + 1) * 10, trim($key)]);
+            }
+
+            echo json_encode(['ok' => true]);
+            break;
+
+        // ── Change a user's user_type ───────────────────────────
+        case 'change_user_type':
+            $userId  = (int)($_POST['user_id']   ?? 0);
+            $newType = trim($_POST['user_type'] ?? '');
+
+            if (!$userId || !$newType) {
+                echo json_encode(['ok' => false, 'msg' => 'Missing user ID or user type.']);
+                exit;
+            }
+
+            // Validate that the target role actually exists
+            $chk = $pdo->prepare("
+                SELECT COUNT(*)
+                FROM rbac_roles
+                WHERE role_name = ?
+                UNION ALL
+                SELECT COUNT(*)
+                FROM users
+                WHERE user_type = ?
+            ");
+            $chk->execute([$newType, $newType]);
+            $counts = $chk->fetchAll(PDO::FETCH_COLUMN);
+            if (array_sum($counts) === 0) {
+                echo json_encode(['ok' => false, 'msg' => 'Role does not exist.']);
+                exit;
+            }
+
+            $stmt = $pdo->prepare("UPDATE users SET user_type = ? WHERE id = ?");
+            $stmt->execute([$newType, $userId]);
+
+            if ($stmt->rowCount() === 0) {
+                echo json_encode(['ok' => false, 'msg' => 'User not found or type unchanged.']);
+                exit;
+            }
+
+            echo json_encode(['ok' => true]);
+            break;
+
+
+        // ── Manage department access for a user ─────────────────────
+        case 'manage_dept_access':
+            $userId = (int)($_POST['user_id'] ?? 0);
+            $depts  = json_decode($_POST['departments'] ?? '[]', true);
+
+            if (!$userId) {
+                echo json_encode(['ok' => false, 'msg' => 'Missing user ID.']);
+                exit;
+            }
+            if (!is_array($depts)) {
+                echo json_encode(['ok' => false, 'msg' => 'Invalid departments data.']);
+                exit;
+            }
+
+            // Delete existing dept access rows for this user
+            $pdo->prepare("
+                DELETE FROM Tbl_UserAccessDepartment WHERE UserID = ?
+            ")->execute([$userId]);
+
+            // Insert new selections
+            if (!empty($depts)) {
+                $ins = $pdo->prepare("
+                    INSERT INTO Tbl_UserAccessDepartment (UserID, Department)
+                    VALUES (?, ?)
+                ");
+                foreach ($depts as $dept) {
+                    $dept = trim($dept);
+                    if ($dept !== '') {
+                        $ins->execute([$userId, $dept]);
+                    }
+                }
+            }
+
+            echo json_encode(['ok' => true, 'count' => count($depts)]);
             break;
 
         default:

@@ -7,16 +7,6 @@ require_once __DIR__ . '/rbac_helper.php';
 
 auth_check(); // login + session guard only
 
-try {
-    $pdo = new PDO(
-        "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-        null, null,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-} catch (PDOException $e) {
-    die("❌ RBAC DB connection failed: " . $e->getMessage());
-}
-
 rbac_gate($pdo, 'RBAC'); // DB-driven — only roles with can_access=1 for 'RBAC' get in
 
 $userType    = $_SESSION['UserType']    ?? '';
@@ -98,6 +88,86 @@ $categoryMeta = [
 $modulesJson  = json_encode(array_values($modules));
 $permsMapJson = json_encode($permsMap);
 $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
+
+// ── Paginated users for the Users tab ────────────────────────
+$usersPerPage   = 20;
+$usersPage      = max(1, (int)($_GET['upage'] ?? 1));
+$usersSearch    = trim($_GET['usearch']  ?? '');
+$usersTypeFilter= trim($_GET['utype']    ?? '');
+$usersActFilter = $_GET['uactive'] ?? '';
+
+// Build WHERE clause
+$whereParts = [];
+$whereParams = [];
+
+if ($usersSearch !== '') {
+    $whereParts[]  = "(DisplayName LIKE ? OR username LIKE ? OR email LIKE ?)";
+    $likeVal       = '%' . $usersSearch . '%';
+    $whereParams[] = $likeVal;
+    $whereParams[] = $likeVal;
+    $whereParams[] = $likeVal;
+}
+if ($usersTypeFilter !== '') {
+    $whereParts[]  = "user_type = ?";
+    $whereParams[] = $usersTypeFilter;
+}
+if ($usersActFilter !== '') {
+    $whereParts[]  = "Active = ?";
+    $whereParams[] = (int)$usersActFilter;
+}
+
+$whereSQL = $whereParts ? ('WHERE ' . implode(' AND ', $whereParts)) : '';
+
+// Total count for this filter set
+$countStmt = $pdo->prepare("SELECT COUNT(*) FROM ViewUserLogIn $whereSQL");
+$countStmt->execute($whereParams);
+$totalUsers  = (int)$countStmt->fetchColumn();
+$totalPages  = max(1, (int)ceil($totalUsers / $usersPerPage));
+$usersPage   = min($usersPage, $totalPages);
+$usersOffset = ($usersPage - 1) * $usersPerPage;
+
+// Fetch only the current page
+$usersStmt = $pdo->prepare("
+    SELECT id, username, email, user_type, DisplayName,
+           Department, Job_tittle, Position_held,
+           Category, FileNo, EmployeeID, Active,
+           CONVERT(VARCHAR(16), Reg_DateTime, 120) AS reg_date
+    FROM   ViewUserLogIn
+    $whereSQL
+    ORDER  BY DisplayName ASC
+    OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+");
+
+// Bind filter params first, then explicitly bind OFFSET and FETCH as integers
+// SQL Server requires these to be typed as integers — passing via array coerces to string
+$paramIndex = 1;
+foreach ($whereParams as $val) {
+    $usersStmt->bindValue($paramIndex++, $val);
+}
+$usersStmt->bindValue($paramIndex++, $usersOffset, PDO::PARAM_INT);
+$usersStmt->bindValue($paramIndex,   $usersPerPage, PDO::PARAM_INT);
+$usersStmt->execute();
+$users = $usersStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// ── Load all distinct departments for the dept-access modal ──
+$allDepts = $pdo->query("
+    SELECT DISTINCT Department FROM ViewUserLogIn
+    WHERE Department IS NOT NULL AND Department != ''
+    ORDER BY Department ASC
+")->fetchAll(PDO::FETCH_COLUMN);
+
+// ── Load dept access map: user_id => [dept, dept, ...] ───────
+$deptAccessRaw = $pdo->query("
+    SELECT UserID, Department FROM Tbl_UserAccessDepartment
+")->fetchAll(PDO::FETCH_ASSOC);
+
+$deptAccessMap = [];
+foreach ($deptAccessRaw as $row) {
+    $deptAccessMap[(int)$row['UserID']][] = $row['Department'];
+}
+
+$allDeptsJson   = json_encode($allDepts);
+$deptAccessJson = json_encode($deptAccessMap);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -312,13 +382,41 @@ $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
 
     /* ── Module Registry (tab 2) ── */
     .registry-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem; flex-wrap:wrap; gap:.75rem; animation:fadeUp .4s .2s ease both; }
+    .registry-header-actions { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
+    .reorder-hint { font-size:.72rem; color:var(--w40); display:flex; align-items:center; gap:.35rem; }
+    .reorder-hint i { color:var(--accent2); }
+    .save-order-btn { display:none !important; }
+    .save-order-btn.visible { display:inline-flex !important; }
+
     .panel-title { font-family:'Sora',sans-serif; font-size:1rem; font-weight:700; color:var(--white); }
     .panel-title span { color:var(--w40); font-size:.8rem; font-weight:400; }
 
     .modules-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:.75rem; }
 
-    .module-chip { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:1rem 1rem .85rem; display:flex; flex-direction:column; gap:.6rem; transition:border-color .2s,background .2s; position:relative; }
+    .module-chip { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:1rem 1rem .85rem; display:flex; flex-direction:column; gap:.6rem; transition:border-color .2s,background .2s,box-shadow .15s,transform .15s; position:relative; }
     .module-chip:hover { border-color:var(--border2); background:rgba(255,255,255,0.06); }
+    .module-chip.dragging { opacity:.35; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); transform:scale(.98); }
+    .module-chip.drag-over { border-color:var(--accent2); background:rgba(147,197,253,.08); box-shadow:0 0 0 2px rgba(147,197,253,.5); }
+
+    /* Order badge — top-left number */
+    .order-badge {
+      position:absolute; top:.6rem; left:.6rem;
+      min-width:20px; height:20px; padding:0 .3rem; border-radius:6px;
+      background:var(--accent); color:#fff;
+      font-size:.6rem; font-weight:800; font-family:'Sora',sans-serif;
+      display:flex; align-items:center; justify-content:center; z-index:2;
+    }
+
+    /* Drag handle — top-right, appears on hover */
+    .drag-handle {
+      position:absolute; top:.6rem; right:2.6rem;
+      color:var(--w40); font-size:.9rem; cursor:grab;
+      padding:.2rem .3rem; border-radius:5px;
+      transition:color .15s,background .15s; opacity:0; pointer-events:none;
+    }
+    .module-chip:hover .drag-handle { opacity:1; pointer-events:auto; }
+    .drag-handle:hover { color:var(--accent2); background:rgba(147,197,253,.1); }
+    .drag-handle:active { cursor:grabbing; }
     .chip-top { display:flex; align-items:center; gap:.75rem; }
     .module-chip-icon { width:38px; height:38px; border-radius:11px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:1.1rem; }
     .module-chip-icon.green  { background:rgba(52,211,153,.15);  border:1px solid rgba(52,211,153,.25);  color:#34d399; }
@@ -417,6 +515,95 @@ $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
       .wrap { padding:1.25rem 1rem 3rem; }
       .form-row { flex-direction:column; gap:0; }
     }
+
+    /* ── Users Tab ── */
+    .users-toolbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:1.25rem; }
+    .users-toolbar .search-box { flex:1; min-width:180px; }
+
+    .users-table-wrap { overflow-x:auto; border-radius:16px; border:1px solid var(--border); }
+    .users-table { width:100%; border-collapse:collapse; font-size:.8rem; }
+    .users-table thead th {
+      padding:.7rem 1rem; text-align:left; font-size:.68rem; font-weight:700;
+      letter-spacing:.06em; text-transform:uppercase; color:var(--w40);
+      background:rgba(255,255,255,.03); border-bottom:1px solid var(--border);
+      white-space:nowrap;
+    }
+    .users-table tbody tr { border-bottom:1px solid var(--border); transition:background .15s; }
+    .users-table tbody tr:last-child { border-bottom:none; }
+    .users-table tbody tr:hover { background:rgba(255,255,255,.04); }
+    .users-table td { padding:.65rem 1rem; color:var(--w60); vertical-align:middle; }
+    .users-table td.name-cell { color:var(--white); font-weight:600; }
+    .users-table td.mono { font-family:monospace; font-size:.75rem; color:var(--w40); }
+
+    .user-avatar-sm {
+      width:30px; height:30px; border-radius:8px; flex-shrink:0;
+      display:inline-flex; align-items:center; justify-content:center;
+      font-family:'Sora',sans-serif; font-size:.65rem; font-weight:800;
+      background:rgba(67,128,226,.18); color:var(--accent2);
+      border:1px solid rgba(67,128,226,.28); vertical-align:middle; margin-right:.5rem;
+    }
+    .user-name-wrap { display:inline-flex; align-items:center; }
+
+    .active-dot { display:inline-block; width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+    .active-dot.on  { background:var(--green); box-shadow:0 0 5px var(--green); }
+    .active-dot.off { background:var(--w40); }
+
+    .role-badge {
+      display:inline-flex; align-items:center; gap:.3rem;
+      padding:.2rem .65rem; border-radius:999px; font-size:.7rem; font-weight:700;
+      background:rgba(67,128,226,.15); color:var(--accent2);
+      border:1px solid rgba(67,128,226,.25);
+    }
+
+    .change-type-btn {
+      display:inline-flex; align-items:center; gap:.3rem;
+      padding:.25rem .6rem; border-radius:8px; font-size:.7rem; font-weight:600;
+      background:var(--w08); color:var(--w60); border:1px solid var(--border);
+      cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif;
+    }
+    .change-type-btn:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .dept-access-btn {
+      display:inline-flex; align-items:center; gap:.3rem;
+      padding:.25rem .6rem; border-radius:8px; font-size:.7rem; font-weight:600;
+      background:rgba(167,139,250,.12); color:#a78bfa;
+      border:1px solid rgba(167,139,250,.25);
+      cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif;
+    }
+    .dept-access-btn:hover { background:rgba(167,139,250,.28); color:#c4b5fd; border-color:rgba(167,139,250,.5); }
+
+    /* Change Type Modal */
+    .ct-user-info { display:flex; align-items:center; gap:.85rem; margin-bottom:1.25rem;
+      padding:.9rem 1rem; background:rgba(255,255,255,.04); border:1px solid var(--border);
+      border-radius:12px; }
+    .ct-avatar { width:42px; height:42px; border-radius:12px; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      font-family:'Sora',sans-serif; font-size:.85rem; font-weight:800;
+      background:rgba(67,128,226,.18); color:var(--accent2); border:1px solid rgba(67,128,226,.28); }
+    .ct-name { font-weight:700; color:var(--white); font-size:.9rem; }
+    .ct-meta { font-size:.74rem; color:var(--w40); margin-top:.15rem; }
+    .ct-arrow { display:flex; align-items:center; gap:.5rem; margin:1rem 0 .35rem;
+      font-size:.72rem; color:var(--w40); font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+    .ct-arrow::before, .ct-arrow::after { content:''; flex:1; height:1px; background:var(--border); }
+
+    .users-count-info { font-size:.78rem; color:var(--w40); padding:.5rem 0; }
+    .filter-select { padding:.45rem .85rem; background:rgba(255,255,255,0.06); border:1px solid var(--border2); border-radius:10px; color:var(--white); font-size:.8rem; outline:none; font-family:'DM Sans',sans-serif; cursor:pointer; }
+    .filter-select option { background:#0f1c3a; }
+
+    /* ── Pagination ── */
+    .pagination-bar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.75rem; margin-top:1rem; }
+    .pagination-info { font-size:.76rem; color:var(--w40); }
+    .pagination-info strong { color:var(--white); }
+    .pagination-controls { display:flex; align-items:center; gap:.35rem; }
+    .page-btn {
+      display:inline-flex; align-items:center; justify-content:center;
+      width:32px; height:32px; border-radius:8px; font-size:.78rem; font-weight:600;
+      border:1px solid var(--border); background:var(--w08); color:var(--w60);
+      cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif;
+    }
+    .page-btn:hover:not(:disabled) { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .page-btn:disabled { opacity:.3; cursor:not-allowed; }
+    .page-btn.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .page-ellipsis { color:var(--w40); font-size:.78rem; padding:0 .2rem; }
   </style>
 </head>
 <body>
@@ -478,6 +665,10 @@ $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
       <i class="bi bi-people-fill"></i> User Types
       <span class="tab-badge" id="tabRoleBadge"><?= count($allRoles) ?></span>
     </button>
+    <button class="tab-btn" data-tab="users">
+      <i class="bi bi-person-lines-fill"></i> Users
+      <span class="tab-badge" id="tabUserBadge"><?= $totalUsers ?></span>
+    </button>
     <button class="tab-btn" data-tab="registry">
       <i class="bi bi-grid-fill"></i> Module Registry
       <span class="tab-badge" id="tabModBadge"><?= count($modules) ?></span>
@@ -538,25 +729,196 @@ $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
     </div>
   </div><!-- /tab-roles -->
 
+  <!-- ══════════════════ TAB: USERS ══════════════════ -->
+  <div class="tab-panel" id="tab-users">
+
+    <div class="users-toolbar">
+      <div class="search-box">
+        <i class="bi bi-search"></i>
+        <input type="text" id="userSearch" placeholder="Search by name, username, email…"
+               value="<?= htmlspecialchars($usersSearch) ?>">
+      </div>
+      <select class="filter-select" id="userTypeFilter">
+        <option value="">All User Types</option>
+        <?php foreach ($allRoles as $role): ?>
+        <option value="<?= htmlspecialchars($role['role_name']) ?>"
+          <?= $usersTypeFilter === $role['role_name'] ? 'selected' : '' ?>>
+          <?= htmlspecialchars($role['role_name']) ?>
+        </option>
+        <?php endforeach; ?>
+      </select>
+      <select class="filter-select" id="userActiveFilter">
+        <option value="">All Statuses</option>
+        <option value="1" <?= $usersActFilter === '1' ? 'selected' : '' ?>>Active</option>
+        <option value="0" <?= $usersActFilter === '0' ? 'selected' : '' ?>>Inactive</option>
+      </select>
+    </div>
+
+    <div class="users-count-info" id="usersCountInfo">
+      <?php
+        $from = $totalUsers > 0 ? $usersOffset + 1 : 0;
+        $to   = min($usersOffset + $usersPerPage, $totalUsers);
+        echo "Showing <strong>{$from}–{$to}</strong> of <strong>{$totalUsers}</strong> user" . ($totalUsers !== 1 ? 's' : '');
+        if ($usersSearch || $usersTypeFilter || $usersActFilter !== '') {
+            echo ' &nbsp;<a href="?tab=users" style="font-size:.72rem;color:var(--accent2);text-decoration:none">Clear filters ×</a>';
+        }
+      ?>
+    </div>
+
+    <div class="users-table-wrap">
+      <table class="users-table" id="usersTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Department</th>
+            <th>Position</th>
+            <th>User Type</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usersTableBody">
+          <?php foreach ($users as $u):
+            $initials = strtoupper(substr($u['DisplayName'] ?? $u['username'], 0, 2));
+            $active   = (int)($u['Active'] ?? 1);
+          ?>
+          <tr data-id="<?= (int)$u['id'] ?>"
+              data-username="<?= htmlspecialchars($u['username']) ?>"
+              data-displayname="<?= htmlspecialchars($u['DisplayName'] ?? '') ?>"
+              data-email="<?= htmlspecialchars($u['email'] ?? '') ?>"
+              data-type="<?= htmlspecialchars($u['user_type'] ?? '') ?>"
+              data-dept="<?= htmlspecialchars($u['Department'] ?? '') ?>"
+              data-active="<?= $active ?>">
+            <td class="name-cell">
+              <span class="user-name-wrap">
+                <span class="user-avatar-sm"><?= $initials ?></span>
+                <?= htmlspecialchars($u['DisplayName'] ?: $u['username']) ?>
+              </span>
+            </td>
+            <td class="mono"><?= htmlspecialchars($u['username']) ?></td>
+            <td><?= htmlspecialchars($u['email'] ?? '—') ?></td>
+            <td><?= htmlspecialchars($u['Department'] ?? '—') ?></td>
+            <td><?= htmlspecialchars($u['Position_held'] ?? $u['Job_tittle'] ?? '—') ?></td>
+            <td>
+              <span class="role-badge">
+                <i class="bi bi-shield-fill" style="font-size:.6rem"></i>
+                <?= htmlspecialchars($u['user_type'] ?? '—') ?>
+              </span>
+            </td>
+            <td>
+              <span class="active-dot <?= $active ? 'on' : 'off' ?>"></span>
+              <?= $active ? 'Active' : 'Inactive' ?>
+            </td>
+            <td style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+              <button class="change-type-btn"
+                      data-id="<?= (int)$u['id'] ?>"
+                      data-username="<?= htmlspecialchars($u['username']) ?>"
+                      data-displayname="<?= htmlspecialchars($u['DisplayName'] ?? $u['username']) ?>"
+                      data-dept="<?= htmlspecialchars($u['Department'] ?? '') ?>"
+                      data-current-type="<?= htmlspecialchars($u['user_type'] ?? '') ?>"
+                      title="Change user type">
+                <i class="bi bi-pencil-fill"></i> Change Type
+              </button>
+              <button class="dept-access-btn"
+                      data-id="<?= (int)$u['id'] ?>"
+                      data-displayname="<?= htmlspecialchars($u['DisplayName'] ?? $u['username']) ?>"
+                      data-dept="<?= htmlspecialchars($u['Department'] ?? '') ?>"
+                      title="Manage department access">
+                <i class="bi bi-building"></i> Dept Access
+              </button>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$users): ?>
+          <tr><td colspan="8" style="text-align:center;padding:2.5rem;color:var(--w40)">
+            <i class="bi bi-people" style="font-size:2rem;display:block;margin-bottom:.5rem;opacity:.3"></i>
+            No users found<?= ($usersSearch || $usersTypeFilter) ? ' matching your filters' : ' in ViewUserLogIn' ?>.
+          </td></tr>
+          <?php endif; ?>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ── Pagination bar ── -->
+    <?php if ($totalPages > 1): ?>
+    <div class="pagination-bar">
+      <div class="pagination-info">
+        Page <strong><?= $usersPage ?></strong> of <strong><?= $totalPages ?></strong>
+      </div>
+      <div class="pagination-controls">
+        <?php
+          // Build base query string preserving filters
+          $pagerBase = http_build_query(array_filter([
+              'tab'     => 'users',
+              'usearch' => $usersSearch,
+              'utype'   => $usersTypeFilter,
+              'uactive' => $usersActFilter,
+          ]));
+
+          function pageBtn(int $pg, int $cur, string $base, string $label = '', bool $isNum = true): string {
+              $active  = $isNum && $pg === $cur ? ' active' : '';
+              $disable = ($pg < 1) ? ' disabled' : '';
+              $lbl     = $label ?: $pg;
+              return "<button class='page-btn{$active}'{$disable} onclick=\"goPage($pg,'$base')\">{$lbl}</button>";
+          }
+
+          echo pageBtn($usersPage - 1, $usersPage, $pagerBase, '<i class="bi bi-chevron-left"></i>', false);
+
+          // Smart page window
+          $window = 2;
+          $shown  = [];
+          for ($p = 1; $p <= $totalPages; $p++) {
+              if ($p === 1 || $p === $totalPages || abs($p - $usersPage) <= $window) $shown[] = $p;
+          }
+          $prev = null;
+          foreach ($shown as $p) {
+              if ($prev !== null && $p - $prev > 1) echo "<span class='page-ellipsis'>…</span>";
+              echo pageBtn($p, $usersPage, $pagerBase);
+              $prev = $p;
+          }
+
+          $nextPage = $usersPage < $totalPages ? $usersPage + 1 : -1;
+          echo pageBtn($nextPage, $usersPage, $pagerBase, '<i class="bi bi-chevron-right"></i>', false);
+        ?>
+      </div>
+    </div>
+    <?php endif; ?>
+
+  </div><!-- /tab-users -->
+
   <!-- ══════════════════ TAB: MODULE REGISTRY ══════════════════ -->
   <div class="tab-panel" id="tab-registry">
     <div class="registry-header">
       <div class="panel-title">
         Module Registry <span id="moduleRegistryCount">— <?= count($modules) ?> portal card<?= count($modules) !== 1 ? 's' : '' ?></span>
       </div>
+      <div class="registry-header-actions">
+        <span class="reorder-hint"><i class="bi bi-grip-vertical"></i> Drag cards to reorder</span>
+        <button class="btn btn-sm btn-success save-order-btn" id="saveOrderBtn">
+          <i class="bi bi-check-lg"></i> Save Order
+        </button>
+      </div>
     </div>
     <div class="modules-grid" id="modulesGrid">
-      <?php foreach ($modules as $mod):
+      <?php foreach ($modules as $i => $mod):
         $catLabel = $categoryMeta[$mod['category']]['label'] ?? $mod['category'];
+        $orderNum = $i + 1;
       ?>
       <div class="module-chip"
+           draggable="true"
            data-key="<?= htmlspecialchars($mod['module_key']) ?>"
            data-name="<?= htmlspecialchars($mod['module_name']) ?>"
            data-cat="<?= htmlspecialchars($mod['category']) ?>"
            data-icon="<?= htmlspecialchars($mod['icon']) ?>"
            data-color="<?= htmlspecialchars($mod['color']) ?>"
            data-desc="<?= htmlspecialchars($mod['description'] ?? '') ?>">
-        <div class="chip-top">
+        <span class="order-badge" title="Sort order"><?= $orderNum ?></span>
+        <button class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()">
+          <i class="bi bi-grip-vertical"></i>
+        </button>
+        <div class="chip-top" style="padding-left:1.6rem">
           <div class="module-chip-icon <?= htmlspecialchars($mod['color']) ?>">
             <i class="bi <?= htmlspecialchars($mod['icon']) ?>"></i>
           </div>
@@ -789,6 +1151,91 @@ $totalGrants  = count(array_filter($permsRaw, fn($p) => $p['can_access']));
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     CHANGE USER TYPE MODAL
+     ══════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="changeTypeModal">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-title">
+      <i class="bi bi-shield-lock-fill" style="color:var(--accent2)"></i>
+      Change User Type
+    </div>
+
+    <!-- User info card -->
+    <div class="ct-user-info">
+      <div class="ct-avatar" id="ct_avatar">AB</div>
+      <div>
+        <div class="ct-name" id="ct_displayname">—</div>
+        <div class="ct-meta" id="ct_meta">—</div>
+      </div>
+    </div>
+
+    <div class="ct-arrow">New User Type</div>
+
+    <div class="form-group">
+      <label class="form-label">Select Role</label>
+      <select class="form-control" id="ct_new_type">
+        <?php foreach ($allRoles as $role): ?>
+        <option value="<?= htmlspecialchars($role['role_name']) ?>"><?= htmlspecialchars($role['role_name']) ?></option>
+        <?php endforeach; ?>
+      </select>
+      <div class="form-hint" id="ct_current_hint">Current type will be shown here.</div>
+    </div>
+
+    <input type="hidden" id="ct_user_id">
+
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="closeChangeType">Cancel</button>
+      <button class="btn btn-primary" id="saveChangeType">
+        <i class="bi bi-check-lg"></i> Apply Change
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     DEPT ACCESS MODAL
+     ══════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="deptAccessModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">
+      <i class="bi bi-building" style="color:#a78bfa"></i>
+      Department Access
+    </div>
+
+    <!-- User info card -->
+    <div class="ct-user-info">
+      <div class="ct-avatar" id="da_avatar">AB</div>
+      <div>
+        <div class="ct-name" id="da_displayname">—</div>
+        <div class="ct-meta" id="da_meta">—</div>
+      </div>
+    </div>
+
+    <div class="ct-arrow">Allowed Departments</div>
+    <div class="form-hint" style="margin-bottom:.75rem">
+      Check the departments this user is allowed to access. Unchecked = no access.
+    </div>
+
+    <div id="da_dept_list" style="
+      display:grid; grid-template-columns:1fr 1fr; gap:.4rem;
+      max-height:260px; overflow-y:auto; padding:.25rem 0;
+    ">
+      <!-- Populated by JS -->
+    </div>
+
+    <input type="hidden" id="da_user_id">
+
+    <div class="modal-footer" style="margin-top:1rem">
+      <button class="btn btn-ghost" id="closeDeptAccess">Cancel</button>
+      <button class="btn btn-primary" id="saveDeptAccess">
+        <i class="bi bi-check-lg"></i> Save Access
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast-wrap" id="toastWrap"></div>
 
@@ -798,6 +1245,8 @@ const ACTION_URL = '<?= base_url('RBAC/rbac_action.php') ?>';
 // ── Data from PHP ─────────────────────────────────────────────
 const ALL_MODULES  = <?= $modulesJson ?>;
 let   permsMap     = <?= $permsMapJson ?>;  // "role|module_key" => 0|1
+const ALL_DEPTS    = <?= $allDeptsJson ?>;
+let   deptAccessMap = <?= $deptAccessJson ?>; // { userId: [dept, ...] }
 
 // ── Helpers ───────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1404,6 +1853,297 @@ document.getElementById('modulesGrid').addEventListener('click', async e => {
 
   toast(`Module <strong>${name}</strong> deleted.`);
 });
+// ══════════════════════════════════════════════════════════════
+// USERS TAB
+// ══════════════════════════════════════════════════════════════
+
+// ── Server-side filter navigation ────────────────────────────
+function goPage(page, baseQs) {
+  const url = new URL(window.location.href);
+  // Rebuild params from base query string
+  const params = new URLSearchParams(baseQs);
+  params.set('upage', page);
+  params.set('tab', 'users');
+  url.search = params.toString();
+  window.location.href = url.toString();
+}
+
+// Debounced search — waits 400ms after typing before navigating
+let searchTimer;
+document.getElementById('userSearch').addEventListener('input', function() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('usearch', this.value);
+    url.searchParams.set('upage', '1');
+    url.searchParams.set('tab', 'users');
+    window.location.href = url.toString();
+  }, 400);
+});
+
+document.getElementById('userTypeFilter').addEventListener('change', function() {
+  const url = new URL(window.location.href);
+  if (this.value) url.searchParams.set('utype', this.value);
+  else url.searchParams.delete('utype');
+  url.searchParams.set('upage', '1');
+  url.searchParams.set('tab', 'users');
+  window.location.href = url.toString();
+});
+
+document.getElementById('userActiveFilter').addEventListener('change', function() {
+  const url = new URL(window.location.href);
+  if (this.value !== '') url.searchParams.set('uactive', this.value);
+  else url.searchParams.delete('uactive');
+  url.searchParams.set('upage', '1');
+  url.searchParams.set('tab', 'users');
+  window.location.href = url.toString();
+});
+
+// ── Auto-open Users tab if ?tab=users is in URL ───────────────
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'users') {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="users"]').classList.add('active');
+    document.getElementById('tab-users').classList.add('active');
+  }
+})();
+
+// ── Change Type Modal ─────────────────────────────────────────
+const changeTypeModal = document.getElementById('changeTypeModal');
+
+document.getElementById('usersTableBody').addEventListener('click', e => {
+  const btn = e.target.closest('.change-type-btn');
+  if (!btn) return;
+
+  const id          = btn.dataset.id;
+  const displayname = btn.dataset.displayname || btn.dataset.username;
+  const dept        = btn.dataset.dept || '—';
+  const currentType = btn.dataset.currentType || '';
+  const initials    = displayname.slice(0, 2).toUpperCase();
+
+  document.getElementById('ct_user_id').value       = id;
+  document.getElementById('ct_avatar').textContent  = initials;
+  document.getElementById('ct_displayname').textContent = displayname;
+  document.getElementById('ct_meta').textContent    = dept;
+  document.getElementById('ct_current_hint').innerHTML =
+    `Current type: <strong style="color:var(--accent2)">${currentType || '(none)'}</strong>`;
+
+  // Pre-select current type in dropdown
+  const sel = document.getElementById('ct_new_type');
+  for (let opt of sel.options) {
+    opt.selected = (opt.value === currentType);
+  }
+
+  changeTypeModal.classList.add('open');
+});
+
+document.getElementById('closeChangeType').addEventListener('click', () => changeTypeModal.classList.remove('open'));
+changeTypeModal.addEventListener('click', e => { if (e.target === changeTypeModal) changeTypeModal.classList.remove('open'); });
+
+document.getElementById('saveChangeType').addEventListener('click', async () => {
+  const userId  = document.getElementById('ct_user_id').value;
+  const newType = document.getElementById('ct_new_type').value;
+  if (!userId || !newType) { toast('Missing user or type.', 'error'); return; }
+
+  const fd = new FormData();
+  fd.append('action',    'change_user_type');
+  fd.append('user_id',   userId);
+  fd.append('user_type', newType);
+
+  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!data.ok) { toast(data.msg || 'Error updating user type.', 'error'); return; }
+
+  changeTypeModal.classList.remove('open');
+
+  // Update the row in-place without a page reload
+  const row = document.querySelector(`#usersTableBody tr[data-id="${userId}"]`);
+  if (row) {
+    row.dataset.type = newType;
+    row.querySelector('.role-badge').innerHTML =
+      `<i class="bi bi-shield-fill" style="font-size:.6rem"></i> ${newType}`;
+    // Update the button's current-type so re-opening it is accurate
+    const btn = row.querySelector('.change-type-btn');
+    if (btn) btn.dataset.currentType = newType;
+  }
+
+  toast(`User type updated to <strong>${newType}</strong>.`);
+});
+
+// ══════════════════════════════════════════════════════════════
+// MODULE DRAG-AND-DROP REORDER  (localStorage — no DB needed)
+// ══════════════════════════════════════════════════════════════
+
+(function () {
+  const grid        = document.getElementById('modulesGrid');
+  const saveBtn     = document.getElementById('saveOrderBtn');
+  const LS_KEY      = 'rbac_module_order';
+  let   dragSrc     = null;
+  let   orderDirty  = false;
+
+  // ── Apply saved order from localStorage on page load ─────────
+  function applyStoredOrder() {
+    const stored = localStorage.getItem(LS_KEY);
+    if (!stored) return;
+    let keys;
+    try { keys = JSON.parse(stored); } catch { return; }
+
+    keys.forEach(key => {
+      const chip = grid.querySelector(`.module-chip[data-key="${CSS.escape(key)}"]`);
+      if (chip) grid.appendChild(chip); // moves to end in stored sequence
+    });
+    refreshBadges();
+  }
+
+  function refreshBadges() {
+    grid.querySelectorAll('.module-chip').forEach((chip, i) => {
+      chip.querySelector('.order-badge').textContent = i + 1;
+    });
+  }
+
+  function markDirty() {
+    orderDirty = true;
+    saveBtn.classList.add('visible');
+  }
+
+  function currentKeyOrder() {
+    return [...grid.querySelectorAll('.module-chip')].map(c => c.dataset.key);
+  }
+
+  // Apply on load immediately
+  applyStoredOrder();
+
+  // ── Drag events ──────────────────────────────────────────────
+  grid.addEventListener('dragstart', e => {
+    const chip = e.target.closest('.module-chip');
+    if (!chip) return;
+    dragSrc = chip;
+    chip.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', chip.dataset.key);
+  });
+
+  grid.addEventListener('dragend', e => {
+    const chip = e.target.closest('.module-chip');
+    if (chip) chip.classList.remove('dragging');
+    grid.querySelectorAll('.module-chip').forEach(c => c.classList.remove('drag-over'));
+    dragSrc = null;
+  });
+
+  grid.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const chip = e.target.closest('.module-chip');
+    if (!chip || chip === dragSrc) return;
+    grid.querySelectorAll('.module-chip').forEach(c => c.classList.remove('drag-over'));
+    chip.classList.add('drag-over');
+  });
+
+  grid.addEventListener('dragleave', e => {
+    const chip = e.target.closest('.module-chip');
+    if (chip) chip.classList.remove('drag-over');
+  });
+
+  grid.addEventListener('drop', e => {
+    e.preventDefault();
+    const target = e.target.closest('.module-chip');
+    if (!target || target === dragSrc || !dragSrc) return;
+
+    const chips  = [...grid.querySelectorAll('.module-chip')];
+    const srcIdx = chips.indexOf(dragSrc);
+    const tgtIdx = chips.indexOf(target);
+    grid.insertBefore(dragSrc, tgtIdx > srcIdx ? target.nextSibling : target);
+
+    target.classList.remove('drag-over');
+    refreshBadges();
+    markDirty();
+  });
+
+  // ── Save to localStorage ──────────────────────────────────────
+  saveBtn.addEventListener('click', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify(currentKeyOrder()));
+    orderDirty = false;
+    saveBtn.classList.remove('visible');
+    toast('Module order saved. Homepage will reflect the new order.');
+  });
+
+  // ── Warn before leaving with unsaved changes ──────────────────
+  window.addEventListener('beforeunload', e => {
+    if (orderDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+})();
+
+// ══════════════════════════════════════════════════════════════
+// DEPT ACCESS MODAL
+// ══════════════════════════════════════════════════════════════
+const deptAccessModal = document.getElementById('deptAccessModal');
+
+document.getElementById('usersTableBody').addEventListener('click', e => {
+  const btn = e.target.closest('.dept-access-btn');
+  if (!btn) return;
+
+  const id           = btn.dataset.id;
+  const displayname  = btn.dataset.displayname || '—';
+  const dept         = btn.dataset.dept || '—';
+  const initials     = displayname.slice(0, 2).toUpperCase();
+  const currentDepts = deptAccessMap[id] || [];
+
+  document.getElementById('da_user_id').value          = id;
+  document.getElementById('da_avatar').textContent     = initials;
+  document.getElementById('da_displayname').textContent = displayname;
+  document.getElementById('da_meta').textContent       = 'Primary dept: ' + dept;
+
+  // Build checkbox list
+  const list = document.getElementById('da_dept_list');
+  list.innerHTML = ALL_DEPTS.map(d => {
+    const checked = currentDepts.includes(d) ? 'checked' : '';
+    return `
+      <label style="display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;
+             border-radius:8px;cursor:pointer;border:1px solid var(--border);
+             background:var(--surface);font-size:.8rem;transition:background .15s"
+             onmouseover="this.style.background='rgba(255,255,255,.07)'"
+             onmouseout="this.style.background='var(--surface)'">
+        <input type="checkbox" value="${d.replace(/"/g, '&quot;')}" ${checked}
+               style="accent-color:#a78bfa;width:15px;height:15px;cursor:pointer">
+        <span style="color:var(--w60)">${d}</span>
+      </label>`;
+  }).join('');
+
+  deptAccessModal.classList.add('open');
+});
+
+document.getElementById('closeDeptAccess').addEventListener('click', () =>
+  deptAccessModal.classList.remove('open'));
+deptAccessModal.addEventListener('click', e => {
+  if (e.target === deptAccessModal) deptAccessModal.classList.remove('open');
+});
+
+document.getElementById('saveDeptAccess').addEventListener('click', async () => {
+  const userId = document.getElementById('da_user_id').value;
+  const checked = [...document.querySelectorAll('#da_dept_list input[type=checkbox]:checked')]
+                    .map(cb => cb.value);
+
+  const fd = new FormData();
+  fd.append('action',      'manage_dept_access');
+  fd.append('user_id',     userId);
+  fd.append('departments', JSON.stringify(checked));
+
+  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  const data = await res.json();
+
+  if (!data.ok) { toast(data.msg || 'Error saving dept access.', 'error'); return; }
+
+  // Update local cache so re-opening modal reflects latest state
+  deptAccessMap[userId] = checked;
+
+  deptAccessModal.classList.remove('open');
+  toast(`Department access updated — <strong>${data.count}</strong> dept${data.count !== 1 ? 's' : ''} assigned.`);
+});
+
+
 </script>
 </body>
 </html>

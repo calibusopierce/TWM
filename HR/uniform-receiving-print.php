@@ -8,18 +8,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'uniform_inventory');
+rbac_gate($pdo, 'uniform_inventory');
 
 // ── Helpers (defined BEFORE use) ──────────────────────────────
 if (!function_exists('rq')) {
-    function rq($conn2, $sql, $p = []) {
-        $stmt = empty($p) ? sqlsrv_query($conn2,$sql) : sqlsrv_query($conn2,$sql,$p);
+    function rq($conn, $sql, $p = []) {
+        $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
         if (!$stmt) return [];
         $rows = [];
         while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $rows[] = $r;
@@ -42,7 +36,7 @@ if (!function_exists('fmtDate')) {
 $recid = intval($_GET['recid'] ?? 0);
 if (!$recid) die('No receiving record specified.');
 
-$rec = rq($conn2,
+$rec = rq($conn,
     "SELECT r.*, p.PONumber, p.PODate, p.Remarks AS PORemarks
      FROM [dbo].[UniformReceiving] r
      LEFT JOIN [dbo].[UniformPO] p ON p.POID = r.POID
@@ -50,7 +44,7 @@ $rec = rq($conn2,
 if (empty($rec)) die('Receiving record not found.');
 $rec = $rec[0];
 
-$items = rq($conn2,
+$items = rq($conn,
     "SELECT * FROM [dbo].[UniformReceivingItems] WHERE RFID=?", [$recid]);
 
 $itemMap = [];

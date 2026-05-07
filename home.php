@@ -1,6 +1,7 @@
 <?php
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once __DIR__ . '/auth_check.php';
+require_once __DIR__ . '/test_sqlsrv.php'; // ← add this if not already included via nav.php
 require_once __DIR__ . '/RBAC/rbac_helper.php';
 
 auth_check(); // RBAC handles module-level access; just verify login + session
@@ -8,17 +9,6 @@ auth_check(); // RBAC handles module-level access; just verify login + session
 $userType    = $_SESSION['UserType']    ?? '';
 $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $department  = $_SESSION['Department']  ?? '';
-
-// ── RBAC: open a PDO connection and load this role's permissions ──
-try {
-    $pdo = new PDO(
-        "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-        null, null,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-} catch (PDOException $e) {
-    die("❌ DB connection failed: " . $e->getMessage());
-}
 
 // Always bust the RBAC cache on homepage load so admin changes reflect immediately
 unset($_SESSION['rbac_permissions_' . $userType]);
@@ -326,6 +316,26 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
       .then(data => { if (!data.loggedIn) window.location.href = '/TWM/login.php'; })
       .catch(() => {});
   }, 2000);
+
+
+// ── Apply RBAC module order saved from the admin drag-and-drop ──
+(function () {
+  const LS_KEY = 'rbac_module_order';
+  const stored = localStorage.getItem(LS_KEY);
+  if (!stored) return;
+ 
+  let keys;
+  try { keys = JSON.parse(stored); } catch { return; }
+ 
+  // Reorder cards within each section grid based on saved key order
+  keys.forEach(key => {
+    const card = document.querySelector(`.hub-card[href*="${key}"]`);
+    if (card && card.parentElement) {
+      card.parentElement.appendChild(card);
+    }
+  });
+})();
+
 </script>
 
 </body>

@@ -1,5 +1,5 @@
 <?php
-// /TWM/RBAC/topbar.php
+// /TWM/includes/topbar.php
 // Navigation visibility is driven by RBAC module permissions, not hardcoded role arrays.
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
@@ -9,44 +9,25 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 $_topbar_user = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $_topbar_role = $_SESSION['UserType']    ?? '';
 $_topbar_dept = $_SESSION['Department']  ?? '';
-$topbar_page  = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
 
 // ── RBAC: load this user's permissions once (cached in session) ───────────────
-// $pdo must already be available on every page that includes this topbar.
-// If your pages don't share a $pdo, open a dedicated one here:
-if (!isset($pdo)) {
-    try {
-        $pdo = new PDO(
-            "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-            null, null,
-            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-        );
-    } catch (PDOException $e) {
-        // Fail silently — no permissions will be loaded, all nav links hidden
-        $pdo = null;
-    }
-}
-
 if ($pdo) {
     rbac_load_permissions($pdo, $_topbar_role);
 }
 
 // ── Admin is still role-gated (not a module) ──────────────────────────────────
-// Switch Department, RBAC manager, etc. are administrative actions, not modules.
 $_can_admin = in_array($_topbar_role, ['Admin', 'Administrator']);
 
 // ── All other nav links are RBAC-driven ───────────────────────────────────────
-// These module_key values must match what is stored in rbac_modules.module_key.
 $_can_fuel       = rbac_can('fuel_dashboard');
 $_can_graphs     = rbac_can('graphs');
 $_can_careers    = rbac_can('careers_admin');
 $_can_view_apps  = rbac_can('view_applications');
 $_can_employees  = rbac_can('employee_list');
 $_can_uniform    = rbac_can('uniform_inventory');
-$_can_help       = rbac_can('help');       // optional — keep help visible to all if preferred
+$_can_help       = rbac_can('help');
 
-// ── Brand subtitle: show the most relevant portal label for this user ─────────
-// Priority: Admin > Fleet (fuel) > HR (careers) > generic Portal
+// ── Brand subtitle ────────────────────────────────────────────────────────────
 if ($_can_admin) {
     $_brand_sub = 'Admin Portal';
 } elseif ($_can_fuel || $_can_graphs) {
@@ -65,8 +46,8 @@ $_deptColors = [
     'NutriAsia'  => ['bg' => 'rgba(16,185,129,.15)',  'color' => '#059669', 'border' => '#6ee7b7'],
     ''           => ['bg' => 'rgba(107,114,128,.15)', 'color' => '#6b7280', 'border' => '#9ca3af'],
 ];
-$_dc       = $_deptColors[$_topbar_dept] ?? $_deptColors[''];
-$_ddStyle  = "background:{$_dc['bg']};color:{$_dc['color']};border-color:{$_dc['border']};";
+$_dc        = $_deptColors[$_topbar_dept] ?? $_deptColors[''];
+$_ddStyle   = "background:{$_dc['bg']};color:{$_dc['color']};border-color:{$_dc['border']};";
 $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Departments';
 ?>
 
@@ -77,7 +58,7 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
 <header class="topbar">
 
   <!-- Brand -->
-  <a href="#" class="topbar-brand">
+  <a href="<?= route('home') ?>" class="topbar-brand">
     <img src="<?= base_url('assets/img/logo.png') ?>" alt="Logo"
          class="topbar-brand-logo"
          onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
@@ -99,7 +80,7 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
 
   <div class="topbar-sep"></div>
 
-  <!-- Department badge (admin only — links to set_department) -->
+  <!-- Department badge -->
   <?php if ($_can_admin): ?>
   <a href="<?= route('set_department') ?>" class="dept-dropdown-btn"
      style="<?= $_ddStyle ?>" title="Switch Department">
@@ -145,10 +126,10 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
 
       <!-- Switch Department + RBAC Manager (admin only) -->
       <?php if ($_can_admin): ?>
-      <a href="<?= route('set_department') ?>" class="tb-drop-item <?= $_topbar_page === 'dept' ? 'active' : '' ?>">
+      <a href="<?= route('set_department') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'dept' ? 'active' : '' ?>">
         <i class="bi bi-building"></i> Switch Department
       </a>
-      <a href="<?= rbac_module_url('RBAC') ?>" class="tb-drop-item <?= $_topbar_page === 'rbac' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('RBAC') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'rbac' ? 'active' : '' ?>">
         <i class="bi bi-shield-lock-fill"></i> Access Control (RBAC)
       </a>
       <div class="tb-drop-divider"></div>
@@ -156,54 +137,49 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
 
       <div class="tb-drop-section-label">Navigation</div>
 
-      <!-- Home is always visible -->
-      <a href="<?= route('home') ?>" class="tb-drop-item <?= $_topbar_page === 'home' ? 'active' : '' ?>">
+      <a href="<?= route('home') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'home' ? 'active' : '' ?>">
         <i class="bi bi-house-door-fill"></i> Home
       </a>
 
-      <!-- Fleet / Fuel — RBAC-gated per module key -->
       <?php if ($_can_fuel): ?>
-      <a href="<?= rbac_module_url('fuel_dashboard') ?>" class="tb-drop-item <?= $_topbar_page === 'fuel' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('fuel_dashboard') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'fuel' ? 'active' : '' ?>">
         <i class="bi bi-fuel-pump-fill"></i> Fuel Dashboard
       </a>
       <?php endif; ?>
 
       <?php if ($_can_graphs): ?>
-      <a href="<?= rbac_module_url('graphs') ?>" class="tb-drop-item <?= $_topbar_page === 'graphs' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('graphs') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'graphs' ? 'active' : '' ?>">
         <i class="bi bi-bar-chart-fill"></i> Fuel Graphs
       </a>
       <?php endif; ?>
 
-      <!-- HR / Careers — RBAC-gated per module key -->
       <?php if ($_can_careers): ?>
-      <a href="<?= rbac_module_url('careers_admin') ?>" class="tb-drop-item <?= $_topbar_page === 'careers' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('careers_admin') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'careers' ? 'active' : '' ?>">
         <i class="bi bi-file-earmark-person"></i> Careers Admin
       </a>
       <?php endif; ?>
 
       <?php if ($_can_view_apps): ?>
-      <a href="<?= rbac_module_url('view_applications') ?>" class="tb-drop-item <?= $_topbar_page === 'applications' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('view_applications') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'applications' ? 'active' : '' ?>">
         <i class="bi bi-file-earmark-person-fill"></i> View Job Applications
       </a>
       <?php endif; ?>
 
       <?php if ($_can_employees): ?>
-      <a href="<?= rbac_module_url('employee_list') ?>" class="tb-drop-item <?= $_topbar_page === 'employees' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('employee_list') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'employees' ? 'active' : '' ?>">
         <i class="bi bi-people-fill"></i> Employee List
       </a>
       <?php endif; ?>
 
-      <!-- Uniform — RBAC-gated -->
       <?php if ($_can_uniform): ?>
-      <a href="<?= rbac_module_url('uniform_inventory') ?>" class="tb-drop-item <?= $_topbar_page === 'uniform' ? 'active' : '' ?>">
+      <a href="<?= rbac_module_url('uniform_inventory') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'uniform' ? 'active' : '' ?>">
         <i class="bi bi-bag-fill"></i> Uniform Inventory
       </a>
       <?php endif; ?>
 
       <div class="tb-drop-divider"></div>
 
-      <!-- Help — show to everyone, or gate with $_can_help if preferred -->
-      <a href="<?= route('help') ?>" class="tb-drop-item <?= $_topbar_page === 'help' ? 'active' : '' ?>">
+      <a href="<?= route('help') ?>" class="tb-drop-item <?= ($topbar_page ?? '') === 'help' ? 'active' : '' ?>">
         <i class="bi bi-book-fill"></i> Help Manual
       </a>
 
@@ -213,8 +189,8 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
         <i class="bi bi-box-arrow-right"></i> Log Out
       </a>
 
-    </div><!-- /tb-dropdown -->
-  </div><!-- /tb-avatar-wrap -->
+    </div>
+  </div>
 
 </header>
 
@@ -241,14 +217,11 @@ $_deptLabel = $_topbar_dept !== '' ? htmlspecialchars($_topbar_dept) : 'All Depa
   drop.addEventListener('click', function (e) { e.stopPropagation(); });
 })();
 
-// Auto redirect to login if session is destroyed
 setInterval(() => {
   fetch('/TWM/check_session.php')
     .then(res => res.json())
     .then(data => {
-      if (!data.loggedIn) {
-        window.location.href = '/TWM/login.php';
-      }
+      if (!data.loggedIn) window.location.href = '/TWM/login.php';
     });
 }, 30000);
 </script>

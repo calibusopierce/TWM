@@ -7,16 +7,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'uniform_inventory');
+rbac_gate($pdo, 'uniform_inventory');
 
-function rqItems($conn2,$sql,$p=[]) {
-    $stmt = empty($p) ? sqlsrv_query($conn2,$sql) : sqlsrv_query($conn2,$sql,$p);
+function rqItems($conn,$sql,$p=[]) {
+    $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
     if (!$stmt) return [];
     $rows=[];
     while ($r=sqlsrv_fetch_array($stmt,SQLSRV_FETCH_ASSOC)) $rows[]=$r;
@@ -30,7 +24,7 @@ $sizes = ['XS','S','M','L','XL','XXL','XXXL','4XL'];
 
 if(!$poid){ echo '<p style="color:#dc2626;font-size:.82rem;">Invalid PO ID.</p>'; exit; }
 
-$items = rqItems($conn2,
+$items = rqItems($conn,
     "SELECT * FROM [dbo].[UniformPOItems] WHERE POID=? ORDER BY UniformType,
      CASE Size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4
                WHEN 'XL' THEN 5 WHEN 'XXL' THEN 6 WHEN 'XXXL' THEN 7 WHEN '4XL' THEN 8 END",

@@ -6,13 +6,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'view_applications');
+rbac_gate($pdo, 'view_applications');
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 
 if (!isset($_GET['file'])) {

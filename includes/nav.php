@@ -6,6 +6,9 @@
 if (defined('NAV_LOADED')) return; // prevent double-include
 define('NAV_LOADED', true);
 
+// ── DB Connection (available globally on every page) ──────────
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
+
 // ── Base URL builder ──────────────────────────────────────────
 function base_url(string $path = ''): string {
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';

@@ -386,7 +386,7 @@ HTML;
       display: flex; align-items: center; justify-content: center;
       font-size: 1.3rem; flex-shrink: 0;
     }
-    .tnc-header h5 { margin: 0; font-size: 1.05rem; font-weight: 700; }
+    .tnc-header h5 { margin: 0; font-size: 1.05rem; font-weight: 700; color: #fff; }
     .tnc-header p  { margin: .2rem 0 0; font-size: .78rem; opacity: .8; }
     .tnc-body {
       padding: 1.75rem; overflow-y: auto; flex: 1;

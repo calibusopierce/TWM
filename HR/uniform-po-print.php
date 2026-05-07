@@ -8,18 +8,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'uniform_inventory');
+rbac_gate($pdo, 'uniform_inventory');
 
 // ── Helpers (defined BEFORE use) ──────────────────────────────
 if (!function_exists('rq')) {
-    function rq($conn2, $sql, $p = []) {
-        $stmt = empty($p) ? sqlsrv_query($conn2,$sql) : sqlsrv_query($conn2,$sql,$p);
+    function rq($conn, $sql, $p = []) {
+        $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
         if (!$stmt) return [];
         $rows = [];
         while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $rows[] = $r;
@@ -42,11 +36,11 @@ if (!function_exists('fmtDate')) {
 $poid = intval($_GET['poid'] ?? 0);
 if (!$poid) die('No PO specified.');
 
-$po = rq($conn2, "SELECT * FROM [dbo].[UniformPO] WHERE POID=?", [$poid]);
+$po = rq($conn, "SELECT * FROM [dbo].[UniformPO] WHERE POID=?", [$poid]);
 if (empty($po)) die('PO not found.');
 $po = $po[0];
 
-$items = rq($conn2,
+$items = rq($conn,
     "SELECT * FROM [dbo].[UniformPOItems] WHERE POID=?
      ORDER BY UniformType,
      CASE Size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4

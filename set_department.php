@@ -10,15 +10,38 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 $userType    = $_SESSION['UserType']    ?? '';
 $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $current     = $_SESSION['Department']  ?? '';
-$isAdmin     = in_array($userType, ['Admin', 'Administrator'], true);
+// Pull master dept list directly from DB so names always match exactly
+$allDepts = [];
+if ($pdo) {
+    $allDepts = $pdo->query("
+        SELECT DISTINCT Department FROM ViewUserLogIn
+        WHERE Department IS NOT NULL AND Department != ''
+        ORDER BY Department ASC
+    ")->fetchAll(PDO::FETCH_COLUMN);
+}
+// Fallback if DB fails
+if (empty($allDepts)) {
+    $allDepts = ['Monde', 'Century', 'Multilines', 'NutriAsia', 'Silverswan', 'Urban Tradewell Corp.'];
+}
 
-$allDepts = ['Monde', 'Century', 'Multilines', 'NutriAsia', 'Silverswan', 'Urban Tradewell Corp.'];
 
-// Build allowed list
-if ($isAdmin) {
-    $allowed = array_merge([''], $allDepts); // '' = All Departments
+// ── Build allowed list — NO role bypass, everyone goes through DB tags ────────
+if ($pdo) {
+    $userId = $_SESSION['UserID'] ?? 0;
+    $stmt   = $pdo->prepare("
+        SELECT Department
+        FROM   Tbl_UserAccessDepartment
+        WHERE  UserID = ?
+        ORDER  BY Department ASC
+    ");
+    $stmt->execute([$userId]);
+    $taggedDepts = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+    // Names come from DB so they already match — no intersect filter needed
+    $allowed = $taggedDepts;
 } else {
-    $allowed = [$current];
+    // No DB — fall back to session department only
+    $allowed = $current !== '' ? [$current] : [];
 }
 
 // ── Handle POST ───────────────────────────────────────────────────────────────
@@ -41,6 +64,12 @@ $deptColors = [
     'Urban Tradewell Corp.' => ['bg' => 'rgba(28, 61, 126, 0.15)', 'color' => '#0b2b6d', 'border' => '#113472', 'solid' => '#0b2863'],
     ''           => ['bg' => 'rgba(107,114,128,.15)', 'color' => '#6b7280', 'border' => '#9ca3af', 'solid' => '#6b7280'],
 ];
+
+// ── Build display options — always from $allowed ──────────────────────────────
+$displayOptions = [];
+foreach ($allowed as $d) {
+    $displayOptions[$d] = $d !== '' ? $d : 'All Departments';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -69,14 +98,14 @@ $deptColors = [
       height: 100%;
       width: 100%;
       font-family: 'DM Sans', sans-serif;
-      overflow: hidden; /* .page handles scrolling */
+      overflow: hidden;
     }
 
     .bg {
       position: fixed;
       inset: 0;
       background: linear-gradient(145deg, var(--blue-bright) 0%, var(--blue-deep) 100%);
-      overflow: hidden; /* clips orbs that have negative right/left offsets */
+      overflow: hidden;
       z-index: 0;
     }
 
@@ -147,6 +176,14 @@ $deptColors = [
       margin-bottom: 1.25rem;
     }
 
+    .no-access-notice {
+      display: flex; align-items: center; gap: .5rem;
+      background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+      border-radius: 10px; padding: .65rem .9rem;
+      font-size: .78rem; color: #fca5a5;
+      margin-bottom: 1.25rem;
+    }
+
     .dept-options {
       display: flex;
       flex-direction: column;
@@ -154,8 +191,8 @@ $deptColors = [
       margin-bottom: 1.5rem;
       max-height: 260px;
       overflow-y: auto;
-      overflow-x: hidden;   /* FIX 1: no horizontal scroll inside the list */
-      padding: 2px 4px;     /* FIX 2: small padding so box-shadow isn't clipped */
+      overflow-x: hidden;
+      padding: 2px 4px;
     }
 
     .dept-option {
@@ -167,9 +204,6 @@ $deptColors = [
       border: 1.5px solid rgba(255,255,255,.12);
       background: rgba(255,255,255,.05);
       cursor: pointer;
-      /* FIX 3: removed translateX from transition — that 3px shift was
-         momentarily widening the scroll container and causing the
-         horizontal bar + flicker/glitch on hover */
       transition: background .15s, border-color .15s;
       position: relative;
       -webkit-user-select: none;
@@ -179,7 +213,6 @@ $deptColors = [
     }
     .dept-option:hover:not(.locked) {
       background: rgba(255,255,255,.1);
-      /* No translateX here — background change is enough feedback */
     }
     .dept-option.locked {
       opacity: .35; cursor: not-allowed;
@@ -212,6 +245,7 @@ $deptColors = [
     }
     .btn-submit:hover { transform: translateY(-1px); box-shadow: 0 8px 28px rgba(67,128,226,.55); }
     .btn-submit:active { transform: translateY(0); }
+    .btn-submit:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
     .back-link {
       display: flex; align-items: center; justify-content: center;
@@ -223,17 +257,10 @@ $deptColors = [
     .divider { height: 1px; background: rgba(255,255,255,.1); margin: 1.25rem 0; }
 
     @media (max-width: 520px) {
-      .page {
-        align-items: flex-start;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-      }
-      .card {
-        padding: 2.5rem 2.5rem 2.2rem;
-      }
+      .page { align-items: flex-start; padding-top: 2rem; padding-bottom: 3rem; }
+      .card { padding: 2.5rem 2.5rem 2.2rem; }
     }
   </style>
-
 </head>
 <body>
 
@@ -264,38 +291,23 @@ $deptColors = [
       Current: <strong><?= $current !== '' ? htmlspecialchars($current) : 'All Departments' ?></strong>
     </div>
 
-    <?php if (!$isAdmin): ?>
-    <div class="lock-notice">
-      <i class="bi bi-lock-fill"></i>
-      Your account is restricted to
-      <strong style="margin-left:.25rem"><?= htmlspecialchars($current ?: 'your department') ?></strong>.
-      Please contact IT for additional access.
-    </div>
-    <?php endif; ?>
-
     <form method="POST" action="set_department.php">
       <div class="dept-options">
-        <?php
-          if ($isAdmin) {
-              $displayOptions = array_merge(
-                  ['' => 'All Departments'],
-                  array_combine($allDepts, $allDepts)
-              );
-          } else {
-              $displayOptions = [
-                  $current => ($current !== '' ? $current : 'All Departments')
-              ];
+        <?php foreach ($displayOptions as $val => $label):
+          // Case-insensitive color lookup
+          $colorKey = $val;
+          if (!isset($deptColors[$colorKey])) {
+              foreach ($deptColors as $k => $v) {
+                  if (strcasecmp($k, $val) === 0) { $colorKey = $k; break; }
+              }
           }
-
-          foreach ($displayOptions as $val => $label):
-            $c        = $deptColors[$val] ?? $deptColors[''];
-            $isActive = ($current === $val);
-            $isLocked = !in_array($val, $allowed, true);
-            $icon     = ($val === '') ? 'bi-globe' : 'bi-building';
-            $radioId  = 'dept_' . ($val === '' ? 'all' : strtolower(preg_replace('/\s+/', '_', $val)));
+          $c        = $deptColors[$colorKey] ?? $deptColors[''];
+          $isActive = ($current === $val);
+          $icon     = ($val === '') ? 'bi-globe' : 'bi-building';
+          $radioId  = 'dept_' . ($val === '' ? 'all' : strtolower(preg_replace('/\s+/', '_', $val)));
         ?>
         <label
-          class="dept-option<?= $isActive ? ' selected' : '' ?><?= $isLocked ? ' locked' : '' ?>"
+          class="dept-option<?= $isActive ? ' selected' : '' ?>"
           style="--dept-color:<?= $c['color'] ?>;--dept-bg:<?= $c['bg'] ?>;"
           for="<?= $radioId ?>">
 
@@ -304,8 +316,7 @@ $deptColors = [
             name="dept"
             id="<?= $radioId ?>"
             value="<?= htmlspecialchars($val) ?>"
-            <?= $isActive ? 'checked' : '' ?>
-            <?= $isLocked ? 'disabled' : '' ?>>
+            <?= $isActive ? 'checked' : '' ?>>
 
           <span class="dept-dot"
                 style="background:<?= $c['solid'] ?>;box-shadow:0 0 6px <?= $c['solid'] ?>;"></span>
@@ -315,19 +326,35 @@ $deptColors = [
             <?= htmlspecialchars($label) ?>
           </span>
 
-          <?php if ($isLocked): ?>
-            <i class="bi bi-lock-fill lock-icon"></i>
-          <?php else: ?>
-            <i class="bi bi-check-circle-fill dept-check"></i>
-          <?php endif; ?>
+          <i class="bi bi-check-circle-fill dept-check"></i>
         </label>
         <?php endforeach; ?>
+
+        <?php if (empty($displayOptions)): ?>
+        <div style="text-align:center;padding:1.5rem;color:rgba(255,255,255,.3);font-size:.82rem">
+          <i class="bi bi-building-slash" style="font-size:2rem;display:block;margin-bottom:.5rem"></i>
+          No departments available.
+        </div>
+        <?php endif; ?>
       </div>
 
-      <button type="submit" class="btn-submit">
+      <button type="submit" class="btn-submit" <?= empty($displayOptions) ? 'disabled' : '' ?>>
         <i class="bi bi-check2-circle"></i>&nbsp; Apply Department
       </button>
     </form>
+
+    <?php if (empty($displayOptions)): ?>
+    <div class="no-access-notice" style="margin-top:1rem">
+      <i class="bi bi-exclamation-triangle-fill"></i>
+      No departments have been assigned to your account yet. Please contact your administrator.
+    </div>
+    <?php else: ?>
+    <div class="lock-notice" style="margin-top:1rem">
+      <i class="bi bi-lock-fill"></i>
+      You can only access departments assigned to your account.
+      Contact IT to request additional access.
+    </div>
+    <?php endif; ?>
 
     <div class="divider"></div>
     <a href="home.php" class="back-link">

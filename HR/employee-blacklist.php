@@ -11,13 +11,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'employee_list');
+rbac_gate($pdo, 'employee_list');
 
 // ── Session context ────────────────────────────────────────────
 $_userType = $_SESSION['UserType'] ?? '';

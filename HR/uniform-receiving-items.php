@@ -5,8 +5,8 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 $recId = intval($_GET['recid'] ?? 0);
 if (!$recId) { echo '<p style="color:#dc2626">Invalid record.</p>'; exit; }
 
-function rq2($conn2,$sql,$p=[]){
-    $stmt=empty($p)?sqlsrv_query($conn2,$sql):sqlsrv_query($conn2,$sql,$p);
+function rq2($conn,$sql,$p=[]){
+    $stmt=empty($p)?sqlsrv_query($conn,$sql):sqlsrv_query($conn,$sql,$p);
     if(!$stmt) return [];
     $rows=[];
     while($r=sqlsrv_fetch_array($stmt,SQLSRV_FETCH_ASSOC)) $rows[]=$r;
@@ -20,21 +20,21 @@ function fmtD($v){
 }
 function sf($s){ return htmlspecialchars($s??'',ENT_QUOTES,'UTF-8'); }
 
-$rec = rq2($conn2,
+$rec = rq2($conn,
     "SELECT r.*,p.PONumber FROM [dbo].[UniformReceiving] r
      LEFT JOIN [dbo].[UniformPO] p ON p.POID=r.POID
      WHERE r.RFID=?",[$recId]);
 if(empty($rec)){ echo '<p style="color:#dc2626">Record not found.</p>'; exit; }
 $rec = $rec[0];
 
-$items = rq2($conn2,
+$items = rq2($conn,
     "SELECT * FROM [dbo].[UniformReceivingItems] WHERE RFID=?
      ORDER BY CASE Size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4
      WHEN 'XL' THEN 5 WHEN 'XXL' THEN 6 WHEN 'XXXL' THEN 7 WHEN '4XL' THEN 8 END",
     [$recId]);
 
 // PO ordered quantities for variance
-$poItems = rq2($conn2,"SELECT * FROM [dbo].[UniformPOItems] WHERE POID=?",[$rec['POID']??0]);
+$poItems = rq2($conn,"SELECT * FROM [dbo].[UniformPOItems] WHERE POID=?",[$rec['POID']??0]);
 $poMap   = [];
 foreach($poItems as $pi) $poMap[$pi['UniformType']][$pi['Size']] = intval($pi['Requested'])+intval($pi['Additional']);
 

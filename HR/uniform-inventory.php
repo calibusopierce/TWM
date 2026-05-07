@@ -10,25 +10,19 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'uniform_inventory');
+rbac_gate($pdo, 'uniform_inventory');
 
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
 $tab         = $_GET['tab'] ?? 'stocks';
-$validTabs   = ['stocks','released','requests','po','receiving'];
+$validTabs   = ['stocks','released','requests','po','receiving','returns'];
 if (!in_array($tab, $validTabs)) $tab = 'stocks';
 $sizes       = ['XS','S','M','L','XL','XXL','XXXL','4XL'];
 $depts       = ['Century','Monde','Multilines','NutriAsia'];
 $uTypes      = ['TSHIRT','POLOSHIRT'];
 
-function rq($conn2,$sql,$p=[]) {
-    $stmt = empty($p) ? sqlsrv_query($conn2,$sql) : sqlsrv_query($conn2,$sql,$p);
+function rq($conn,$sql,$p=[]) {
+    $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
     if (!$stmt) return [];
     $rows=[];
     while ($r=sqlsrv_fetch_array($stmt,SQLSRV_FETCH_ASSOC)) $rows[]=$r;
@@ -71,7 +65,7 @@ if (isset($_POST['save_stock'])) {
     $prev=intval($_POST['PreviousStock']??0);
     $add =intval($_POST['AdditionalStock']??0);
     $less=intval($_POST['LessStock']??0);
-    $stmt=@sqlsrv_query($conn2,
+    $stmt=@sqlsrv_query($conn,
         "UPDATE [dbo].[UniformStock] SET PreviousStock=?,AdditionalStock=?,LessStock=?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
         [$prev,$add,$less,$currentUser,$type,$size]);
     $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to update stock.']:['type'=>'success','text'=>"Stock updated: {$type} {$size}."];
@@ -86,11 +80,11 @@ if (isset($_POST['save_released'])) {
     $rb  =trim($_POST['RequestedBy']??'');  $rem=trim($_POST['Remarks']??'');
     if (!$emp||!$ut||!$us) { $messages[]=['type'=>'danger','text'=>'Name, type and size are required.']; }
     else {
-        $stmt=@sqlsrv_query($conn2,
+        $stmt=@sqlsrv_query($conn,
             "INSERT INTO [dbo].[UniformReleased](EmployeeName,UniformType,UniformSize,Quantity,Department,DateGiven,RequestedBy,Remarks,CreatedBy) VALUES(?,?,?,?,?,?,?,?,?)",
             [$emp,$ut,$us,$qty,$dept,$dg,$rb,$rem,$currentUser]);
         if($stmt!==false){
-            @sqlsrv_query($conn2,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",[$qty,$currentUser,$ut,$us]);
+            @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",[$qty,$currentUser,$ut,$us]);
             $messages[]=['type'=>'success','text'=>"Released {$qty}x {$ut} ({$us}) to {$emp}."];
         } else { $messages[]=['type'=>'danger','text'=>'Failed to save release.']; }
     }
@@ -100,17 +94,17 @@ if (isset($_POST['save_released'])) {
 // ── POST: Delete Released ──────────────────────────────────────
 if (isset($_POST['delete_released'])) {
     $id=intval($_POST['ReleasedID']??0);
-    $row=rq($conn2,"SELECT UniformType,UniformSize,Quantity,RequestID FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
+    $row=rq($conn,"SELECT UniformType,UniformSize,Quantity,RequestID FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
     if($id>0&&!empty($row)){
         $r0  = $row[0];
         $qty = intval($r0['Quantity']);
-        $stmt=@sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
+        $stmt=@sqlsrv_query($conn,"DELETE FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
         if($stmt!==false){
-            @sqlsrv_query($conn2,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock-?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
+            @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock-?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
                 [$qty,$currentUser,$r0['UniformType'],$r0['UniformSize']]);
             $reqId = intval($r0['RequestID'] ?? 0);
             if($reqId > 0){
-                @sqlsrv_query($conn2,"UPDATE [dbo].[UniformRequests] SET IsGiven=0,DateGiven=NULL,GivenBy=NULL WHERE RequestID=?",[$reqId]);
+                @sqlsrv_query($conn,"UPDATE [dbo].[UniformRequests] SET IsGiven=0,DateGiven=NULL,GivenBy=NULL WHERE RequestID=?",[$reqId]);
                 $messages[]=['type'=>'success','text'=>'Release deleted, stock restored, and request reverted to Pending.'];
             } else {
                 $messages[]=['type'=>'success','text'=>'Release deleted and stock restored.'];
@@ -134,16 +128,16 @@ if (isset($_POST['edit_released'])) {
     if (!$id || !$emp || !$ut || !$us) {
         $messages[]=['type'=>'danger','text'=>'Name, type and size are required.'];
     } else {
-        $old = rq($conn2,"SELECT UniformType,UniformSize,Quantity FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
-        $stmt = @sqlsrv_query($conn2,
+        $old = rq($conn,"SELECT UniformType,UniformSize,Quantity FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$id]);
+        $stmt = @sqlsrv_query($conn,
             "UPDATE [dbo].[UniformReleased] SET EmployeeName=?,UniformType=?,UniformSize=?,Quantity=?,Department=?,DateGiven=?,RequestedBy=?,Remarks=? WHERE ReleasedID=?",
             [$emp,$ut,$us,$qty,$dept,$dg,$rb,$rem,$id]);
         if ($stmt !== false) {
             if (!empty($old)) {
-                @sqlsrv_query($conn2,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock-?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
+                @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock-?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
                     [$old[0]['Quantity'],$currentUser,$old[0]['UniformType'],$old[0]['UniformSize']]);
             }
-            @sqlsrv_query($conn2,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
+            @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
                 [$qty,$currentUser,$ut,$us]);
             $messages[]=['type'=>'success','text'=>"Record updated for {$emp}."];
         } else {
@@ -155,31 +149,62 @@ if (isset($_POST['edit_released'])) {
 
 // ── POST: Requests ─────────────────────────────────────────────
 if (isset($_POST['save_request'])) {
-    $rb  =trim($_POST['RequestedBy']  ??''); $ut=trim($_POST['UniformType']??'');
-    $us  =trim($_POST['UniformSize']  ??''); $qty=intval($_POST['Quantity']??3);
-    $emp =trim($_POST['EmployeeName'] ??'');
-    $dept=trim($_POST['Department']   ??''); $dr=trim($_POST['DateRequested']??date('Y-m-d'));
-    $rem =trim($_POST['Remarks']      ??'');
-    if(!$rb||!$ut||!$us){$messages[]=['type'=>'danger','text'=>'Requested by, type and size are required.'];}
-    else{
-        $stmt=@sqlsrv_query($conn2,
-            "INSERT INTO [dbo].[UniformRequests](EmployeeName,RequestedBy,UniformType,UniformSize,Quantity,Department,DateRequested,Remarks,CreatedBy) VALUES(?,?,?,?,?,?,?,?,?)",
-            [$emp,$rb,$ut,$us,$qty,$dept,$dr,$rem,$currentUser]);
-        $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to save request.']:['type'=>'success','text'=>"Request added: {$qty}x {$ut} ({$us}) for {$emp}."];
+    $rb  = trim($_POST['RequestedBy']   ?? '');
+    $ut  = trim($_POST['UniformType']   ?? '');
+    $us  = trim($_POST['UniformSize']   ?? '');
+    $qty = intval($_POST['Quantity']    ?? 3);
+    $emp = trim($_POST['EmployeeName']  ?? '');
+    $dept= trim($_POST['Department']    ?? '');
+    $rem = trim($_POST['Remarks']       ?? '');
+
+    // ── Fix: pass date as a proper sqlsrv typed param ──
+    $drRaw = trim($_POST['DateRequested'] ?? date('Y-m-d'));
+    $dr    = !empty($drRaw) ? $drRaw : date('Y-m-d');
+
+    if (!$rb || !$ut || !$us) {
+        $messages[] = ['type'=>'danger','text'=>'Requested by, type and size are required.'];
+    } else {
+        $params = [
+            [$emp,  SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(255)],
+            [$rb,   SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(255)],
+            [$ut,   SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(50)],
+            [$us,   SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(20)],
+            [$qty,  SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_INT],
+            [$dept, SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(100)],
+            [$dr,   SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_DATE],
+            [$rem,  SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(500)],
+            [$currentUser, SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(255)],
+        ];
+
+        $stmt = sqlsrv_query($conn,
+            "INSERT INTO [dbo].[UniformRequests]
+                (EmployeeName, RequestedBy, UniformType, UniformSize, Quantity,
+                 Department, DateRequested, Remarks, CreatedBy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            $params);
+
+        if ($stmt === false) {
+            $errors  = sqlsrv_errors();
+            $errText = '';
+            if ($errors) foreach ($errors as $e) $errText .= '[' . $e['code'] . '] ' . $e['message'] . ' ';
+            $messages[] = ['type'=>'danger','text'=>'Failed to save request: ' . trim($errText)];
+        } else {
+            $messages[] = ['type'=>'success','text'=>"Request added: {$qty}x {$ut} ({$us}) for {$emp}."];
+        }
     }
-    $tab='requests';
+    $tab = 'requests';
 }
 
 if (isset($_POST['mark_given'])) {
     $id=intval($_POST['RequestID']??0);
     if($id>0){
-        $req=rq($conn2,"SELECT * FROM [dbo].[UniformRequests] WHERE RequestID=?",[$id]);
+        $req=rq($conn,"SELECT * FROM [dbo].[UniformRequests] WHERE RequestID=?",[$id]);
         if(!empty($req)){
             $req=$req[0];
             $qty     = intval($req['Quantity']);
             $empName = trim($req['EmployeeName'] ?? '');
             if($empName === '') $empName = 'From Request #'.$id;
-            $stockRow = rq($conn2,
+            $stockRow = rq($conn,
                 "SELECT (PreviousStock + AdditionalStock - LessStock) AS CurrentStock
                  FROM [dbo].[UniformStock] WHERE UniformType=? AND Size=?",
                 [$req['UniformType'], $req['UniformSize']]);
@@ -189,17 +214,17 @@ if (isset($_POST['mark_given'])) {
                     "⚠️ Insufficient stock! Requested: {$qty} pcs of {$req['UniformType']} ({$req['UniformSize']}), ".
                     "but only {$currentStock} pcs available. Request NOT processed."];
             } else {
-                @sqlsrv_query($conn2,"UPDATE [dbo].[UniformRequests] SET IsGiven=1,DateGiven=CAST(GETDATE() AS DATE),GivenBy=? WHERE RequestID=?",[$currentUser,$id]);
-                $relStmt=@sqlsrv_query($conn2,
+                @sqlsrv_query($conn,"UPDATE [dbo].[UniformRequests] SET IsGiven=1,DateGiven=CAST(GETDATE() AS DATE),GivenBy=? WHERE RequestID=?",[$currentUser,$id]);
+                $relStmt=@sqlsrv_query($conn,
                     "INSERT INTO [dbo].[UniformReleased](EmployeeName,UniformType,UniformSize,Quantity,Department,DateGiven,RequestedBy,Remarks,CreatedBy,RequestID)
                      VALUES(?,?,?,?,?,CAST(GETDATE() AS DATE),?,?,?,?)",
                     [$empName,$req['UniformType'],$req['UniformSize'],$qty,$req['Department']??'',$req['RequestedBy']??'',$req['Remarks']??'',$currentUser,$id]);
                 if($relStmt!==false){
-                    @sqlsrv_query($conn2,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
+                    @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
                         [$qty,$currentUser,$req['UniformType'],$req['UniformSize']]);
                     $messages[]=['type'=>'success','text'=>"✅ Marked as Given — {$qty}x {$req['UniformType']} ({$req['UniformSize']}) released to {$empName}."];
                 } else {
-                    @sqlsrv_query($conn2,"UPDATE [dbo].[UniformRequests] SET IsGiven=0,DateGiven=NULL,GivenBy=NULL WHERE RequestID=?",[$id]);
+                    @sqlsrv_query($conn,"UPDATE [dbo].[UniformRequests] SET IsGiven=0,DateGiven=NULL,GivenBy=NULL WHERE RequestID=?",[$id]);
                     $messages[]=['type'=>'danger','text'=>'Failed to create release record. Request reverted to Pending.'];
                 }
             }
@@ -212,7 +237,7 @@ if (isset($_POST['mark_given'])) {
 
 if (isset($_POST['delete_request'])) {
     $id=intval($_POST['RequestID']??0);
-    if($id>0){ $stmt=@sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformRequests] WHERE RequestID=?",[$id]);
+    if($id>0){ $stmt=@sqlsrv_query($conn,"DELETE FROM [dbo].[UniformRequests] WHERE RequestID=?",[$id]);
         $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to delete.']:['type'=>'success','text'=>'Request deleted.']; }
     $tab='requests';
 }
@@ -229,7 +254,7 @@ if (isset($_POST['save_po'])) {
         $sql  = "INSERT INTO [dbo].[UniformPO](PONumber,PODate,Supplier,Remarks,CreatedBy)
                  OUTPUT INSERTED.POID
                  VALUES(?,?,?,?,?)";
-        $stmt = @sqlsrv_query($conn2, $sql, [$poNum, $poDate, '', $rem, $currentUser]);
+        $stmt = @sqlsrv_query($conn, $sql, [$poNum, $poDate, '', $rem, $currentUser]);
 
         if ($stmt !== false && ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC))) {
             $newPID = intval($row['POID']);
@@ -240,7 +265,7 @@ if (isset($_POST['save_po'])) {
                     $r = intval($_POST["req_{$ut}_{$sz}"] ?? 0);
                     $a = intval($_POST["add_{$ut}_{$sz}"] ?? 0);
                     if ($r > 0 || $a > 0) {
-                        @sqlsrv_query($conn2,
+                        @sqlsrv_query($conn,
                             "INSERT INTO [dbo].[UniformPOItems](POID,UniformType,Size,Requested,Additional)
                              VALUES(?,?,?,?,?)",
                             [$newPID, $ut, $sz, $r, $a]);
@@ -260,13 +285,13 @@ if (isset($_POST['save_po'])) {
 if (isset($_POST['delete_po'])) {
     $id = intval($_POST['POID'] ?? 0);
     if ($id > 0) {
-        @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformPOItems] WHERE POID=?", [$id]);
-        $recRows = rq($conn2, "SELECT RFID FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
+        @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformPOItems] WHERE POID=?", [$id]);
+        $recRows = rq($conn, "SELECT RFID FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
         foreach ($recRows as $rr) {
-            @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?", [intval($rr['RFID'])]);
+            @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?", [intval($rr['RFID'])]);
         }
-        @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
-        $stmt = @sqlsrv_query($conn2, "DELETE FROM [dbo].[UniformPO] WHERE POID=?", [$id]);
+        @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformReceiving] WHERE POID=?", [$id]);
+        $stmt = @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformPO] WHERE POID=?", [$id]);
         $messages[] = $stmt !== false
             ? ['type' => 'success', 'text' => 'PO deleted successfully.']
             : ['type' => 'danger',  'text' => 'Failed to delete PO. ' . (sqlsrv_errors()[0]['message'] ?? '')];
@@ -285,14 +310,14 @@ if (isset($_POST['save_receiving'])) {
 
     if(!$poid){ $messages[]=['type'=>'danger','text'=>'Please select a PO.']; }
     else {
-        $existRec = rq($conn2,
+        $existRec = rq($conn,
             "SELECT RFID FROM [dbo].[UniformReceiving] WHERE POID=? AND UniformType=?",
             [$poid,$recType]);
 
         if(!empty($existRec)){
             // ── UPDATE existing record ──────────────────────────────
             $recId = intval($existRec[0]['RFID']);
-            @sqlsrv_query($conn2,
+            @sqlsrv_query($conn,
                 "UPDATE [dbo].[UniformReceiving]
                  SET RFDate=?,DateReceived=?,PrintingShop=?,PrintShop=?,RepresentativeThem=?,RepresentativeUs=?,UniformType=?
                  WHERE RFID=?",
@@ -300,11 +325,11 @@ if (isset($_POST['save_receiving'])) {
         } else {
             // ── INSERT new record ───────────────────────────────────
             // Generate RFNumber from PO Number
-          $poNumRow = rq($conn2, "SELECT PONumber FROM [dbo].[UniformPO] WHERE POID=?", [$poid]);
+          $poNumRow = rq($conn, "SELECT PONumber FROM [dbo].[UniformPO] WHERE POID=?", [$poid]);
           $poNumStr = $poNumRow[0]['PONumber'] ?? 'PO';
           $rfNumber = 'RF-' . preg_replace('/[^A-Z0-9]/i', '', $poNumStr) . '-' . date('YmdHis');
 
-          $insStmt = sqlsrv_query($conn2,
+          $insStmt = sqlsrv_query($conn,
               "INSERT INTO [dbo].[UniformReceiving]
                   (POID,RFNumber,RFDate,DateReceived,PrintingShop,PrintShop,RepresentativeThem,RepresentativeUs,UniformType,CreatedBy,CreatedAt)
               OUTPUT INSERTED.RFID
@@ -326,16 +351,16 @@ if (isset($_POST['save_receiving'])) {
         if($recId>0){
             foreach($sizes as $sz){
                 $qtyRec = intval($_POST["rec_{$recType}_{$sz}"]??0);
-                $exist  = rq($conn2,
+                $exist  = rq($conn,
                     "SELECT RFItemID FROM [dbo].[UniformReceivingItems]
                      WHERE RFID=? AND UniformType=? AND Size=?",
                     [$recId,$recType,$sz]);
                 if(!empty($exist)){
-                    @sqlsrv_query($conn2,
+                    @sqlsrv_query($conn,
                         "UPDATE [dbo].[UniformReceivingItems] SET Quantity=? WHERE RFItemID=?",
                         [$qtyRec,intval($exist[0]['RFItemID'])]);
                 } else {
-                    @sqlsrv_query($conn2,
+                    @sqlsrv_query($conn,
                         "INSERT INTO [dbo].[UniformReceivingItems](RFID,UniformType,Size,Quantity)
                          VALUES(?,?,?,?)",
                         [$recId,$recType,$sz,$qtyRec]);
@@ -351,18 +376,217 @@ if (isset($_POST['save_receiving'])) {
 if (isset($_POST['delete_receiving'])) {
     $id=intval($_POST['ReceivingID']??0);
     if($id>0){
-        @sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$id]);
-        $stmt=@sqlsrv_query($conn2,"DELETE FROM [dbo].[UniformReceiving] WHERE RFID=?",[$id]);
-        $messages[]=$stmt!==false
-            ?['type'=>'success','text'=>'Receiving record deleted.']
-            :['type'=>'danger','text'=>'Failed to delete receiving record.'];
+        // Safety check: prevent deletion of a posted record
+        $chk = rq($conn,"SELECT IsPosted FROM [dbo].[UniformReceiving] WHERE RFID=?",[$id]);
+        if(!empty($chk) && intval($chk[0]['IsPosted']??0)===1){
+            $messages[]=['type'=>'danger','text'=>'Cannot delete a posted receiving record. Un-post it first before deleting.'];
+        } else {
+            @sqlsrv_query($conn,"DELETE FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$id]);
+            $stmt=@sqlsrv_query($conn,"DELETE FROM [dbo].[UniformReceiving] WHERE RFID=?",[$id]);
+            $messages[]=$stmt!==false
+                ?['type'=>'success','text'=>'Receiving record deleted.']
+                :['type'=>'danger','text'=>'Failed to delete receiving record.'];
+        }
     }
     $tab='receiving';
 }
 
+// ── POST: Post Receiving to Stocks ────────────────────────────
+if (isset($_POST['post_to_stocks'])) {
+    $id = intval($_POST['ReceivingID'] ?? 0);
+    if ($id > 0) {
+        // Verify record exists and is not already posted
+        $recRow = rq($conn,
+            "SELECT r.RFID, r.UniformType, r.IsPosted
+             FROM [dbo].[UniformReceiving] r WHERE r.RFID=?", [$id]);
+        if (empty($recRow)) {
+            $messages[] = ['type'=>'danger','text'=>'Receiving record not found.'];
+        } elseif (intval($recRow[0]['IsPosted'] ?? 0) === 1) {
+            $messages[] = ['type'=>'danger','text'=>'This record has already been posted to stocks.'];
+        } else {
+            $recItems = rq($conn,
+                "SELECT UniformType, Size, Quantity FROM [dbo].[UniformReceivingItems] WHERE RFID=?",
+                [$id]);
+            $allOk = true;
+            foreach ($recItems as $item) {
+                $ut  = $item['UniformType'];
+                $sz  = $item['Size'];
+                $qty = intval($item['Quantity']);
+                if ($qty <= 0) continue;
+                $upd = @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformStock]
+                     SET AdditionalStock = AdditionalStock + ?,
+                         UpdatedAt = GETDATE(),
+                         UpdatedBy = ?
+                     WHERE UniformType = ? AND Size = ?",
+                    [$qty, $currentUser, $ut, $sz]);
+                if ($upd === false) { $allOk = false; break; }
+            }
+            if ($allOk) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformReceiving]
+                     SET IsPosted=1, PostedAt=GETDATE(), PostedBy=?
+                     WHERE RFID=?",
+                    [$currentUser, $id]);
+                $messages[] = ['type'=>'success','text'=>'Receiving record successfully posted to stocks.'];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to update stock for one or more sizes. No changes were committed.'];
+            }
+        }
+    }
+    $tab = 'receiving';
+}
+
+// ── POST: Un-post Receiving from Stocks ───────────────────────
+if (isset($_POST['unpost_from_stocks'])) {
+    $id = intval($_POST['ReceivingID'] ?? 0);
+    if ($id > 0) {
+        $recRow = rq($conn,
+            "SELECT RFID, UniformType, IsPosted
+             FROM [dbo].[UniformReceiving] WHERE RFID=?", [$id]);
+        if (empty($recRow)) {
+            $messages[] = ['type'=>'danger','text'=>'Receiving record not found.'];
+        } elseif (intval($recRow[0]['IsPosted'] ?? 0) === 0) {
+            $messages[] = ['type'=>'danger','text'=>'This record has not been posted yet.'];
+        } else {
+            $recItems = rq($conn,
+                "SELECT UniformType, Size, Quantity FROM [dbo].[UniformReceivingItems] WHERE RFID=?",
+                [$id]);
+            $allOk = true;
+            foreach ($recItems as $item) {
+                $ut  = $item['UniformType'];
+                $sz  = $item['Size'];
+                $qty = intval($item['Quantity']);
+                if ($qty <= 0) continue;
+                $upd = @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformStock]
+                     SET AdditionalStock = AdditionalStock - ?,
+                         UpdatedAt = GETDATE(),
+                         UpdatedBy = ?
+                     WHERE UniformType = ? AND Size = ?",
+                    [$qty, $currentUser, $ut, $sz]);
+                if ($upd === false) { $allOk = false; break; }
+            }
+            if ($allOk) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformReceiving]
+                     SET IsPosted=0, PostedAt=NULL, PostedBy=NULL
+                     WHERE RFID=?",
+                    [$id]);
+                $messages[] = ['type'=>'success','text'=>'Receiving record un-posted. Stock has been reversed.'];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to reverse stock. No changes were committed.'];
+            }
+        }
+    }
+    $tab = 'receiving';
+}
+
+// ── POST: Save Return ─────────────────────────────────────────
+if (isset($_POST['save_return'])) {
+    $emp    = trim($_POST['ReturnEmployeeName'] ?? '');
+    $ut     = trim($_POST['ReturnUniformType']  ?? '');
+    $us     = trim($_POST['ReturnUniformSize']  ?? '');
+    $qty    = intval($_POST['ReturnQuantity']   ?? 1);
+    $dept   = trim($_POST['ReturnDepartment']   ?? '');
+    $dr     = trim($_POST['DateReturned']       ?? date('Y-m-d'));
+    $cond   = in_array($_POST['Condition'] ?? '', ['Good','Damaged']) ? $_POST['Condition'] : 'Good';
+    $rto    = trim($_POST['ReturnedTo']         ?? '');
+    $rem    = trim($_POST['ReturnRemarks']      ?? '');
+    $relId  = intval($_POST['ReturnReleasedID'] ?? 0);
+
+    if (!$emp || !$ut || !$us) {
+        $messages[] = ['type'=>'danger','text'=>'Employee name, type and size are required.'];
+    } else {
+        $stmt = @sqlsrv_query($conn,
+            "INSERT INTO [dbo].[UniformReturns]
+                (ReleasedID,EmployeeName,UniformType,UniformSize,Quantity,Department,DateReturned,Condition,ReturnedTo,Remarks,CreatedBy)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            [$relId ?: null, $emp, $ut, $us, $qty, $dept, $dr, $cond, $rto, $rem, $currentUser]);
+        if ($stmt !== false) {
+            @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformStock]
+                 SET ReturnStock=ReturnStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
+                 WHERE UniformType=? AND Size=?",
+                [$qty, $currentUser, $ut, $us]);
+            $messages[] = ['type'=>'success','text'=>"Return recorded: {$qty}x {$ut} ({$us}) from {$emp}. Stock updated."];
+        } else {
+            $messages[] = ['type'=>'danger','text'=>'Failed to save return.'];
+        }
+    }
+    $tab = 'returns';
+}
+
+// ── POST: Delete Return ───────────────────────────────────────
+if (isset($_POST['delete_return'])) {
+    $id = intval($_POST['ReturnID'] ?? 0);
+    if ($id > 0) {
+        $row = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
+        if (!empty($row)) {
+            $r0  = $row[0];
+            $qty = intval($r0['Quantity']);
+            $stmt = @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
+            if ($stmt !== false) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformStock]
+                     SET ReturnStock=ReturnStock-?, UpdatedAt=GETDATE(), UpdatedBy=?
+                     WHERE UniformType=? AND Size=?",
+                    [$qty, $currentUser, $r0['UniformType'], $r0['UniformSize']]);
+                $messages[] = ['type'=>'success','text'=>'Return deleted and stock reversed.'];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to delete return.'];
+            }
+        }
+    }
+    $tab = 'returns';
+}
+
+// ── POST: Edit Return ─────────────────────────────────────────
+if (isset($_POST['edit_return'])) {
+    $id   = intval($_POST['ReturnID']          ?? 0);
+    $emp  = trim($_POST['ReturnEmployeeName']  ?? '');
+    $ut   = trim($_POST['ReturnUniformType']   ?? '');
+    $us   = trim($_POST['ReturnUniformSize']   ?? '');
+    $qty  = intval($_POST['ReturnQuantity']    ?? 1);
+    $dept = trim($_POST['ReturnDepartment']    ?? '');
+    $dr   = trim($_POST['DateReturned']        ?? date('Y-m-d'));
+    $cond = in_array($_POST['Condition'] ?? '', ['Good','Damaged']) ? $_POST['Condition'] : 'Good';
+    $rto  = trim($_POST['ReturnedTo']          ?? '');
+    $rem  = trim($_POST['ReturnRemarks']       ?? '');
+    if (!$id || !$emp || !$ut || !$us) {
+        $messages[] = ['type'=>'danger','text'=>'Name, type and size are required.'];
+    } else {
+        $old = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
+        $stmt = @sqlsrv_query($conn,
+            "UPDATE [dbo].[UniformReturns]
+             SET EmployeeName=?,UniformType=?,UniformSize=?,Quantity=?,Department=?,
+                 DateReturned=?,Condition=?,ReturnedTo=?,Remarks=?
+             WHERE ReturnID=?",
+            [$emp, $ut, $us, $qty, $dept, $dr, $cond, $rto, $rem, $id]);
+        if ($stmt !== false) {
+            if (!empty($old)) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformStock]
+                     SET ReturnStock=ReturnStock-?, UpdatedAt=GETDATE(), UpdatedBy=?
+                     WHERE UniformType=? AND Size=?",
+                    [$old[0]['Quantity'], $currentUser, $old[0]['UniformType'], $old[0]['UniformSize']]);
+            }
+            @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformStock]
+                 SET ReturnStock=ReturnStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
+                 WHERE UniformType=? AND Size=?",
+                [$qty, $currentUser, $ut, $us]);
+            $messages[] = ['type'=>'success','text'=>"Return updated for {$emp}."];
+        } else {
+            $messages[] = ['type'=>'danger','text'=>'Failed to update return.'];
+        }
+    }
+    $tab = 'returns';
+}
+
 // ── FETCH ──────────────────────────────────────────────────────
 $sizeOrder = "CASE Size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4 WHEN 'XL' THEN 5 WHEN 'XXL' THEN 6 WHEN 'XXXL' THEN 7 WHEN '4XL' THEN 8 END";
-$stocks    = rq($conn2,"SELECT * FROM [dbo].[vw_UniformStock] ORDER BY UniformType, {$sizeOrder}");
+$stocks = rq($conn,"SELECT * FROM [dbo].[vw_UniformStock] ORDER BY UniformType DESC, {$sizeOrder}");
 $stockMap  = [];
 foreach ($stocks as $s) $stockMap[$s['UniformType']][$s['Size']] = $s;
 $totalStock = ['TSHIRT'=>0,'POLOSHIRT'=>0];
@@ -371,37 +595,55 @@ foreach ($stocks as $s) $totalStock[$s['UniformType']] += max(0,intval($s['Curre
 // ── Released ──────────────────────────────────────────────────
 $relSearch = trim($_GET['rsearch']??'');
 $relWhere  = $relSearch!=='' ? "WHERE (EmployeeName LIKE '%".str_replace("'","''",$relSearch)."%' OR RequestedBy LIKE '%".str_replace("'","''",$relSearch)."%')" : '';
-$relAll    = rq($conn2,"SELECT * FROM [dbo].[UniformReleased] {$relWhere} ORDER BY DateGiven DESC, CreatedAt DESC");
+$relAll    = rq($conn,"SELECT * FROM [dbo].[UniformReleased] {$relWhere} ORDER BY DateGiven DESC, CreatedAt DESC");
 $relTotal  = count($relAll);
 $relPages  = max(1,(int)ceil($relTotal/20));
 $relPage   = max(1,min((int)($_GET['relpage']??1),$relPages));
 $released  = array_slice($relAll,($relPage-1)*20,20);
 
-$totalGiven = rq($conn2,"SELECT ISNULL(SUM(Quantity),0) AS Total FROM [dbo].[UniformReleased]");
+$totalGiven = rq($conn,"SELECT ISNULL(SUM(Quantity),0) AS Total FROM [dbo].[UniformReleased]");
 $totalGivenCount = intval($totalGiven[0]['Total']??0);
 
 // ── Requests ──────────────────────────────────────────────────
-$reqFilter = in_array($_GET['rfilter']??'',['0','1']) ? $_GET['rfilter'] : '';
-$reqWhere  = $reqFilter!=='' ? "WHERE IsGiven={$reqFilter}" : '';
-$reqAll    = rq($conn2,
-    "SELECT r.*, ISNULL(s.PreviousStock+s.AdditionalStock-s.LessStock,0) AS CurrentStock
+// Status tab: 'pending' (default) or 'given'
+$reqStatus  = ($_GET['rstatus'] ?? 'pending') === 'given' ? 'given' : 'pending';
+$reqUType   = trim($_GET['rutype'] ?? '');
+$reqDept    = trim($_GET['rdept']  ?? '');
+
+// Validate uniform type and department against known values
+if (!in_array($reqUType, ['TSHIRT','POLOSHIRT'])) $reqUType = '';
+if (!in_array($reqDept,  $depts))                  $reqDept  = '';
+
+$reqConditions = ["r.IsGiven = " . ($reqStatus === 'given' ? '1' : '0')];
+if ($reqUType !== '') $reqConditions[] = "r.UniformType = '" . str_replace("'","''",$reqUType) . "'";
+if ($reqDept  !== '') $reqConditions[] = "r.Department  = '" . str_replace("'","''",$reqDept)  . "'";
+$reqWhere = 'WHERE ' . implode(' AND ', $reqConditions);
+
+$reqAll    = rq($conn,
+    "SELECT r.*, ISNULL(s.PreviousStock+s.AdditionalStock+s.ReturnStock-s.LessStock,0) AS CurrentStock
      FROM [dbo].[UniformRequests] r
      LEFT JOIN [dbo].[UniformStock] s ON s.UniformType=r.UniformType AND s.Size=r.UniformSize
-     {$reqWhere} ORDER BY r.IsGiven ASC, r.DateRequested DESC");
+     {$reqWhere} ORDER BY r.DateRequested DESC");
 $reqTotal  = count($reqAll);
 $reqPages  = max(1,(int)ceil($reqTotal/20));
 $reqPage   = max(1,min((int)($_GET['reqpage']??1),$reqPages));
 $requests  = array_slice($reqAll,($reqPage-1)*20,20);
 
+// Counts for tab badges
+$reqPendingTotal = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=0");
+$reqGivenTotal   = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=1");
+$reqPendingCount = intval($reqPendingTotal[0]['N'] ?? 0);
+$reqGivenCount   = intval($reqGivenTotal[0]['N']   ?? 0);
+
 // ── PO ────────────────────────────────────────────────────────
-$poAll   = rq($conn2,"SELECT p.*,(SELECT COUNT(*) FROM [dbo].[UniformPOItems] i WHERE i.POID=p.POID) AS ItemCount FROM [dbo].[UniformPO] p ORDER BY PODate DESC");
+$poAll   = rq($conn,"SELECT p.*,(SELECT COUNT(*) FROM [dbo].[UniformPOItems] i WHERE i.POID=p.POID) AS ItemCount FROM [dbo].[UniformPO] p ORDER BY PODate DESC");
 $poTotal = count($poAll);
 $poPages = max(1,(int)ceil($poTotal/20));
 $poPage  = max(1,min((int)($_GET['popage']??1),$poPages));
 $poList  = array_slice($poAll,($poPage-1)*20,20);
 
 // ── Auto-increment PO Number ───────────────────────────────────
-$lastPO  = rq($conn2,"SELECT TOP 1 PONumber FROM [dbo].[UniformPO] ORDER BY POID DESC");
+$lastPO  = rq($conn,"SELECT TOP 1 PONumber FROM [dbo].[UniformPO] ORDER BY POID DESC");
 $nextPONum = 'PO-'.date('Y').'-001';
 if(!empty($lastPO)){
     preg_match('/(\d+)$/',$lastPO[0]['PONumber'],$m);
@@ -409,16 +651,17 @@ if(!empty($lastPO)){
 }
 
 // ── Aggregate pending requests by type+size ────────────────────
-$pendingReqRaw = rq($conn2,"SELECT UniformType,UniformSize,SUM(Quantity) AS TotalQty FROM [dbo].[UniformRequests] WHERE IsGiven=0 GROUP BY UniformType,UniformSize");
+$pendingReqRaw = rq($conn,"SELECT UniformType,UniformSize,SUM(Quantity) AS TotalQty FROM [dbo].[UniformRequests] WHERE IsGiven=0 GROUP BY UniformType,UniformSize");
 $pendingReqMap = [];
 foreach($pendingReqRaw as $pr) $pendingReqMap[$pr['UniformType']][$pr['UniformSize']] = intval($pr['TotalQty']);
 
 // ── Receiving list ─────────────────────────────────────────────
 // FIX: Use correct column names — RFDate, RepresentativeThem, RepresentativeUs
-$recAll  = rq($conn2,
+$recAll  = rq($conn,
     "SELECT r.RFID, r.POID, r.RFDate, r.DateReceived, r.PrintingShop,
             r.RepresentativeThem, r.RepresentativeUs, r.UniformType,
-            r.CreatedBy, r.CreatedAt, p.PONumber
+            r.CreatedBy, r.CreatedAt, p.PONumber,
+            r.IsPosted, r.PostedAt, r.PostedBy
      FROM [dbo].[UniformReceiving] r
      LEFT JOIN [dbo].[UniformPO] p ON p.POID=r.POID
      ORDER BY r.RFDate DESC, r.CreatedAt DESC");
@@ -428,17 +671,17 @@ $recPage = max(1,min((int)($_GET['recpage']??1),$recPages));
 $recList = array_slice($recAll,($recPage-1)*20,20);
 
 // POs for receiving form dropdown
-$poForReceiving = rq($conn2,"SELECT p.POID,p.PONumber,p.PODate FROM [dbo].[UniformPO] p ORDER BY p.PODate DESC");
+$poForReceiving = rq($conn,"SELECT p.POID,p.PONumber,p.PODate FROM [dbo].[UniformPO] p ORDER BY p.PODate DESC");
 
 // ── If editing a receiving record ──────────────────────────────
 $editRecId  = intval($_GET['editrecid']??0);
 $editRecRow = [];
 $editRecItems = [];
 if($editRecId>0 && $tab==='receiving'){
-    $tmp=rq($conn2,"SELECT * FROM [dbo].[UniformReceiving] WHERE RFID=?",[$editRecId]);
+    $tmp=rq($conn,"SELECT * FROM [dbo].[UniformReceiving] WHERE RFID=?",[$editRecId]);
     if(!empty($tmp)){
         $editRecRow=$tmp[0];
-        $items=rq($conn2,"SELECT * FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$editRecId]);
+        $items=rq($conn,"SELECT * FROM [dbo].[UniformReceivingItems] WHERE RFID=?",[$editRecId]);
         foreach($items as $it) $editRecItems[$it['UniformType']][$it['Size']]=intval($it['Quantity']);
     }
 }
@@ -447,8 +690,28 @@ if($editRecId>0 && $tab==='receiving'){
 $editId  = intval($_GET['editid']??0);
 $editRow = [];
 if ($editId>0 && $tab==='released') {
-    $tmp = rq($conn2,"SELECT * FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$editId]);
+    $tmp = rq($conn,"SELECT * FROM [dbo].[UniformReleased] WHERE ReleasedID=?",[$editId]);
     $editRow=$tmp[0]??[];
+}
+
+// ── Returns ───────────────────────────────────────────────────
+$retSearch = trim($_GET['retsearch'] ?? '');
+$retWhere  = $retSearch !== ''
+    ? "WHERE (EmployeeName LIKE '%" . str_replace("'","''",$retSearch) . "%' OR ReturnedTo LIKE '%" . str_replace("'","''",$retSearch) . "%')"
+    : '';
+$retAll    = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$retWhere} ORDER BY DateReturned DESC, CreatedAt DESC");
+$retTotal  = count($retAll);
+$retPages  = max(1,(int)ceil($retTotal/20));
+$retPage   = max(1,min((int)($_GET['retpage']??1),$retPages));
+$retList   = array_slice($retAll,($retPage-1)*20,20);
+$totalReturnCount = array_sum(array_column($retAll,'Quantity'));
+
+// ── Edit mode (Returns) ───────────────────────────────────────
+$editRetId  = intval($_GET['editretid'] ?? 0);
+$editRetRow = [];
+if ($editRetId > 0 && $tab === 'returns') {
+    $tmp = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$editRetId]);
+    $editRetRow = $tmp[0] ?? [];
 }
 ?>
 <!DOCTYPE html>
@@ -560,6 +823,7 @@ if ($editId>0 && $tab==='released') {
   <a href="?tab=requests"  class="tab-btn <?= $tab==='requests' ?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
   <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
   <a href="?tab=receiving" class="tab-btn <?= $tab==='receiving'?'active':'' ?>"><i class="bi bi-box-seam-fill"></i> Receiving Form</a>
+  <a href="?tab=returns"   class="tab-btn <?= $tab==='returns'  ?'active':'' ?>"><i class="bi bi-arrow-return-left"></i> Returns</a>
 </div>
 
 <?php
@@ -577,7 +841,8 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
   <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#64748b;display:inline-block;"></span> Previous — stock carried over</span>
   <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#0891b2;display:inline-block;"></span> Additional — new stock received</span>
   <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#dc2626;display:inline-block;"></span> Less — released / used</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:22px;height:10px;border-radius:3px;background:linear-gradient(90deg,#1e40af,#3b82f6);display:inline-block;"></span> Current = Previous + Additional − Less</span>
+  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#7c3aed;display:inline-block;"></span> Returns — uniforms returned</span>
+  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:22px;height:10px;border-radius:3px;background:linear-gradient(90deg,#1e40af,#3b82f6);display:inline-block;"></span> Current = Previous + Additional + Returns − Less</span>
   <span style="margin-left:auto;display:flex;align-items:center;gap:.35rem;color:var(--text-muted);font-style:italic;"><i class="bi bi-pencil-square"></i> Edit any number and hit Save</span>
 </div>
 
@@ -610,11 +875,12 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 90px 70px;background:var(--surface-2);border-bottom:1px solid var(--border);padding:0 .85rem;">
+  <div style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 1fr 90px 70px;background:var(--surface-2);border-bottom:1px solid var(--border);padding:0 .85rem;">
     <div style="padding:.45rem 0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);">Size</div>
     <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#64748b;text-align:center;"><i class="bi bi-arrow-counterclockwise"></i> Previous</div>
     <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#0891b2;text-align:center;"><i class="bi bi-plus-circle-fill"></i> Additional</div>
     <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#dc2626;text-align:center;"><i class="bi bi-dash-circle-fill"></i> Less</div>
+    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#7c3aed;text-align:center;"><i class="bi bi-arrow-return-left"></i> Returns</div>
     <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:<?= $meta['accent'] ?>;text-align:center;"><i class="bi bi-check-circle-fill"></i> Current</div>
     <div></div>
   </div>
@@ -626,7 +892,7 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
     elseif($cur<=5){$dot='#ca8a04';$tip='Low stock';}
     else{$dot='#10b981';$tip='In stock';}
   ?>
-  <form method="POST" style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 90px 70px;padding:0 .85rem;border-bottom:1px solid var(--border);align-items:center;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
+  <form method="POST" style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 1fr 90px 70px;padding:0 .85rem;border-bottom:1px solid var(--border);align-items:center;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
     <input type="hidden" name="save_stock" value="1">
     <input type="hidden" name="UniformType" value="<?= $type ?>">
     <input type="hidden" name="Size" value="<?= $sz ?>">
@@ -634,6 +900,9 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
     <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="PreviousStock"   class="stock-input" value="<?= intval($row['PreviousStock']??0) ?>"   min="0"></div>
     <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="AdditionalStock" class="stock-input" value="<?= intval($row['AdditionalStock']??0) ?>" min="0" style="border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.04);"></div>
     <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="LessStock"       class="stock-input" value="<?= intval($row['LessStock']??0) ?>"       min="0" style="border-color:rgba(220,38,38,.25);background:rgba(220,38,38,.04);"></div>
+    <div style="padding:.45rem .3rem;text-align:center;">
+      <span style="font-family:'DM Mono',monospace;font-size:.82rem;font-weight:700;color:#7c3aed;background:rgba(124,58,237,.07);border:1px solid rgba(124,58,237,.2);border-radius:6px;padding:.2rem .45rem;display:inline-block;"><?= intval($row['ReturnStock']??0) ?></span>
+    </div>
     <div style="padding:.45rem .3rem;text-align:center;">
       <div style="display:flex;align-items:center;justify-content:center;gap:.3rem;">
         <span style="width:7px;height:7px;border-radius:50%;background:<?= $dot ?>;display:inline-block;" title="<?= $tip ?>"></span>
@@ -763,31 +1032,93 @@ elseif($tab==='released'): ?>
 
 <?php
 // ═══ TAB: REQUESTS ═════════════════════════════════════════════
-elseif($tab==='requests'): ?>
+elseif($tab==='requests'):
+// Build base URL params for filter links (preserves filters across page/tab switches)
+$reqBaseParams = ['tab'=>'requests','rstatus'=>$reqStatus];
+if($reqUType!=='') $reqBaseParams['rutype']=$reqUType;
+if($reqDept !=='') $reqBaseParams['rdept'] =$reqDept;
+?>
 <div class="panel">
-  <div class="panel-hdr">
+  <div class="panel-hdr" style="flex-wrap:wrap;gap:.6rem;">
     <div class="panel-title"><i class="bi bi-clipboard-check" style="color:var(--primary-light)"></i> Requested Uniform List</div>
-    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
-      <form method="GET" style="display:flex;gap:.4rem;align-items:center;">
-        <input type="hidden" name="tab" value="requests">
-        <select name="rfilter" class="form-select" style="width:130px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
-          <option value="" <?= $reqFilter===''?'selected':'' ?>>All</option>
-          <option value="0" <?= $reqFilter==='0'?'selected':'' ?>>Pending</option>
-          <option value="1" <?= $reqFilter==='1'?'selected':'' ?>>Given</option>
-        </select>
-      </form>
-      <button class="btn-add" data-bs-toggle="modal" data-bs-target="#requestModal"><i class="bi bi-plus-lg"></i> Add Request</button>
-    </div>
+    <button class="btn-add" data-bs-toggle="modal" data-bs-target="#requestModal"><i class="bi bi-plus-lg"></i> Add Request</button>
   </div>
+
+  <!-- ── Pending / Given tabs + filters ─────────────────────── -->
+  <div style="padding:.75rem 1rem .5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.65rem;">
+
+    <!-- Status tabs -->
+    <div style="display:flex;gap:.3rem;background:var(--surface-2);border:1.5px solid var(--border);border-radius:10px;padding:.25rem;">
+      <?php
+        $pendingUrl = '?' . http_build_query(array_merge($reqBaseParams, ['rstatus'=>'pending','reqpage'=>1]));
+        $givenUrl   = '?' . http_build_query(array_merge($reqBaseParams, ['rstatus'=>'given',  'reqpage'=>1]));
+        $pendingActive = $reqStatus === 'pending';
+        $activeStyle   = 'background:var(--primary);color:#fff;border-radius:7px;padding:.32rem .85rem;font-size:.78rem;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:.35rem;white-space:nowrap;';
+        $inactiveStyle = 'background:transparent;color:var(--text-secondary);border-radius:7px;padding:.32rem .85rem;font-size:.78rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:.35rem;white-space:nowrap;';
+      ?>
+      <a href="<?= htmlspecialchars($pendingUrl) ?>" style="<?= $pendingActive ? $activeStyle : $inactiveStyle ?>">
+        <i class="bi bi-hourglass-split"></i> Pending
+        <span style="background:<?= $pendingActive?'rgba(255,255,255,.25)':'rgba(59,130,246,.12)' ?>;color:<?= $pendingActive?'#fff':'var(--primary)' ?>;border-radius:20px;padding:.05rem .45rem;font-size:.7rem;font-weight:800;">
+          <?= $reqPendingCount ?>
+        </span>
+      </a>
+      <a href="<?= htmlspecialchars($givenUrl) ?>" style="<?= !$pendingActive ? $activeStyle : $inactiveStyle ?>">
+        <i class="bi bi-check-circle-fill"></i> Given
+        <span style="background:<?= !$pendingActive?'rgba(255,255,255,.25)':'rgba(59,130,246,.12)' ?>;color:<?= !$pendingActive?'#fff':'var(--primary)' ?>;border-radius:20px;padding:.05rem .45rem;font-size:.7rem;font-weight:800;">
+          <?= $reqGivenCount ?>
+        </span>
+      </a>
+    </div>
+
+    <!-- Dropdown filters -->
+    <form method="GET" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;">
+      <input type="hidden" name="tab"     value="requests">
+      <input type="hidden" name="rstatus" value="<?= safe($reqStatus) ?>">
+      <input type="hidden" name="reqpage" value="1">
+
+      <select name="rutype" class="form-select" style="width:175px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $reqUType===''?'selected':'' ?>>All Uniform Types</option>
+        <option value="TSHIRT"    <?= $reqUType==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt (Logistics)</option>
+        <option value="POLOSHIRT" <?= $reqUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt (Office/Sales)</option>
+      </select>
+
+      <select name="rdept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $reqDept===''?'selected':'' ?>>All Departments</option>
+        <?php foreach($depts as $d): ?>
+        <option value="<?= $d ?>" <?= $reqDept===$d?'selected':'' ?>><?= safe($d) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <?php if($reqUType!=='' || $reqDept!==''): ?>
+      <a href="?tab=requests&rstatus=<?= $reqStatus ?>" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
+      <?php endif; ?>
+    </form>
+  </div>
+
   <?php if(empty($requests)): ?>
-  <div class="empty-st"><i class="bi bi-clipboard"></i><p>No requests found.</p></div>
+  <div class="empty-st"><i class="bi bi-clipboard"></i><p>No <?= $reqStatus === 'pending' ? 'pending' : 'given' ?> requests<?= ($reqUType!==''||$reqDept!=='') ? ' matching the selected filters' : '' ?>.</p></div>
   <?php else: ?>
   <div style="overflow-x:auto;">
   <table class="utbl">
-    <thead><tr><th>#</th><th>Employee Name</th><th>Requested By</th><th>Uniform Type</th><th>Size</th><th>Qty</th><th>Stock</th><th>Department</th><th>Date Requested</th><th>Given?</th><th>Date Given</th><th>Remarks</th><th style="text-align:center;">Action</th></tr></thead>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Employee Name</th>
+        <th>Requested By</th>
+        <th>Uniform Type</th>
+        <th>Size</th>
+        <th>Qty</th>
+        <?php if($reqStatus==='pending'): ?><th>Stock</th><?php endif; ?>
+        <th>Department</th>
+        <th>Date Requested</th>
+        <?php if($reqStatus==='given'): ?><th>Date Given</th><?php endif; ?>
+        <th>Remarks</th>
+        <th style="text-align:center;">Action</th>
+      </tr>
+    </thead>
     <tbody>
     <?php foreach($requests as $i=>$r):
-      $rowNum = ($reqPage-1)*20 + $i + 1;
+      $rowNum  = ($reqPage-1)*20 + $i + 1;
       $stockOk = intval($r['CurrentStock']??0) >= intval($r['Quantity']);
     ?>
     <tr>
@@ -797,26 +1128,28 @@ elseif($tab==='requests'): ?>
       <td><span class="bdg <?= $r['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $r['UniformType'] ?></span></td>
       <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($r['UniformSize']) ?></td>
       <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($r['Quantity']) ?></td>
+      <?php if($reqStatus==='pending'): ?>
       <td style="text-align:center;">
         <?php
           $avail = intval($r['CurrentStock']??0);
           $need  = intval($r['Quantity']);
-          if ($r['IsGiven']) echo '<span style="color:var(--text-muted);font-size:.75rem;">—</span>';
-          elseif ($avail<=0) echo '<span style="background:rgba(220,38,38,.1);color:#dc2626;border:1px solid #fca5a5;border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;">Out of stock</span>';
+          if ($avail<=0)    echo '<span style="background:rgba(220,38,38,.1);color:#dc2626;border:1px solid #fca5a5;border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;">Out of stock</span>';
           elseif ($avail<$need) echo '<span style="background:rgba(234,179,8,.1);color:#ca8a04;border:1px solid #fde047;border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;">Only '.$avail.' left</span>';
           else echo '<span style="background:rgba(16,185,129,.1);color:#059669;border:1px solid #6ee7b7;border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;">'.$avail.' in stock</span>';
         ?>
       </td>
+      <?php endif; ?>
       <td><?php if($r['Department']): ?><span class="bdg dept-<?= $r['Department'] ?>"><?= safe($r['Department']) ?></span><?php else: ?>—<?php endif; ?></td>
       <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($r['DateRequested']) ?></td>
-      <td><span class="bdg <?= $r['IsGiven']?'bdg-given':'bdg-pending' ?>"><?= $r['IsGiven']?'Yes':'Pending' ?></span></td>
+      <?php if($reqStatus==='given'): ?>
       <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($r['DateGiven']) ?></td>
+      <?php endif; ?>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Remarks']??'—') ?></td>
       <td style="text-align:center;white-space:nowrap;">
         <?php if(!$r['IsGiven']): ?>
         <form method="POST" style="display:inline;">
           <input type="hidden" name="mark_given" value="1">
-          <input type="hidden" name="RequestID" value="<?= $r['RequestID'] ?>">
+          <input type="hidden" name="RequestID"  value="<?= $r['RequestID'] ?>">
           <?php if($stockOk): ?>
           <button type="submit" class="btn-sm-action btn-green"
             onclick="return confirmAction(event,'Mark as Given?','This will release the uniform and deduct from stock. Continue?','#059669')">
@@ -831,7 +1164,7 @@ elseif($tab==='requests'): ?>
         <?php endif; ?>
         <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Request?','This will permanently delete this request. Continue?','#dc2626')">
           <input type="hidden" name="delete_request" value="1">
-          <input type="hidden" name="RequestID" value="<?= $r['RequestID'] ?>">
+          <input type="hidden" name="RequestID"      value="<?= $r['RequestID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
       </td>
@@ -840,7 +1173,8 @@ elseif($tab==='requests'): ?>
     </tbody>
   </table>
   </div>
-  <?= paginationBar('reqpage',$reqPage,$reqPages,$reqTotal,['tab'=>'requests','rfilter'=>$reqFilter]) ?>
+  <?= paginationBar('reqpage',$reqPage,$reqPages,$reqTotal,
+        array_merge($reqBaseParams,['rutype'=>$reqUType,'rdept'=>$reqDept])) ?>
   <?php endif; ?>
 </div>
 
@@ -965,7 +1299,7 @@ elseif($tab==='po'): ?>
 // ═══ TAB: RECEIVING ════════════════════════════════════════════
 elseif($tab==='receiving'):
 
-$poItemsAll = rq($conn2,"SELECT POID,UniformType,Size,Requested,Additional FROM [dbo].[UniformPOItems] ORDER BY POID");
+$poItemsAll = rq($conn,"SELECT POID,UniformType,Size,Requested,Additional FROM [dbo].[UniformPOItems] ORDER BY POID");
 $poItemsMap = [];
 foreach($poItemsAll as $pi) {
     $poItemsMap[$pi['POID']][$pi['UniformType']][$pi['Size']] = [
@@ -982,11 +1316,14 @@ foreach($poItemsAll as $pi) {
   </div>
   <div style="overflow-x:auto;">
   <table class="utbl">
-    <thead><tr><th>#</th><th>PO Number</th><th>Uniform Type</th><th>Date Received</th><th>Printing Shop</th><th>Printing Shop Rep</th><th>UTC Rep</th><th>Created By</th><th style="text-align:center;">Action</th></tr></thead>
+    <thead><tr><th>#</th><th>PO Number</th><th>Uniform Type</th><th>Date Received</th><th>Printing Shop</th><th>Printing Shop Rep</th><th>UTC Rep</th><th style="text-align:center;">Stock Status</th><th>Created By</th><th style="text-align:center;">Action</th></tr></thead>
     <tbody>
     <?php foreach($recList as $i=>$rec):
       $rowNum=($recPage-1)*20+$i+1;
-      $uTypeRec = $rec['UniformType'] ?? '';
+      $uTypeRec  = $rec['UniformType'] ?? '';
+      $isPosted  = intval($rec['IsPosted'] ?? 0);
+      $postedAt  = $rec['PostedAt'] ?? null;
+      $postedBy  = $rec['PostedBy'] ?? '';
     ?>
     <tr>
       <td style="color:var(--text-muted);font-family:'DM Mono',monospace;"><?= $rowNum ?></td>
@@ -1004,21 +1341,56 @@ foreach($poItemsAll as $pi) {
       <td style="font-size:.78rem;"><?= safe($rec['RepresentativeThem']??'—') ?></td>
       <!-- FIX: was $rec['UTCRep'] — correct column is RepresentativeUs -->
       <td style="font-size:.78rem;"><?= safe($rec['RepresentativeUs']??'—') ?></td>
+      <td style="text-align:center;white-space:nowrap;">
+        <?php if($isPosted): ?>
+          <span style="display:inline-flex;align-items:center;gap:.3rem;background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:20px;padding:.2rem .65rem;font-size:.72rem;font-weight:700;">
+            <i class="bi bi-check-circle-fill"></i> Posted
+          </span>
+          <?php if($postedAt): ?>
+          <div style="font-size:.67rem;color:var(--text-muted);margin-top:.15rem;"><?= fmtDate($postedAt) ?><?= $postedBy ? ' · '.safe($postedBy) : '' ?></div>
+          <?php endif; ?>
+        <?php else: ?>
+          <span style="display:inline-flex;align-items:center;gap:.3rem;background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1;border-radius:20px;padding:.2rem .65rem;font-size:.72rem;font-weight:700;">
+            <i class="bi bi-dash-circle"></i> Unposted
+          </span>
+        <?php endif; ?>
+      </td>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($rec['CreatedBy']??'—') ?></td>
       <td style="text-align:center;white-space:nowrap;">
         <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
         <button class="btn-sm-action btn-edit" onclick="viewRecItems(<?= $rec['RFID'] ?>,'<?= addslashes($rec['PONumber']??'') ?>','<?= addslashes($rec['UniformType']??'') ?>')">
           <i class="bi bi-eye-fill"></i> View
         </button>
+        <?php if(!$isPosted): ?>
         <a href="?tab=receiving&editrecid=<?= $rec['RFID'] ?>&recpage=<?= $recPage ?>" class="btn-sm-action btn-edit">
           <i class="bi bi-pencil-fill"></i> Edit
         </a>
+        <?php endif; ?>
+        <?php if(!$isPosted): ?>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Post to Stocks?','This will add the received quantities into AdditionalStock. Continue?','#15803d')">
+          <input type="hidden" name="post_to_stocks" value="1">
+          <input type="hidden" name="ReceivingID" value="<?= $rec['RFID'] ?>">
+          <button type="submit" class="btn-sm-action" style="color:#15803d;border-color:rgba(21,128,61,.3);background:rgba(21,128,61,.06);">
+            <i class="bi bi-box-arrow-in-down-right"></i> Post to Stocks
+          </button>
+        </form>
+        <?php else: ?>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Un-post from Stocks?','This will reverse the quantities from AdditionalStock. This cannot be undone automatically if stock was consumed after posting.','#ca8a04')">
+          <input type="hidden" name="unpost_from_stocks" value="1">
+          <input type="hidden" name="ReceivingID" value="<?= $rec['RFID'] ?>">
+          <button type="submit" class="btn-sm-action" style="color:#ca8a04;border-color:rgba(202,138,4,.3);background:rgba(202,138,4,.06);">
+            <i class="bi bi-arrow-counterclockwise"></i> Un-post
+          </button>
+        </form>
+        <?php endif; ?>
+        <?php if(!$isPosted): ?>
         <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Receiving Record?','This will permanently delete this receiving record. Continue?','#dc2626')">
           <input type="hidden" name="delete_receiving" value="1">
           <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
           <input type="hidden" name="ReceivingID" value="<?= $rec['RFID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
+        <?php endif; ?>
         <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
         <button class="btn-sm-action" onclick="printReceiving(<?= $rec['RFID'] ?>)" style="color:#0891b2;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.05);">
           <i class="bi bi-printer-fill"></i> Print
@@ -1354,7 +1726,147 @@ document.addEventListener('DOMContentLoaded',function(){
   updateRecGrand();
 });
 </script>
+
+<?php
+// ═══ TAB: RETURNS ══════════════════════════════════════════════
+elseif($tab==='returns'):
+?>
+
+<?php if (!empty($editRetRow)):
+  $er  = $editRetRow;
+  $erDate = $er['DateReturned'] instanceof DateTime
+    ? $er['DateReturned']->format('Y-m-d')
+    : (is_string($er['DateReturned']) ? date('Y-m-d',strtotime($er['DateReturned'])) : date('Y-m-d'));
+?>
+<div class="panel" style="border:2px solid var(--primary-light);">
+  <div class="panel-hdr" style="background:var(--primary-glow);">
+    <div class="panel-title" style="color:var(--primary);"><i class="bi bi-pencil-fill"></i> Editing Return — <?= safe($er['EmployeeName']) ?></div>
+    <a href="?tab=returns" class="btn-sm-action btn-del"><i class="bi bi-x-lg"></i> Cancel</a>
+  </div>
+  <div style="padding:1.25rem;">
+    <form method="POST">
+      <input type="hidden" name="edit_return" value="1">
+      <input type="hidden" name="ReturnID"    value="<?= $er['ReturnID'] ?>">
+      <div class="row g-3">
+        <div class="col-md-4"><label class="form-label">Employee Name <span style="color:#dc2626">*</span></label><input type="text" name="ReturnEmployeeName" class="form-control" value="<?= safe($er['EmployeeName']) ?>" required></div>
+        <div class="col-md-3">
+          <label class="form-label">Uniform Type <span style="color:#dc2626">*</span></label>
+          <select name="ReturnUniformType" class="form-select" required>
+            <option value="TSHIRT"    <?= $er['UniformType']==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt (Logistics)</option>
+            <option value="POLOSHIRT" <?= $er['UniformType']==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt (Office/Sales)</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Size <span style="color:#dc2626">*</span></label>
+          <select name="ReturnUniformSize" class="form-select" required>
+            <?php foreach($sizes as $sz): ?><option value="<?= $sz ?>" <?= $er['UniformSize']===$sz?'selected':'' ?>><?= $sz ?></option><?php endforeach; ?>
+          </select>
+        </div>
+        <div class="col-md-1"><label class="form-label">Qty</label><input type="number" name="ReturnQuantity" class="form-control" value="<?= intval($er['Quantity']) ?>" min="1"></div>
+        <div class="col-md-2">
+          <label class="form-label">Condition</label>
+          <select name="Condition" class="form-select">
+            <option value="Good"    <?= ($er['Condition']??'')==='Good'   ?'selected':'' ?>>✅ Good</option>
+            <option value="Damaged" <?= ($er['Condition']??'')==='Damaged'?'selected':'' ?>>⚠️ Damaged</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Department</label>
+          <select name="ReturnDepartment" class="form-select">
+            <option value="">— Select —</option>
+            <?php foreach($depts as $d): ?><option value="<?= $d ?>" <?= ($er['Department']??'')===$d?'selected':'' ?>><?= safe($d) ?></option><?php endforeach; ?>
+          </select>
+        </div>
+        <div class="col-md-3"><label class="form-label">Date Returned</label><input type="date" name="DateReturned" class="form-control" value="<?= $erDate ?>"></div>
+        <div class="col-md-4"><label class="form-label">Returned To (UTC Staff)</label><input type="text" name="ReturnedTo" class="form-control" value="<?= safe($er['ReturnedTo']??'') ?>" placeholder="e.g. Ma'am Niera"></div>
+        <div class="col-md-2" style="display:flex;align-items:flex-end;"><button type="submit" class="btn-add w-100"><i class="bi bi-floppy-fill"></i> Save</button></div>
+        <div class="col-12"><label class="form-label">Remarks</label><textarea name="ReturnRemarks" class="form-control" rows="2"><?= safe($er['Remarks']??'') ?></textarea></div>
+      </div>
+    </form>
+  </div>
+</div>
 <?php endif; ?>
+
+<div class="panel">
+  <div class="panel-hdr">
+    <div class="panel-title"><i class="bi bi-arrow-return-left" style="color:var(--primary-light)"></i> Uniform Returns</div>
+    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+      <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Returned: <?= number_format($totalReturnCount) ?> pcs</div>
+      <form method="GET" style="display:flex;gap:.4rem;align-items:center;">
+        <input type="hidden" name="tab" value="returns">
+        <div class="sbar"><i class="bi bi-search"></i><input type="text" name="retsearch" placeholder="Employee or staff name…" value="<?= safe($retSearch) ?>"></div>
+        <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
+        <?php if($retSearch!==''): ?><a href="?tab=returns" class="btn-sm-action btn-del" style="padding:.38rem .65rem;"><i class="bi bi-x-lg"></i></a><?php endif; ?>
+      </form>
+      <button class="btn-add" data-bs-toggle="modal" data-bs-target="#returnModal"><i class="bi bi-plus-lg"></i> Add Return</button>
+    </div>
+  </div>
+
+  <?php if(empty($retList)): ?>
+  <div class="empty-st"><i class="bi bi-arrow-return-left"></i><p>No return records<?= $retSearch!==''?' matching your search':'' ?>.</p></div>
+  <?php else: ?>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Employee Name</th>
+        <th>Uniform Type</th>
+        <th>Size</th>
+        <th>Qty</th>
+        <th>Condition</th>
+        <th>Department</th>
+        <th>Date Returned</th>
+        <th>Returned To</th>
+        <th>Remarks</th>
+        <th style="text-align:center;">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+    <?php foreach($retList as $i=>$r):
+      $rowNum   = ($retPage-1)*20 + $i + 1;
+      $isGood   = ($r['Condition'] ?? 'Good') === 'Good';
+      $condBg   = $isGood ? 'rgba(16,185,129,.1)' : 'rgba(234,179,8,.1)';
+      $condClr  = $isGood ? '#059669' : '#ca8a04';
+      $condBdr  = $isGood ? '#6ee7b7' : '#fde047';
+      $condIcon = $isGood ? '✅' : '⚠️';
+      $condTxt  = $isGood ? 'Good' : 'Damaged';
+    ?>
+    <tr>
+      <td style="color:var(--text-muted);font-family:'DM Mono',monospace;"><?= $rowNum ?></td>
+      <td style="font-weight:700;color:var(--text-primary);"><?= safe($r['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $r['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $r['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($r['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($r['Quantity']) ?></td>
+      <td>
+        <span style="background:<?= $condBg ?>;color:<?= $condClr ?>;border:1px solid <?= $condBdr ?>;border-radius:20px;padding:.18rem .55rem;font-size:.68rem;font-weight:700;white-space:nowrap;">
+          <?= $condIcon ?> <?= $condTxt ?>
+        </span>
+      </td>
+      <td><?php if($r['Department']): ?><span class="bdg dept-<?= $r['Department'] ?>"><?= safe($r['Department']) ?></span><?php else: ?>—<?php endif; ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($r['DateReturned']) ?></td>
+      <td style="font-size:.78rem;"><?= safe($r['ReturnedTo']??'—') ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Remarks']??'—') ?></td>
+      <td style="text-align:center;white-space:nowrap;">
+        <a href="?tab=returns&editretid=<?= $r['ReturnID'] ?>&retpage=<?= $retPage ?>" class="btn-sm-action btn-edit">
+          <i class="bi bi-pencil-fill"></i> Edit
+        </a>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Return?','This will delete the return record and reverse the stock. Continue?','#dc2626')">
+          <input type="hidden" name="delete_return" value="1">
+          <input type="hidden" name="ReturnID"      value="<?= $r['ReturnID'] ?>">
+          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
+        </form>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+  <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch]) ?>
+  <?php endif; ?>
+</div>
+
+<?php endif; // ═══ end if/elseif tab chain ?>
 </div><!-- /container -->
 
 <!-- ══ MODAL: Release Uniform ══════════════════════════════════ -->
@@ -1491,6 +2003,82 @@ document.addEventListener('DOMContentLoaded',function(){
           <i class="bi bi-printer-fill"></i> Print
         </button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: Add Return ════════════════════════════════════════ -->
+<div class="modal fade" id="returnModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-arrow-return-left" style="color:var(--primary)"></i> Record Uniform Return</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST">
+        <input type="hidden" name="save_return" value="1">
+        <div class="modal-body" style="padding:1.25rem;">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Employee Name <span style="color:#dc2626">*</span></label>
+              <input type="text" name="ReturnEmployeeName" class="form-control" placeholder="e.g. Juan dela Cruz" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Uniform Type <span style="color:#dc2626">*</span></label>
+              <select name="ReturnUniformType" class="form-select" required>
+                <option value="">— Select —</option>
+                <option value="TSHIRT">👕 T-Shirt (Logistics)</option>
+                <option value="POLOSHIRT">👔 Polo Shirt (Office/Sales)</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Size <span style="color:#dc2626">*</span></label>
+              <select name="ReturnUniformSize" class="form-select" required>
+                <option value="">—</option>
+                <?php foreach($sizes as $sz): ?><option value="<?= $sz ?>"><?= $sz ?></option><?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-md-1">
+              <label class="form-label">Qty</label>
+              <input type="number" name="ReturnQuantity" class="form-control" value="1" min="1">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Condition</label>
+              <select name="Condition" class="form-select">
+                <option value="Good">✅ Good</option>
+                <option value="Damaged">⚠️ Damaged</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Department</label>
+              <select name="ReturnDepartment" class="form-select">
+                <option value="">— Select —</option>
+                <?php foreach($depts as $d): ?><option value="<?= $d ?>"><?= safe($d) ?></option><?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Date Returned</label>
+              <input type="date" name="DateReturned" class="form-control" value="<?= date('Y-m-d') ?>">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Returned To (UTC Staff)</label>
+              <input type="text" name="ReturnedTo" class="form-control" placeholder="e.g. Ma'am Niera">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Linked Release ID <span style="color:var(--text-muted);font-weight:400;">(optional)</span></label>
+              <input type="number" name="ReturnReleasedID" class="form-control" placeholder="0" min="0">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Remarks</label>
+              <textarea name="ReturnRemarks" class="form-control" rows="2" placeholder="Optional notes…"></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer" style="border-top:1px solid var(--border);">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn-add"><i class="bi bi-floppy-fill"></i> Save Return</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>

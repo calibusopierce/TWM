@@ -20,13 +20,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'employee_list');
+rbac_gate($pdo, 'employee_list');
 
 $_userType = $_SESSION['UserType'] ?? '';
 $isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
@@ -164,7 +158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
 
         $ext      = pathinfo($file['name'], PATHINFO_EXTENSION);
         $filename = 'emp_' . $fileNo . '_' . time() . '.' . $ext;
-        $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/TWM/tradewellportal/uploads/employee_pics/';
+        $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/TWM/uploads/employee_pics/';
         if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
         $destPath = $uploadDir . $filename;
@@ -179,7 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
             echo json_encode(['success'=>false,'message'=>'DB update failed.']); exit;
         }
         sqlsrv_free_stmt($stmt);
-        echo json_encode(['success'=>true,'picturePath'=>'/TWM/tradewellportal/'.$relPath]);
+        echo json_encode(['success'=>true,'picturePath'=>'/TWM/'.$relPath]);
         exit;
     }
 
@@ -719,7 +713,7 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             $isActive = (int)($emp['Active']??0) === 1;
             $isBlack  = (int)($emp['Blacklisted']??0) === 1;
             $picPath  = trim($emp['Picture']??'');
-            if ($picPath && !str_starts_with($picPath,'/')) $picPath = '/TWM/tradewellportal/'.$picPath;
+            if ($picPath && !str_starts_with($picPath,'/')) $picPath = '/TWM/'.$picPath;
             $hasPic   = !empty($picPath);
             $empJson = json_encode($emp, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
         ?>
@@ -728,7 +722,7 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             <td>
               <div class="emp-name-wrap">
                 <?php if ($hasPic): ?>
-                  <img src="<?= htmlspecialchars($picPath) ?>" class="emp-avatar" alt="<?= htmlspecialchars($fullName) ?>">
+                  <img src="<?= htmlspecialchars($picPath) ?>" class="emp-avatar" alt="<?= htmlspecialchars($fullName) ?>" onerror="this.outerHTML='<div class=\'emp-avatar\' style=\'background:<?= $bgColor ?>;display:inline-flex;align-items:center;justify-content:center;\'><?= htmlspecialchars($initials) ?></div>'">
                 <?php else: ?>
                   <div class="emp-avatar" style="background:<?= $bgColor ?>;"><?= htmlspecialchars($initials) ?></div>
                 <?php endif; ?>
@@ -1009,6 +1003,30 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
   </div>
 </div>
 
+<!-- ══ PHOTO VIEW MODAL ══ -->
+<div id="photoViewModal" style="
+  display:none;position:fixed;inset:0;z-index:1070;
+  background:rgba(0,0,0,.75);
+  align-items:center;justify-content:center;flex-direction:column;gap:1rem;">
+  <div style="position:relative;text-align:center;">
+    <img id="photoViewImg" src="" alt=""
+      style="max-width:320px;max-height:320px;border-radius:50%;
+             object-fit:cover;border:4px solid #fff;
+             box-shadow:0 8px 40px rgba(0,0,0,.4);">
+  </div>
+  <div id="photoViewName" style="color:#fff;font-weight:700;font-size:1rem;"></div>
+  <div style="display:flex;gap:.75rem;">
+    <?php if ($isAdmin): ?>
+    <button id="photoViewChangeBtn" class="btn btn-sm btn-primary">
+      <i class="bi bi-camera"></i> Change Photo
+    </button>
+    <?php endif; ?>
+    <button id="photoViewClose" class="btn btn-sm btn-secondary">
+      <i class="bi bi-x-lg"></i> Close
+    </button>
+  </div>
+</div>
+
 <!-- Hidden print areas -->
 <div id="printArea" aria-hidden="true"></div>
 <div id="printListArea" aria-hidden="true"></div>
@@ -1237,10 +1255,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Avatar with upload overlay
     const avatarEl = document.getElementById('modalAvatarEl');
     let picSrc = (emp.Picture||'').trim();
-    if (picSrc && !picSrc.startsWith('/')) picSrc = '/TWM/tradewellportal/'+picSrc;
+    if (picSrc && !picSrc.startsWith('/')) picSrc = '/TWM/'+picSrc;
     if (picSrc) {
-      avatarEl.innerHTML = `<img src="${picSrc}" class="modal-avatar" alt="${fullName}"
-        onerror="this.outerHTML='<div class=modal-avatar-initials style=background:${color};>${initials}</div>'">`;
+      const img = document.createElement('img');
+      img.src = picSrc;
+      img.className = 'modal-avatar';
+      img.alt = fullName;
+      img.onerror = function() {
+        this.parentElement.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials}</div>`;
+      };
+      avatarEl.innerHTML = '';
+      avatarEl.appendChild(img);
     } else {
       avatarEl.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials}</div>`;
     }
@@ -1483,7 +1508,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const picPreviewModal   = new bootstrap.Modal(picPreviewModalEl, { backdrop: false });
 
   document.getElementById('avatarUploadWrap')?.addEventListener('click', () => {
-    document.getElementById('avatarFileInput').click();
+    const currentImg = document.querySelector('#modalAvatarEl img');
+    document.getElementById('photoViewImg').src = currentImg ? currentImg.src : '';
+    document.getElementById('photoViewName').textContent = `${currentEmp.FirstName || ''} ${currentEmp.LastName || ''}`.trim();
+    document.getElementById('photoViewModal').style.display = 'flex';
+  });
+
+  document.getElementById('photoViewClose')?.addEventListener('click', () => {
+      document.getElementById('photoViewModal').style.display = 'none';
+  });
+
+  document.getElementById('photoViewChangeBtn')?.addEventListener('click', () => {
+      document.getElementById('photoViewModal').style.display = 'none';
+      document.getElementById('avatarFileInput').click();
   });
 
   document.getElementById('avatarFileInput')?.addEventListener('change', function() {
@@ -1613,9 +1650,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const initials=((firstName[0]||'')+(lastName[0]||'')).toUpperCase();
     const color=avatarColor(fullName);
     let picSrc=(emp.Picture||'').trim();
-    if (picSrc&&!picSrc.startsWith('/')) picSrc='/TWM/tradewellportal/'+picSrc;
+    if (picSrc&&!picSrc.startsWith('/')) picSrc='/TWM/'+picSrc;
     const avatarHtml=picSrc
-      ?`<img class="print-avatar" src="${picSrc}" alt="${fullName}">`
+      ?`<img class="print-avatar" src="${picSrc}" alt="${fullName}" onerror="this.outerHTML='<div class=\\'print-avatar-initials\\" style=\\"background:${color};\\">${initials}</div>'">`
       :`<div class="print-avatar-initials" style="background:${color};">${initials}</div>`;
     const isActive=parseInt(emp.Active||0)===1;
     const isBlack=parseInt(emp.Blacklisted||0)===1;

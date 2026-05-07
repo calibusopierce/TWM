@@ -5,13 +5,7 @@ require_once __DIR__ . '/../RBAC/rbac_helper.php';
 require_once __DIR__ . '/../test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'fuel_dashboard');
+rbac_gate($pdo, 'fuel_dashboard');
 require_once __DIR__ . '/fuel_shared.php';
 
 $activeTab = 'truck_area';

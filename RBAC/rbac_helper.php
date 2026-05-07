@@ -94,7 +94,34 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
         $sections[$cat]['cards'][] = $mod;
     }
 
-    return $sections;
+    // Return sections in a fixed category order regardless of DB insertion order
+    $orderedSections = [];
+    foreach (['hr', 'fleet', 'finance', 'general'] as $cat) {
+        if (isset($sections[$cat])) {
+            $orderedSections[$cat] = $sections[$cat];
+        }
+    }
+    return $orderedSections;
+}
+
+
+/**
+ * Roles that always pass rbac_gate() for ANY module — no DB record needed.
+ * Edit this list to match the exact UserType values stored in your session.
+ */
+function rbac_superadmin_roles(): array {
+    return [
+        'admin',
+        'Admin',
+        'ADMIN',
+        'administrator',
+        'Administrator',
+        'ADMINISTRATOR',
+        'superadmin',
+        'SuperAdmin',
+        'Superadmin',
+        'HR',
+    ];
 }
 
 /**
@@ -104,6 +131,14 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
  */
 function rbac_gate(PDO $pdo, string $moduleKey): void {
     $userType = $_SESSION['UserType'] ?? '';
+
+    // ── Superadmin bypass ────────────────────────────────────────────────────
+    // Roles listed in rbac_superadmin_roles() always get through, regardless
+    // of what's in the DB. This prevents the chicken-and-egg lockout where
+    // no one can access RBAC to grant RBAC access in the first place.
+    if (in_array($userType, rbac_superadmin_roles())) return;
+    // ────────────────────────────────────────────────────────────────────────
+
     rbac_load_permissions($pdo, $userType);
     if (rbac_can($moduleKey)) return;
 

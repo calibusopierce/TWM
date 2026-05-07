@@ -10,13 +10,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
-// ── RBAC gate ────────────────────────────────────────────────
-$pdo_rbac = new PDO(
-    "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-    null, null,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
-rbac_gate($pdo_rbac, 'view_applications');
+rbac_gate($pdo, 'view_applications');
 
 // ══ AJAX: fetch applicant detail + generate FileNo/EmployeeID ══
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['_action']) && $_GET['_action'] === 'fetch_applicant') {

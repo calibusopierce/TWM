@@ -27,17 +27,8 @@ ob_end_clean();
 header('Content-Type: application/json');
 
 // ── RBAC check (JSON-safe — no SweetAlert redirect) ────────────
-try {
-    $pdo_rbac = new PDO(
-        "sqlsrv:Server=PIERCE;Database=TradewellDatabase;TrustServerCertificate=1",
-        null, null,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-    rbac_load_permissions($pdo_rbac, $userType);
-} catch (PDOException $e) {
-    echo json_encode(['success' => false, 'message' => 'DB error: ' . $e->getMessage()]);
-    exit;
-}
+// ── RBAC check ─────────────────────────────────────────────────
+rbac_load_permissions($pdo, $userType);
 if (!rbac_can('employee_list')) {
     echo json_encode(['success' => false, 'message' => 'Unauthorized.']);
     exit;

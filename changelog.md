@@ -1,68 +1,333 @@
-# LOGISTICS — Fuel Dashboard
+# TWM — Unified System Changelog
 
-Internal fuel monitoring dashboard for tracking refuels, anomalies, consumption, and scheduling across the fleet.
-
-All pages live under `LOGISTICS/` and share a common config in `fuel_shared.php`.
+Comprehensive internal changelog covering RBAC cleanup, database refactoring, employee profile system improvements, and Uniform Inventory migration.
 
 ---
 
-## File Overview
+# Overview
 
-| File | Description |
-|---|---|
-| `fuel_dashboard.php` | Overall summary with Low→High and High→Low ranking tabs |
-| `Fuel-30Day.php` | 30-Day Monitor — refuel coverage per truck |
-| `Fuel-Area.php` | Area Summary — fuel grouped by delivery area |
-| `Fuel-Comparison.php` | Fuel Comparison — benchmarks trucks against fleet peers |
-| `Fuel-Anomaly.php` | Anomaly Flags — auto-detects suspicious refuel transactions |
-| `Fuel-Checklist.php` | Monthly Checklist — daily schedule vs. actual refuel status |
-| `Fuel-Consumption.php` | Fuel Consumption — monthly/weekly breakdown per truck |
-| `Fuel-Report.php` | Usage Report — raw transaction log |
-| `fuel_shared.php` | Shared filters, queries, tab nav, filter bar, and JS helpers |
-| `fuel_dashboard-Current.php` | Legacy/reference snapshot |
-| `graphs.php` | Analytics graphs — consumption, trend, area, top 10, status |
-| `index.php` | Entry redirect |
+This update focused on:
+
+* Centralizing SQL Server database connections
+* Cleaning up RBAC authentication and shared includes
+* Refactoring shared UI components
+* Improving employee profile picture handling
+* Migrating Uniform Inventory tables and records to production
+* Preparing the system for easier deployment and maintenance
 
 ---
 
-## What's New
+# File Overview
 
-### April 2026
-
-#### ✨ Fuel-Consumption.php — Monthly breakdown tab
-
-A new dedicated page (`fuel_monthly` tab) has been added for tracking fuel consumption per truck broken down by week.
-
-- Weeks are computed dynamically: Week 1 = days 1–7, Week 2 = 8–14, Week 3 = 15–21, Week 4 = 22–28, Week 5 = days 29–end of month
-- Table is grouped by **Department → Vehicle Type** with department subtotals and a grand total row
-- Includes a **month/year picker** with prev/next navigation, independent of the main date-range filter
-- Columns: Plate #, Department, Vehicle Type, Total Refuels, Total Liters, Total Amount, and per-week Liters + Amount
-- CSV, Excel, and Print exports reflect the full filtered dataset
+| File                         | Description                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| `test_sqlsrv.php`            | Centralized SQL Server connection configuration and shared PDO initialization |
+| `includes/nav.php`           | Shared navigation include with automatic database bootstrap                   |
+| `includes/topbar.php`        | Shared topbar component with routing and RBAC cleanup                         |
+| `UNIFORM_MIGRATION_FULL.sql` | Full migration script for Uniform Inventory schema and data                   |
+| `employee-list.php`          | Employee management page with improved profile picture handling               |
+| `RBAC/*.php`                 | Role-based access management pages now using shared PDO connection            |
 
 ---
 
-#### ✨ Fuel-Checklist.php — New columns and pagination
+# What's New
 
-- **Fuel Time** — new column showing the exact timestamp a refuel was recorded (blank if not refueled)
-- **Driver** — new column showing the driver who actually requested fuel (`f.Requested`), separate from the scheduled driver
-- **Sched. Driver** now pulled from `teamschedule` (matched by plate + date + `Position LIKE '%DRIVER%'`), not the fuel record
-- Results are now **paginated** — 20 rows per page with Previous/Next controls and a page counter
-- Query capped at **TOP 500 rows** to prevent overloading
-- Summary line above the table now shows total **Refueled** and **Not Refueled** counts for the filtered result
-- Search box placeholder updated to reflect "driver" as a searchable field
+## May 2026
 
 ---
 
-#### 🔧 fuel_shared.php — Filter and routing updates
+# 🔧 Database Connection Refactor
 
-- **Driver filter** (`?driver=`) — text input, partial match against `f.Requested` and `teamschedule.Employee_Name`
-- **Area filter** (`?area=`) — text input, partial match against `f.Area` and `ts.Area`, applied across all tabs simultaneously
-- Both new filters render as **active filter chips** in the filter bar when set
-- `pageUrl()` helper now carries `driver` and `area` parameters through pagination links
-- `renderTabNav()` now accepts `$fcYear` and `$fcMonth` for the Fuel Consumption tab link
-- `fuel_monthly` tab route added to the navigation array, pointing to `Fuel-Consumption.php`
-- `fc_year` and `fc_month` URL params (`?fc_year=`, `?fc_month=`) parsed and validated in shared init
+## `test_sqlsrv.php`
+
+The database connection layer was centralized to simplify deployment and eliminate duplicate connection logic.
+
+### Changes
+
+* Added `DB_LOADED` guard to prevent accidental double includes
+* Centralized `$serverName` configuration for easier production switching
+* Added global `$pdo` connection alongside existing `$conn`
+* Local and production credentials are now separated into dedicated config blocks
+* Reduced duplicate SQL connection logic across the project
+
+### Benefits
+
+* Easier production deployment
+* Cleaner includes structure
+* Shared PDO access across all modules
+* Reduced maintenance overhead
 
 ---
 
-> For questions or issues, open an issue or ping the dev team.
+# 🔧 Shared Navigation Bootstrap
+
+## `includes/nav.php`
+
+### Changes
+
+* Added automatic:
+
+```php
+require_once test_sqlsrv.php;
+```
+
+* `$conn` and `$pdo` are now globally available on every page that includes `nav.php`
+* Removed the need for repetitive DB includes on child pages
+
+---
+
+# 🔐 RBAC & Authentication Cleanup
+
+All RBAC pages were updated to use the centralized PDO connection.
+
+## Changes Across RBAC Pages
+
+### Removed hardcoded connections
+
+Removed legacy blocks similar to:
+
+```php
+$pdo_rbac = new PDO("sqlsrv:Server=PIERCE...");
+```
+
+### Standardized PDO usage
+
+* Replaced all `$pdo_rbac` references with shared global `$pdo`
+* Removed redundant `require_once test_sqlsrv.php` calls from pages already loading `nav.php`
+* Standardized authentication and database access flow
+
+### Benefits
+
+* Cleaner architecture
+* Fewer connection conflicts
+* Easier maintenance and debugging
+* Better consistency across modules
+
+---
+
+# 🔧 Topbar Component Refactor
+
+## `includes/topbar.php`
+
+The shared topbar component was cleaned up to remove legacy issues and improve routing behavior.
+
+### Changes
+
+* Removed old hardcoded PDO connection block
+* Removed circular include:
+
+```php
+require_once 'topbar.php';
+```
+
+* Removed hardcoded:
+
+```php
+$topbar_page = 'fuel';
+```
+
+* `$topbar_page` is now assigned individually by each page before loading topbar
+* All references now safely use:
+
+```php
+($topbar_page ?? '')
+```
+
+* Brand/home link updated from `#` to:
+
+```php
+route('home')
+```
+
+### Benefits
+
+* Prevents undefined variable warnings
+* Eliminates circular include issues
+* Makes the topbar reusable across modules
+* Cleaner routing behavior
+
+---
+
+# 🖼️ Employee Profile Picture Improvements
+
+The employee image system was fully refactored for uploads, rendering, previews, and fallback handling.
+
+---
+
+## Upload System Updates
+
+### Directory changes
+
+Changed upload directory from:
+
+```text
+TWM/tradewellportal/uploads/employee_pics/
+```
+
+To:
+
+```text
+TWM/uploads/employee_pics/
+```
+
+### Database path updates
+
+Images are now stored in the database as:
+
+```text
+uploads/employee_pics/filename.ext
+```
+
+### Returned URL updates
+
+Returned image URL now resolves to:
+
+```text
+/TWM/uploads/employee_pics/filename.ext
+```
+
+---
+
+# 🛠️ Image Rendering Fixes
+
+Corrected broken image paths in multiple rendering locations.
+
+## Fixed in
+
+* PHP table row rendering
+* JS `populateModal()`
+* JS `buildPrintArea()`
+
+## Base path updated from
+
+```text
+/TWM/tradewellportal/
+```
+
+To:
+
+```text
+/TWM/
+```
+
+---
+
+# 🛡️ Broken Image Fallback Handling
+
+Improved avatar fallback behavior when employee photos fail to load.
+
+## PHP table rendering
+
+* Added `onerror` fallback to switch into colored initials avatar
+
+## JS `populateModal()`
+
+* Replaced inline `onerror` string handling
+* Added safer `createElement()` fallback handling
+
+## JS `buildPrintArea()`
+
+* Added fallback initials div for missing images
+
+---
+
+# 🔍 Fullscreen Photo Preview Modal
+
+Added a dedicated fullscreen employee photo preview experience.
+
+## Features
+
+* Added `#photoViewModal`
+* Clicking employee avatar opens dark overlay preview
+* Preview displays:
+
+  * Current employee photo
+  * Employee name
+  * “Change Photo” button (admin only)
+* “Change Photo” button automatically triggers hidden file input
+* Clicking close dismisses overlay
+
+---
+
+# 🗄️ Uniform Inventory Migration
+
+Uniform Inventory tables and records were migrated from local `PIRS` database into production `TradewellDatabase`.
+
+---
+
+# 📦 Tables Created
+
+Created using:
+
+```text
+UNIFORM_MIGRATION_FULL.sql
+```
+
+## Tables
+
+| Table                   |
+| ----------------------- |
+| `po_categories`         |
+| `purchase_orders`       |
+| `po_items`              |
+| `UniformStock`          |
+| `UniformRequests`       |
+| `UniformReleased`       |
+| `UniformPO`             |
+| `UniformPOItems`        |
+| `UniformReceiving`      |
+| `UniformReceivingItems` |
+| `UniformReturns`        |
+
+---
+
+# 👁️ Views Recreated
+
+| View              |
+| ----------------- |
+| `vw_UniformStock` |
+
+---
+
+# 📊 Migrated Data Summary
+
+| Table                   | Rows Migrated |
+| ----------------------- | ------------- |
+| `UniformStock`          | 16            |
+| `UniformRequests`       | 20            |
+| `UniformReleased`       | 60            |
+| `UniformPO`             | 1             |
+| `UniformPOItems`        | 10            |
+| `UniformReceiving`      | 2             |
+| `UniformReceivingItems` | 16            |
+| `UniformReturns`        | 2             |
+
+---
+
+# 🚀 Production Deployment Notes
+
+When deploying to production:
+
+## Only update the environment block inside
+
+```text
+test_sqlsrv.php
+```
+
+This allows the entire system to switch environments without modifying individual pages or modules.
+
+---
+
+# ✅ Overall Result
+
+This update significantly improves:
+
+* Maintainability
+* Deployment simplicity
+* Shared DB architecture
+* RBAC consistency
+* Employee media handling
+* Production readiness
+* Long-term scalability
+
+---

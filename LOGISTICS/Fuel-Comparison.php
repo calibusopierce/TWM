@@ -46,7 +46,8 @@ TruckBracket AS (
 ),
 BracketAreaAvg AS (
     SELECT tb.Area, tb.FreqBracket, tb.Vehicletype,
-        ROUND(AVG(tb.TruckAvg),2) AS BracketAreaAvg
+        ROUND(AVG(tb.TruckAvg),2) AS BracketAreaAvg,
+        COUNT(*) AS PeerCount
     FROM TruckBracket tb
     GROUP BY tb.Area, tb.FreqBracket, tb.Vehicletype
 )
@@ -54,13 +55,25 @@ SELECT
     tb.PlateNumber, tb.Department, tb.Vehicletype, tb.Area,
     tb.FreqBracket AS [Freq Bracket],
     tb.Refuels, tb.TruckAvg,
-    ba.BracketAreaAvg AS AreaAvg,
-    ROUND(((tb.TruckAvg - ba.BracketAreaAvg) / NULLIF(ba.BracketAreaAvg,0))*100,1) AS PctAboveAreaAvg,
+    -- Leave-one-out: exclude this vehicle from the peer average
+    CASE
+        WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg
+        ELSE ROUND(
+            (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvg) / NULLIF(ba.PeerCount - 1, 0)
+        , 2)
+    END AS AreaAvg,
+    ROUND(((tb.TruckAvg - CASE
+        WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg
+        ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvg) / NULLIF(ba.PeerCount - 1, 0)
+    END) / NULLIF(CASE
+        WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg
+        ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvg) / NULLIF(ba.PeerCount - 1, 0)
+    END, 0))*100, 1) AS PctAboveAreaAvg,
     tb.TotalLiters, tb.TotalAmount, tb.AvgAmount,
-    (SELECT COUNT(*) FROM TruckBracket p WHERE p.Area = tb.Area AND p.FreqBracket = tb.FreqBracket AND ISNULL(p.Vehicletype,'') = ISNULL(tb.Vehicletype,'')) AS PeerCount,
-    STUFF((SELECT ';;' + p2.PlateNumber + '|' + ISNULL(p2.Vehicletype,'—') + '|' + CAST(p2.TruckAvg AS VARCHAR) + '|' + CAST(p2.Refuels AS VARCHAR)
-           FROM TruckBracket p2
-           WHERE p2.Area = tb.Area AND p2.FreqBracket = tb.FreqBracket AND ISNULL(p2.Vehicletype,'') = ISNULL(tb.Vehicletype,'')
+    (SELECT COUNT(*) FROM TruckBracket p WHERE p.Area = tb.Area AND p.FreqBracket = tb.FreqBracket AND ISNULL(p.Vehicletype,'') = ISNULL(tb.Vehicletype,'') AND p.PlateNumber <> tb.PlateNumber) AS PeerCount,
+STUFF((SELECT ';;' + p2.PlateNumber + '|' + ISNULL(p2.Vehicletype,'—') + '|' + CAST(p2.TruckAvg AS VARCHAR) + '|' + CAST(p2.Refuels AS VARCHAR)
+       FROM TruckBracket p2
+       WHERE p2.Area = tb.Area AND p2.FreqBracket = tb.FreqBracket AND ISNULL(p2.Vehicletype,'') = ISNULL(tb.Vehicletype,'') AND p2.PlateNumber <> tb.PlateNumber
            ORDER BY p2.TruckAvg DESC FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'), 1, 2, '') AS PeerList
 FROM TruckBracket tb
 INNER JOIN BracketAreaAvg ba ON ba.Area = tb.Area AND ba.FreqBracket = tb.FreqBracket AND ISNULL(ba.Vehicletype,'') = ISNULL(tb.Vehicletype,'')

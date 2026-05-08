@@ -49,31 +49,40 @@ TruckBracket AS (
     FROM TruckBaseline tb
 ),
 BracketAreaAvg AS (
-    SELECT tb.Area, tb.FreqBracket,
-        ROUND(AVG(tb.TruckAvgLiters),2) AS BracketAreaAvg
-    FROM TruckBracket tb GROUP BY tb.Area, tb.FreqBracket
+    SELECT tb.Area, tb.FreqBracket, tb.Vehicletype,
+        ROUND(AVG(tb.TruckAvgLiters),2) AS BracketAreaAvg,
+        COUNT(*) AS PeerCount
+    FROM TruckBracket tb GROUP BY tb.Area, tb.FreqBracket, tb.Vehicletype
 )
 SELECT
     ar.PlateNumber, ar.Department, ar.Vehicletype,
     ar.Fueldate, ar.Area, ar.Driver, ar.InvNum,
     ar.Liters, ar.Amount, ar.PricePerLiter,
     tb.TotalRefuels, tb.TruckAvgLiters, tb.TruckMinLiters, tb.TruckMaxLiters,
-    tb.FreqBracket, ba.BracketAreaAvg,
-    ROUND(((ar.Liters - tb.TruckAvgLiters) / NULLIF(tb.TruckAvgLiters,0))*100,1) AS PctAboveTruckAvg,
-    ROUND(((ar.Liters - ba.BracketAreaAvg) / NULLIF(ba.BracketAreaAvg,0))*100,1) AS PctAboveAreaAvg,
+    tb.FreqBracket,
+    -- Leave-one-out peer average
     CASE
-        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 1.0 OR ((ar.Liters - ba.BracketAreaAvg)/NULLIF(ba.BracketAreaAvg,0)) > 2.0 THEN 'CRITICAL'
-        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5 OR ((ar.Liters - ba.BracketAreaAvg)/NULLIF(ba.BracketAreaAvg,0)) > 1.0 THEN 'HIGH'
+        WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg
+        ELSE ROUND((ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0), 2)
+    END AS BracketAreaAvg,
+    ROUND(((ar.Liters - tb.TruckAvgLiters) / NULLIF(tb.TruckAvgLiters,0))*100,1) AS PctAboveTruckAvg,
+    ROUND(((ar.Liters - CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END) / NULLIF(CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END, 0))*100,1) AS PctAboveAreaAvg,
+    CASE
+        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 1.0
+          OR ((ar.Liters - CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END)/NULLIF(CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END,0)) > 2.0 THEN 'CRITICAL'
+        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5
+          OR ((ar.Liters - CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END)/NULLIF(CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END,0)) > 1.0 THEN 'HIGH'
         ELSE 'WATCH'
     END AS FlagLevel,
     CASE
-        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5 AND ((ar.Liters - ba.BracketAreaAvg)/NULLIF(ba.BracketAreaAvg,0)) > 0.5 THEN 'BOTH'
+        WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5
+         AND ((ar.Liters - CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END)/NULLIF(CASE WHEN ba.PeerCount <= 1 THEN ba.BracketAreaAvg ELSE (ba.BracketAreaAvg * ba.PeerCount - tb.TruckAvgLiters) / NULLIF(ba.PeerCount - 1, 0) END,0)) > 0.5 THEN 'BOTH'
         WHEN ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5 THEN 'TRUCK AVG'
         ELSE 'AREA AVG'
     END AS TriggeredBy
 FROM AllRecords ar
 INNER JOIN TruckBracket tb ON tb.PlateNumber = ar.PlateNumber AND tb.Area = ar.Area
-INNER JOIN BracketAreaAvg ba ON ba.Area = ar.Area AND ba.FreqBracket = tb.FreqBracket
+INNER JOIN BracketAreaAvg ba ON ba.Area = tb.Area AND ba.FreqBracket = tb.FreqBracket AND ISNULL(ba.Vehicletype,'') = ISNULL(tb.Vehicletype,'')
 WHERE ((ar.Liters - tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0)) > 0.5
    OR ((ar.Liters - ba.BracketAreaAvg)/NULLIF(ba.BracketAreaAvg,0)) > 0.5
 ORDER BY ar.Fueldate DESC,

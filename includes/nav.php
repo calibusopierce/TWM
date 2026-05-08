@@ -45,8 +45,12 @@ define('ROUTES', [
     'fuel_dashboard'    => 'LOGISTICS/fuel_dashboard.php',
     'graphs'            => 'LOGISTICS/graphs.php',
 
-    // ── Logistics Module
+    // ── PO Module
     'po_index'            => 'PO/index.php',
+    
+    // ── FINANCE Module
+    'delivery_remittance'     => 'FINANCE/delivery_remittance.php',
+    'ar_remittance'           => 'FINANCE/ar_remittance.php',
 
     // ── Forms
     'awards'            => 'forms/awards.php',

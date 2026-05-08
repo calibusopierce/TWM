@@ -1,0 +1,42 @@
+
+WITH RemitAgg AS (
+    SELECT
+        DocNo,
+        MAX(CASE WHEN RRID IS NOT NULL AND RRID != 0 THEN 1 ELSE 0 END) AS IsReceived,
+        ROUND(SUM(CAST(TotalRemit AS FLOAT)), 2)                         AS TotalRemit
+    FROM [dbo].[View_DeliverySummaryRemitted]
+    GROUP BY DocNo
+)
+SELECT
+    COUNT(DISTINCT s.DocNo)                                            AS TotalDeliveries,
+    COUNT(DISTINCT s.SalesmanID)                                       AS TotalSalesmen,
+    ROUND(SUM(CAST(s.TotalNetAmount AS FLOAT)), 2)                     AS TotalNetAmount,
+
+    SUM(CASE WHEN (s.DeliveredID = 0 OR s.DeliveredID IS NULL)
+             AND r.DocNo IS NULL
+             THEN 1 ELSE 0 END)                                        AS PendingCount,
+    SUM(CASE WHEN (s.DeliveredID IS NOT NULL AND s.DeliveredID != 0)
+             OR r.DocNo IS NOT NULL
+             THEN 1 ELSE 0 END)                                        AS DeliveredCount,
+
+    -- Unremitted: delivered but no entry in remittance at all
+    SUM(CASE WHEN s.DeliveredID IS NOT NULL AND s.DeliveredID != 0
+             AND r.DocNo IS NULL
+             THEN 1 ELSE 0 END)                                        AS UnremittedCount,
+
+    -- Remit pending: has remittance row but not yet received by finance
+    SUM(CASE WHEN r.DocNo IS NOT NULL AND r.IsReceived = 0
+             THEN 1 ELSE 0 END)                                        AS RemittedPendingCount,
+
+    -- Received: finance confirmed
+    SUM(CASE WHEN r.IsReceived = 1
+             THEN 1 ELSE 0 END)                                        AS ReceivedCount,
+
+    ROUND(SUM(CASE WHEN r.IsReceived = 1
+                   THEN r.TotalRemit ELSE 0 END), 2)                   AS TotalRemitted,
+    ROUND(SUM(ISNULL(r.TotalRemit, 0)), 2)                             AS TotalRemitAll
+
+FROM [dbo].[View_SummaryTotal] s
+LEFT JOIN RemitAgg r ON r.DocNo = s.DocNo
+WHERE s.DocDate BETWEEN '2026-05-01' AND '2026-05-31'
+   AND RTRIM(s.Department) = 'MULTILINES'

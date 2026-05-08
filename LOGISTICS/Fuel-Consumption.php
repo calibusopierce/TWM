@@ -309,7 +309,7 @@ sqlsrv_close($conn);
                 for ($wi=0;$wi<$fcWeekCount;$wi++):
                     $n=$wi+1; $wL=(float)($row["W{$n}Liters"]??0); $wA=(float)($row["W{$n}Amount"]??0); $wR=(int)($row["W{$n}Refuels"]??0);
                     $vtypeWkL[$wi]+=$wL; $vtypeWkA[$wi]+=$wA; $sc=$wkSubColors[$wi];
-                    if ($wR===0) echo "<td class='td-center $sc' colspan='2'><span class='no-refuel'>⊘ No Refuel</span></td>";
+                    if ($wR===0) echo "<td class='td-center $sc' colspan='2'><span class='no-refuel'>—</span></td>";
                     else { echo "<td class='td-right $sc'>" . fmt($wL) . " L</td>"; echo "<td class='td-right $sc'>" . peso($wA) . "</td>"; }
                 endfor;
                 echo "<td class='td-right' style='font-weight:700;color:var(--teal,#0d9488);'>" . fmt($pLiters) . " L</td>";
@@ -582,7 +582,7 @@ function fcPrint() {
                     if (wRefuels === 0) {
                         // Span 2 cols with no-refuel indicator
                         tbodyHtml += `<td colspan="2" style="background:${c.subBg};text-align:center;">`;
-                        tbodyHtml += `<span style="font-size:6.5px;color:#94a3b8;font-style:italic;">no refuel</span>`;
+                        tbodyHtml += `<span style="font-size:6.5px;color:#94a3b8;font-style:italic;">—</span>`;
                         tbodyHtml += `</td>`;
                     } else {
                         tbodyHtml += `<td style="${rowBg}background:${c.subBg};text-align:right;font-family:'Courier New',monospace;">${fmtLshort(wLiters)}</td>`;
@@ -1031,7 +1031,7 @@ function _fcBuildExcel() {
                     const fc=xlWkFill[wi%xlWkFill.length];
                     const wS={ fill:xFill(fc.sub), border:xBorder(), alignment:xAlign('right','middle') };
                     if (wR===0) {
-                        setCell(wc, R, 'no refuel', { fill:xFill(fc.sub), font:xFont('FF94A3B8',false,8), alignment:xAlign('center','middle'), border:xBorder() });
+                        setCell(wc, R, '—', { fill:xFill(fc.sub), font:xFont('FF94A3B8',false,8), alignment:xAlign('center','middle'), border:xBorder() });
                         merge(R,R,wc,wc+2);
                     } else {
                         numCell(wc,   R, wL, {...wS, numFmt:'#,##0.00'});

@@ -38,7 +38,8 @@ if ($pdo) {
     $taggedDepts = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
     // Names come from DB so they already match — no intersect filter needed
-    $allowed = $taggedDepts;
+    $allowed = array_unique(array_merge([''], $taggedDepts));
+
 } else {
     // No DB — fall back to session department only
     $allowed = $current !== '' ? [$current] : [];

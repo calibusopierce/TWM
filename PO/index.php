@@ -24,7 +24,7 @@ $sql = "
            cat.category_name, po.vendor_company,
            po.vendor_contact, po.total_amount,
            po.status, po.prepared_by
-    FROM purchase_orders po
+    FROM purchase_order po
     JOIN po_categories cat ON cat.category_id = po.category_id
     $where
     ORDER BY po.po_date DESC, po.po_id DESC
@@ -33,7 +33,7 @@ $stmt = sqlsrv_query($conn, $sql, $params);
 
 // Summary counts
 $counts = ['total'=>0,'Draft'=>0,'Approved'=>0,'Cancelled'=>0];
-$count_res = sqlsrv_query($conn, "SELECT status, COUNT(*) AS cnt FROM purchase_orders GROUP BY status");
+$count_res = sqlsrv_query($conn, "SELECT status, COUNT(*) AS cnt FROM purchase_order GROUP BY status");
 while ($r = sqlsrv_fetch_array($count_res, SQLSRV_FETCH_ASSOC)) {
     $counts[$r['status']] = $r['cnt'];
     $counts['total'] += $r['cnt'];

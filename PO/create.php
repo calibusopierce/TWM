@@ -7,7 +7,7 @@ auth_check(['Admin', 'Administrator']);
 $error = '';
 
 // Auto-generate PO number
-$sql_num = "SELECT TOP 1 po_number FROM purchase_orders ORDER BY po_id DESC";
+$sql_num = "SELECT TOP 1 po_number FROM purchase_order ORDER BY po_id DESC";
 $res     = sqlsrv_query($conn, $sql_num);
 $last    = sqlsrv_fetch_array($res, SQLSRV_FETCH_ASSOC);
 $next_no = 1;
@@ -60,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = "PO Number, Category, and Vendor Company are required.";
     } else {
         // OUTPUT INSERTED gets the new ID in the same round-trip — required for sqlsrv
-        $ins = "INSERT INTO purchase_orders
+        $ins = "INSERT INTO purchase_order
             (po_number,category_id,po_date,vendor_company,vendor_contact,vendor_address,vendor_phone,
              ship_to_name,ship_to_company,ship_to_address,ship_to_phone,
              subtotal,tax_amount,shipping_amount,other_amount,total_amount,
@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             foreach ($items as $ln => $item) {
                 sqlsrv_query($conn,
-                    "INSERT INTO po_items
+                    "INSERT INTO po_item
                         (po_id, line_no, description, cash_price, percent_price, quantity, total_price)
                      VALUES (?,?,?,?,?,?,?)",
                     [$po_id, ($ln+1), $item['desc'], $item['cprice'], $item['pprice'], $item['qty'], $item['total']]

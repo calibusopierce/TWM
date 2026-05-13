@@ -8,14 +8,14 @@ $po_id = (int)($_GET['id'] ?? 0);
 if (!$po_id) { header("Location: index.php"); exit; }
 
 $res = sqlsrv_query($conn,
-    "SELECT po.*, cat.category_name FROM purchase_orders po
+    "SELECT po.*, cat.category_name FROM purchase_order po
      JOIN po_categories cat ON cat.category_id = po.category_id
      WHERE po.po_id = ?", [$po_id]);
 $po = sqlsrv_fetch_array($res, SQLSRV_FETCH_ASSOC);
 if (!$po) { echo "PO not found."; exit; }
 
 $items_res = sqlsrv_query($conn,
-    "SELECT * FROM po_items WHERE po_id = ? ORDER BY line_no", [$po_id]);
+    "SELECT * FROM po_item WHERE po_id = ? ORDER BY line_no", [$po_id]);
 $items = [];
 while ($r = sqlsrv_fetch_array($items_res, SQLSRV_FETCH_ASSOC)) $items[] = $r;
 

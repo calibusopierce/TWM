@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($_POST['action'] === 'delete') {
         $cid = (int)$_POST['cat_id'];
         $chk = sqlsrv_query($conn,
-            "SELECT COUNT(*) AS cnt FROM purchase_orders WHERE category_id = ?", [$cid]);
+            "SELECT COUNT(*) AS cnt FROM purchase_order WHERE category_id = ?", [$cid]);
         $row = sqlsrv_fetch_array($chk, SQLSRV_FETCH_ASSOC);
         if ($row['cnt'] > 0) {
             $messages[] = ['type'=>'danger',
@@ -73,7 +73,7 @@ $cats = sqlsrv_query($conn, "
     SELECT c.category_id, c.category_name, c.description,
            COUNT(p.po_id) AS po_count
     FROM po_categories c
-    LEFT JOIN purchase_orders p ON p.category_id = c.category_id
+    LEFT JOIN purchase_order p ON p.category_id = c.category_id
     GROUP BY c.category_id, c.category_name, c.description
     ORDER BY c.category_name
 ");

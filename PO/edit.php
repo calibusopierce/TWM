@@ -7,11 +7,11 @@ auth_check(['Admin', 'Administrator']);
 $po_id = (int)($_GET['id'] ?? 0);
 if (!$po_id) { header("Location: index.php"); exit; }
 
-$res = sqlsrv_query($conn, "SELECT * FROM purchase_orders WHERE po_id = ?", [$po_id]);
+$res = sqlsrv_query($conn, "SELECT * FROM purchase_order WHERE po_id = ?", [$po_id]);
 $po  = sqlsrv_fetch_array($res, SQLSRV_FETCH_ASSOC);
 if (!$po) { echo "PO not found."; exit; }
 
-$items_res = sqlsrv_query($conn, "SELECT * FROM po_items WHERE po_id = ? ORDER BY line_no", [$po_id]);
+$items_res = sqlsrv_query($conn, "SELECT * FROM po_item WHERE po_id = ? ORDER BY line_no", [$po_id]);
 $items = [];
 while ($r = sqlsrv_fetch_array($items_res, SQLSRV_FETCH_ASSOC)) $items[] = $r;
 
@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $grand_total = $subtotal + $tax_amount + $shipping_amount + $other_amount;
 
-    $upd = "UPDATE purchase_orders SET
+    $upd = "UPDATE purchase_order SET
         category_id=?,po_date=?,vendor_company=?,vendor_contact=?,vendor_address=?,vendor_phone=?,
         ship_to_name=?,ship_to_company=?,ship_to_address=?,ship_to_phone=?,
         subtotal=?,tax_amount=?,shipping_amount=?,other_amount=?,total_amount=?,
@@ -70,10 +70,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($r2 === false) {
         $error = "Update failed: " . print_r(sqlsrv_errors(), true);
     } else {
-        sqlsrv_query($conn, "DELETE FROM po_items WHERE po_id=?", [$po_id]);
+        sqlsrv_query($conn, "DELETE FROM po_item WHERE po_id=?", [$po_id]);
         foreach ($items_new as $ln => $item) {
             sqlsrv_query($conn,
-                "INSERT INTO po_items (po_id,line_no,description,cash_price,percent_price,quantity,total_price) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO po_item (po_id,line_no,description,cash_price,percent_price,quantity,total_price) VALUES (?,?,?,?,?,?,?)",
                 [$po_id,($ln+1),$item['desc'],$item['cprice'],$item['pprice'],$item['qty'],$item['total']]);
         }
         header("Location: view.php?id=$po_id&updated=1"); exit;

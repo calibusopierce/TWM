@@ -36,17 +36,36 @@ function rbac_module_url(string $moduleKey): string {
  * and cache in session for the request lifetime.
  */
 function rbac_load_permissions(PDO $pdo, string $userType): array {
-    $cacheKey = 'rbac_permissions_' . $userType;
+    $userId   = (int)($_SESSION['UserID'] ?? 0);
+    $cacheKey = 'rbac_permissions_uid_' . $userId;
     if (isset($_SESSION[$cacheKey])) return $_SESSION[$cacheKey];
 
-    $stmt = $pdo->prepare("
-        SELECT module_key
-        FROM   rbac_permissions
-        WHERE  role_name  = ?
-          AND  can_access = 1
-    ");
-    $stmt->execute([$userType]);
-    $keys = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $keys = [];
+
+    // ── New system: direct user → module access ──────────────────
+    if ($userId > 0) {
+        $stmt = $pdo->prepare("
+            SELECT module_key
+            FROM   rbac_user_access
+            WHERE  user_id   = ?
+              AND  is_active = 1
+        ");
+        $stmt->execute([$userId]);
+        $keys = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    }
+
+    // ── Fallback: legacy user_type if no rbac_user_access rows yet
+    if (empty($keys) && $userType !== '') {
+        $stmt = $pdo->prepare("
+            SELECT module_key
+            FROM   rbac_permissions
+            WHERE  role_name  = ?
+              AND  can_access = 1
+        ");
+        $stmt->execute([$userType]);
+        $keys = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    }
+
     $_SESSION[$cacheKey] = $keys;
     return $keys;
 }
@@ -56,8 +75,8 @@ function rbac_load_permissions(PDO $pdo, string $userType): array {
  * Requires rbac_load_permissions() to have been called first this request.
  */
 function rbac_can(string $moduleKey): bool {
-    $userType = $_SESSION['UserType'] ?? '';
-    $cacheKey = 'rbac_permissions_' . $userType;
+    $userId   = (int)($_SESSION['UserID'] ?? 0);
+    $cacheKey = 'rbac_permissions_uid_' . $userId;
     return in_array($moduleKey, $_SESSION[$cacheKey] ?? []);
 }
 

@@ -168,13 +168,78 @@ foreach ($deptAccessRaw as $row) {
 
 $allDeptsJson   = json_encode($allDepts);
 $deptAccessJson = json_encode($deptAccessMap);
+
+// ── Audit log (latest 200, paginated in JS) ───────────────────
+$auditPerPage  = 20;
+$auditPage     = max(1, (int)($_GET['apage'] ?? 1));
+$auditSearch   = trim($_GET['asearch'] ?? '');
+$auditAction   = trim($_GET['aaction'] ?? '');
+$auditDateFrom = trim($_GET['afrom']   ?? '');
+$auditDateTo   = trim($_GET['ato']     ?? '');
+
+$auditWhere  = [];
+$auditParams = [];
+
+if ($auditSearch !== '') {
+    $auditWhere[]  = "(performed_by LIKE ? OR target_user LIKE ? OR module_key LIKE ? OR role_name LIKE ?)";
+    $lk = '%' . $auditSearch . '%';
+    $auditParams = array_merge($auditParams, [$lk, $lk, $lk, $lk]);
+}
+if ($auditAction !== '') {
+    $auditWhere[]  = "action_type = ?";
+    $auditParams[] = $auditAction;
+}
+if ($auditDateFrom !== '') {
+    $auditWhere[]  = "performed_at >= ?";
+    $auditParams[] = $auditDateFrom . ' 00:00:00';
+}
+if ($auditDateTo !== '') {
+    $auditWhere[]  = "performed_at <= ?";
+    $auditParams[] = $auditDateTo . ' 23:59:59';
+}
+
+$auditWhereSQL = $auditWhere ? ('WHERE ' . implode(' AND ', $auditWhere)) : '';
+
+$auditCountStmt = $pdo->prepare("SELECT COUNT(*) FROM rbac_audit_log $auditWhereSQL");
+$auditCountStmt->execute($auditParams);
+$auditTotal     = (int)$auditCountStmt->fetchColumn();
+$auditTotalPages = max(1, (int)ceil($auditTotal / $auditPerPage));
+$auditPage      = min($auditPage, $auditTotalPages);
+$auditOffset    = ($auditPage - 1) * $auditPerPage;
+
+$auditStmt = $pdo->prepare("
+    SELECT id, action_type, target_user, target_uid, module_key,
+           role_name, performed_by, ip_address, notes,
+           CONVERT(VARCHAR(19), performed_at, 120) AS performed_at
+    FROM   rbac_audit_log
+    $auditWhereSQL
+    ORDER  BY performed_at DESC
+    OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+");
+$pi = 1;
+foreach ($auditParams as $val) { $auditStmt->bindValue($pi++, $val); }
+$auditStmt->bindValue($pi++, $auditOffset, PDO::PARAM_INT);
+$auditStmt->bindValue($pi,   $auditPerPage, PDO::PARAM_INT);
+$auditStmt->execute();
+$auditLogs = $auditStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// ── Load rbac_user_access map: user_id => [module_key, ...] ──
+$userAccessRaw = $pdo->query("
+    SELECT user_id, module_key FROM rbac_user_access WHERE is_active = 1
+")->fetchAll(PDO::FETCH_ASSOC);
+
+$userAccessMap = [];
+foreach ($userAccessRaw as $row) {
+    $userAccessMap[(int)$row['user_id']][] = $row['module_key'];
+}
+$userAccessJson = json_encode($userAccessMap);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RBAC · Role Access Control</title>
+  <title>RBAC · Role Based Access Control</title>
   <link href="<?= base_url('assets/img/logo.png') ?>" rel="icon">
   <link href="<?= base_url('assets/vendor/fonts/fonts.css') ?>" rel="stylesheet">
   <link href="<?= base_url('assets/vendor/bootstrap-icons/bootstrap-icons.min.css') ?>" rel="stylesheet">
@@ -571,6 +636,24 @@ $deptAccessJson = json_encode($deptAccessMap);
     }
     .dept-access-btn:hover { background:rgba(167,139,250,.28); color:#c4b5fd; border-color:rgba(167,139,250,.5); }
 
+    .assign-roles-btn {
+      display:inline-flex; align-items:center; gap:.3rem;
+      padding:.25rem .6rem; border-radius:8px; font-size:.7rem; font-weight:600;
+      background:rgba(52,211,153,.1); color:#34d399;
+      border:1px solid rgba(52,211,153,.25);
+      cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif;
+    }
+    .assign-roles-btn:hover { background:rgba(52,211,153,.22); border-color:rgba(52,211,153,.5); }
+
+    .rbac-role-pill {
+      display:inline-flex; align-items:center; gap:.25rem;
+      padding:.15rem .5rem; border-radius:999px; font-size:.66rem; font-weight:700;
+      background:rgba(52,211,153,.12); color:#34d399;
+      border:1px solid rgba(52,211,153,.2); margin:.1rem;
+    }
+    .rbac-role-pill.inactive { background:rgba(255,255,255,.06); color:var(--w40); border-color:var(--border); }
+    .rbac-no-roles { font-size:.7rem; color:var(--w40); font-style:italic; }
+
     /* Change Type Modal */
     .ct-user-info { display:flex; align-items:center; gap:.85rem; margin-bottom:1.25rem;
       padding:.9rem 1rem; background:rgba(255,255,255,.04); border:1px solid var(--border);
@@ -673,6 +756,10 @@ $deptAccessJson = json_encode($deptAccessMap);
       <i class="bi bi-grid-fill"></i> Module Registry
       <span class="tab-badge" id="tabModBadge"><?= count($modules) ?></span>
     </button>
+    <button class="tab-btn" data-tab="audit">
+      <i class="bi bi-clock-history"></i> Audit Log
+      <span class="tab-badge" style="background:#f87171"><?= $auditTotal ?></span>
+    </button>
   </div>
 
   <!-- ══════════════════ TAB: USER TYPES ══════════════════ -->
@@ -774,7 +861,8 @@ $deptAccessJson = json_encode($deptAccessMap);
             <th>Email</th>
             <th>Department</th>
             <th>Position</th>
-            <th>User Type</th>
+            <th>Legacy Type</th>
+            <th>RBAC Roles</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
@@ -807,11 +895,21 @@ $deptAccessJson = json_encode($deptAccessMap);
                 <?= htmlspecialchars($u['user_type'] ?? '—') ?>
               </span>
             </td>
+            <td class="rbac-roles-cell" data-uid="<?= (int)$u['id'] ?>">
+              <!-- populated by JS -->
+            </td>
             <td>
               <span class="active-dot <?= $active ? 'on' : 'off' ?>"></span>
               <?= $active ? 'Active' : 'Inactive' ?>
             </td>
             <td style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+              <button class="assign-roles-btn"
+                      data-id="<?= (int)$u['id'] ?>"
+                      data-displayname="<?= htmlspecialchars($u['DisplayName'] ?? $u['username']) ?>"
+                      data-type="<?= htmlspecialchars($u['user_type'] ?? '') ?>"
+                      title="Assign RBAC Roles">
+                <i class="bi bi-key-fill"></i> RBAC Roles
+              </button>
               <button class="change-type-btn"
                       data-id="<?= (int)$u['id'] ?>"
                       data-username="<?= htmlspecialchars($u['username']) ?>"
@@ -832,7 +930,7 @@ $deptAccessJson = json_encode($deptAccessMap);
           </tr>
           <?php endforeach; ?>
           <?php if (!$users): ?>
-          <tr><td colspan="8" style="text-align:center;padding:2.5rem;color:var(--w40)">
+          <tr><td colspan="9" style="text-align:center;padding:2.5rem;color:var(--w40)">
             <i class="bi bi-people" style="font-size:2rem;display:block;margin-bottom:.5rem;opacity:.3"></i>
             No users found<?= ($usersSearch || $usersTypeFilter) ? ' matching your filters' : ' in ViewUserLogIn' ?>.
           </td></tr>
@@ -953,6 +1051,134 @@ $deptAccessJson = json_encode($deptAccessMap);
       <?php endforeach; ?>
     </div>
   </div><!-- /tab-registry -->
+
+  <!-- ══════════════════ TAB: AUDIT LOG ══════════════════ -->
+  <div class="tab-panel" id="tab-audit">
+
+    <!-- Toolbar -->
+    <div class="users-toolbar" style="margin-bottom:1.25rem">
+      <div class="search-box">
+        <i class="bi bi-search"></i>
+        <input type="text" id="auditSearch" placeholder="Search user, module, role…"
+               value="<?= htmlspecialchars($auditSearch) ?>">
+      </div>
+      <select class="filter-select" id="auditActionFilter">
+        <option value="">All Actions</option>
+        <option value="assign_access" <?= $auditAction === 'assign_access' ? 'selected' : '' ?>>Assign Access</option>
+        <option value="grant"         <?= $auditAction === 'grant'         ? 'selected' : '' ?>>Grant</option>
+        <option value="revoke"        <?= $auditAction === 'revoke'        ? 'selected' : '' ?>>Revoke</option>
+        <option value="toggle"        <?= $auditAction === 'toggle'        ? 'selected' : '' ?>>Toggle</option>
+      </select>
+      <input type="date" class="filter-select" id="auditFrom"
+             value="<?= htmlspecialchars($auditDateFrom) ?>" title="From date">
+      <input type="date" class="filter-select" id="auditTo"
+             value="<?= htmlspecialchars($auditDateTo) ?>" title="To date">
+      <button class="btn btn-ghost btn-sm" onclick="applyAuditFilters()">
+        <i class="bi bi-funnel"></i> Filter
+      </button>
+      <?php if ($auditSearch || $auditAction || $auditDateFrom || $auditDateTo): ?>
+      <a href="?tab=audit" class="btn btn-ghost btn-sm">
+        <i class="bi bi-x-lg"></i> Clear
+      </a>
+      <?php endif; ?>
+    </div>
+
+    <div class="users-count-info">
+      <?php
+        $af = $auditTotal > 0 ? $auditOffset + 1 : 0;
+        $at = min($auditOffset + $auditPerPage, $auditTotal);
+        echo "Showing <strong>{$af}–{$at}</strong> of <strong>{$auditTotal}</strong> log entr" . ($auditTotal !== 1 ? 'ies' : 'y');
+      ?>
+    </div>
+
+    <div class="users-table-wrap" style="margin-top:.75rem">
+      <table class="users-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+            <th>Performed By</th>
+            <th>Target User</th>
+            <th>Module / Role</th>
+            <th>Notes</th>
+            <th>IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach ($auditLogs as $log):
+            $actionColors = [
+              'grant'         => ['bg' => 'rgba(52,211,153,.12)',  'color' => '#34d399'],
+              'revoke'        => ['bg' => 'rgba(248,113,113,.12)', 'color' => '#f87171'],
+              'toggle'        => ['bg' => 'rgba(251,191,36,.12)',  'color' => '#fbbf24'],
+              'assign_access' => ['bg' => 'rgba(67,128,226,.12)',  'color' => '#93c5fd'],
+            ];
+            $ac = $actionColors[$log['action_type']] ?? ['bg' => 'rgba(255,255,255,.06)', 'color' => '#fff'];
+          ?>
+          <tr>
+            <td class="mono" style="white-space:nowrap"><?= htmlspecialchars($log['performed_at']) ?></td>
+            <td>
+              <span style="display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .65rem;
+                           border-radius:999px;font-size:.7rem;font-weight:700;
+                           background:<?= $ac['bg'] ?>;color:<?= $ac['color'] ?>">
+                <?= htmlspecialchars($log['action_type']) ?>
+              </span>
+            </td>
+            <td style="color:var(--white);font-weight:600"><?= htmlspecialchars($log['performed_by']) ?></td>
+            <td><?= $log['target_user'] ? htmlspecialchars($log['target_user']) : '—' ?></td>
+            <td class="mono">
+              <?= $log['module_key'] ? htmlspecialchars($log['module_key']) : '' ?>
+              <?= $log['role_name']  ? '<span style="color:var(--accent2)">'.htmlspecialchars($log['role_name']).'</span>' : '' ?>
+              <?= (!$log['module_key'] && !$log['role_name']) ? '—' : '' ?>
+            </td>
+            <td style="font-size:.75rem;color:var(--w60);max-width:220px">
+              <?= $log['notes'] ? htmlspecialchars($log['notes']) : '—' ?>
+            </td>
+            <td class="mono" style="font-size:.72rem"><?= $log['ip_address'] ? htmlspecialchars($log['ip_address']) : '—' ?></td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$auditLogs): ?>
+          <tr><td colspan="7" style="text-align:center;padding:2.5rem;color:var(--w40)">
+            <i class="bi bi-clock-history" style="font-size:2rem;display:block;margin-bottom:.5rem;opacity:.3"></i>
+            No audit logs found.
+          </td></tr>
+          <?php endif; ?>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <?php if ($auditTotalPages > 1): ?>
+    <div class="pagination-bar">
+      <div class="pagination-info">
+        Page <strong><?= $auditPage ?></strong> of <strong><?= $auditTotalPages ?></strong>
+      </div>
+      <div class="pagination-controls">
+        <?php
+          $auditBase = http_build_query(array_filter([
+              'tab'     => 'audit',
+              'asearch' => $auditSearch,
+              'aaction' => $auditAction,
+              'afrom'   => $auditDateFrom,
+              'ato'     => $auditDateTo,
+          ]));
+          echo pageBtn($auditPage - 1, $auditPage, $auditBase, '<i class="bi bi-chevron-left"></i>', false);
+          $shown = []; $prev = null;
+          for ($p = 1; $p <= $auditTotalPages; $p++) {
+              if ($p === 1 || $p === $auditTotalPages || abs($p - $auditPage) <= 2) $shown[] = $p;
+          }
+          foreach ($shown as $p) {
+              if ($prev !== null && $p - $prev > 1) echo "<span class='page-ellipsis'>…</span>";
+              echo pageBtn($p, $auditPage, $auditBase);
+              $prev = $p;
+          }
+          $auditNext = $auditPage < $auditTotalPages ? $auditPage + 1 : -1;
+          echo pageBtn($auditNext, $auditPage, $auditBase, '<i class="bi bi-chevron-right"></i>', false);
+        ?>
+      </div>
+    </div>
+    <?php endif; ?>
+
+  </div><!-- /tab-audit -->
 
 </div><!-- /.wrap -->
 
@@ -1236,6 +1462,47 @@ $deptAccessJson = json_encode($deptAccessMap);
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     ASSIGN RBAC ROLES MODAL
+     ══════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="assignRolesModal">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">
+      <i class="bi bi-key-fill" style="color:#34d399"></i>
+      Assign RBAC Roles
+    </div>
+
+    <div class="ct-user-info">
+      <div class="ct-avatar" id="ar_avatar">AB</div>
+      <div>
+        <div class="ct-name" id="ar_displayname">—</div>
+        <div class="ct-meta" id="ar_meta">—</div>
+      </div>
+    </div>
+
+    <div class="ct-arrow">Web Portal Roles</div>
+    <div class="form-hint" style="margin-bottom:.75rem">
+      These roles control access inside TWM web only. Legacy <strong>User Type</strong> is untouched.
+    </div>
+
+    <div id="ar_roles_list" style="
+      display:grid; grid-template-columns:1fr 1fr; gap:.4rem;
+      max-height:260px; overflow-y:auto; padding:.25rem 0;
+    ">
+      <!-- Populated by JS -->
+    </div>
+
+    <input type="hidden" id="ar_user_id">
+
+    <div class="modal-footer" style="margin-top:1rem">
+      <button class="btn btn-ghost" id="closeAssignRoles">Cancel</button>
+      <button class="btn btn-primary" id="saveAssignRoles">
+        <i class="bi bi-check-lg"></i> Save Roles
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast-wrap" id="toastWrap"></div>
 
@@ -1243,10 +1510,11 @@ $deptAccessJson = json_encode($deptAccessMap);
 const ACTION_URL = '<?= base_url('RBAC/rbac_action.php') ?>';
 
 // ── Data from PHP ─────────────────────────────────────────────
-const ALL_MODULES  = <?= $modulesJson ?>;
-let   permsMap     = <?= $permsMapJson ?>;  // "role|module_key" => 0|1
-const ALL_DEPTS    = <?= $allDeptsJson ?>;
-let   deptAccessMap = <?= $deptAccessJson ?>; // { userId: [dept, ...] }
+const ALL_MODULES   = <?= $modulesJson ?>;
+let   permsMap      = <?= $permsMapJson ?>;
+const ALL_DEPTS     = <?= $allDeptsJson ?>;
+let   deptAccessMap = <?= $deptAccessJson ?>;
+let   userAccessMap  = <?= $userAccessJson ?>; // { userId: [module_key, ...] }
 
 // ── Helpers ───────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1284,6 +1552,39 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
+// Auto-open tab from URL ?tab=
+(function () {
+  const urlTab = new URLSearchParams(window.location.search).get('tab');
+  if (urlTab) {
+    const btn   = document.querySelector(`.tab-btn[data-tab="${urlTab}"]`);
+    const panel = document.getElementById('tab-' + urlTab);
+    if (btn && panel) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      panel.classList.add('active');
+    }
+  }
+})();
+
+// ── Audit log filters ─────────────────────────────────────────
+function applyAuditFilters() {
+  const search = document.getElementById('auditSearch').value;
+  const action = document.getElementById('auditActionFilter').value;
+  const from   = document.getElementById('auditFrom').value;
+  const to     = document.getElementById('auditTo').value;
+  const params = new URLSearchParams({ tab: 'audit' });
+  if (search) params.set('asearch', search);
+  if (action) params.set('aaction', action);
+  if (from)   params.set('afrom', from);
+  if (to)     params.set('ato', to);
+  window.location.href = '?' + params.toString();
+}
+
+document.getElementById('auditSearch').addEventListener('keydown', e => {
+  if (e.key === 'Enter') applyAuditFilters();
+});
+
 // If "Add Module" is clicked while on roles tab, switch to registry first
 document.getElementById('btnAddModule').addEventListener('click', () => {
   // Switch to registry tab
@@ -1297,6 +1598,100 @@ document.getElementById('btnAddModule').addEventListener('click', () => {
   document.getElementById('m_color').value = 'blue';
   updatePreview('add');
   document.getElementById('addModuleModal').classList.add('open');
+});
+
+// ── Render module access pills in Users tab ───────────────────
+function renderUserRolePills() {
+  document.querySelectorAll('.rbac-roles-cell').forEach(cell => {
+    const uid     = parseInt(cell.dataset.uid);
+    const modules = userAccessMap[uid] || [];
+    if (modules.length === 0) {
+      cell.innerHTML = '<span class="rbac-no-roles">None assigned</span>';
+    } else {
+      cell.innerHTML = modules.map(mk => {
+        const mod = ALL_MODULES.find(m => m.module_key === mk);
+        const label = mod ? mod.module_name : mk;
+        return `<span class="rbac-role-pill"><i class="bi bi-key" style="font-size:.55rem"></i>${label}</span>`;
+      }).join('');
+    }
+  });
+}
+renderUserRolePills();
+
+// ── Assign Module Access Modal ────────────────────────────────
+const assignRolesModal = document.getElementById('assignRolesModal');
+
+document.getElementById('usersTableBody').addEventListener('click', e => {
+  const btn = e.target.closest('.assign-roles-btn');
+  if (!btn) return;
+
+  const id          = btn.dataset.id;
+  const displayname = btn.dataset.displayname || '—';
+  const legacyType  = btn.dataset.type || '—';
+  const initials    = displayname.slice(0, 2).toUpperCase();
+  const current     = userAccessMap[id] || [];
+
+  document.getElementById('ar_user_id').value           = id;
+  document.getElementById('ar_avatar').textContent      = initials;
+  document.getElementById('ar_displayname').textContent = displayname;
+  document.getElementById('ar_meta').textContent        = 'Legacy type: ' + legacyType;
+
+  const list = document.getElementById('ar_roles_list');
+  list.innerHTML = ALL_MODULES.map(mod => {
+    const checked = current.includes(mod.module_key) ? 'checked' : '';
+    return `
+      <label style="display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;
+             border-radius:8px;cursor:pointer;border:1px solid var(--border);
+             background:var(--surface);font-size:.8rem;transition:background .15s"
+             onmouseover="this.style.background='rgba(255,255,255,.07)'"
+             onmouseout="this.style.background='var(--surface)'">
+        <input type="checkbox" value="${mod.module_key}" ${checked}
+               style="accent-color:#34d399;width:15px;height:15px;cursor:pointer">
+        <span style="color:var(--w60)">${mod.module_name}</span>
+      </label>`;
+  }).join('');
+
+  assignRolesModal.classList.add('open');
+});
+
+document.getElementById('closeAssignRoles').addEventListener('click', () =>
+  assignRolesModal.classList.remove('open'));
+assignRolesModal.addEventListener('click', e => {
+  if (e.target === assignRolesModal) assignRolesModal.classList.remove('open');
+});
+
+document.getElementById('saveAssignRoles').addEventListener('click', async () => {
+  const userId   = document.getElementById('ar_user_id').value;
+  const selected = [...document.querySelectorAll('#ar_roles_list input[type=checkbox]:checked')]
+                     .map(cb => cb.value);
+
+  const fd = new FormData();
+  fd.append('action',  'assign_user_access');
+  fd.append('user_id', userId);
+  fd.append('modules', JSON.stringify(selected));
+
+  const res  = await fetch(ACTION_URL, { method: 'POST', body: fd });
+  const data = await res.json();
+
+  if (!data.ok) { toast(data.msg || 'Error saving access.', 'error'); return; }
+
+  // Update local cache and re-render pills
+  userAccessMap[userId] = selected;
+  const cell = document.querySelector(`.rbac-roles-cell[data-uid="${userId}"]`);
+  if (cell) {
+    if (selected.length === 0) {
+      cell.innerHTML = '<span class="rbac-no-roles">None assigned</span>';
+    } else {
+      cell.innerHTML = selected.map(mk => {
+        const mod   = ALL_MODULES.find(m => m.module_key === mk);
+        const label = mod ? mod.module_name : mk;
+        return `<span class="rbac-role-pill"><i class="bi bi-key" style="font-size:.55rem"></i>${label}</span>`;
+      }).join('');
+    }
+  }
+
+  assignRolesModal.classList.remove('open');
+  toast(`Module access updated — <strong>${selected.length}</strong> module${selected.length !== 1 ? 's' : ''} assigned.`);
 });
 
 // ── Role search ───────────────────────────────────────────────

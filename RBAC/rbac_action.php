@@ -22,7 +22,7 @@ $moduleOnlyActions = ['add_module', 'edit_module', 'delete_module'];
 $roleOnlyActions = ['grant_all', 'revoke_all', 'add_role', 'delete_role'];
 
 // ── Actions that handle their own validation inside the switch ────────────
-$selfValidatedActions = ['change_user_type', 'reorder_modules', 'manage_dept_access'];
+$selfValidatedActions = ['change_user_type', 'reorder_modules', 'manage_dept_access', 'assign_user_access'];
 
 if (in_array($action, $roleOnlyActions)) {
     // These actions operate on a whole role — only role is required
@@ -61,6 +61,11 @@ try {
                 ");
                 $stmt->execute([$roleName, $moduleKey, $grantedBy]);
             }
+            $pdo->prepare("
+                INSERT INTO rbac_audit_log
+                    (action_type, role_name, module_key, performed_by, ip_address)
+                VALUES ('grant', ?, ?, ?, ?)
+            ")->execute([$roleName, $moduleKey, $grantedBy, $_SERVER['REMOTE_ADDR'] ?? null]);
             echo json_encode(['ok' => true]);
             break;
 
@@ -72,6 +77,11 @@ try {
                 WHERE role_name = ? AND module_key = ?
             ");
             $stmt->execute([$grantedBy, $roleName, $moduleKey]);
+            $pdo->prepare("
+                INSERT INTO rbac_audit_log
+                    (action_type, role_name, module_key, performed_by, ip_address)
+                VALUES ('revoke', ?, ?, ?, ?)
+            ")->execute([$roleName, $moduleKey, $grantedBy, $_SERVER['REMOTE_ADDR'] ?? null]);
             echo json_encode(['ok' => true]);
             break;
 
@@ -99,6 +109,11 @@ try {
                 ");
                 $stmt->execute([$grantedBy, $roleName, $moduleKey]);
             }
+            $pdo->prepare("
+                INSERT INTO rbac_audit_log
+                    (action_type, role_name, module_key, performed_by, ip_address)
+                VALUES ('toggle', ?, ?, ?, ?)
+            ")->execute([$roleName, $moduleKey, $grantedBy, $_SERVER['REMOTE_ADDR'] ?? null]);
             echo json_encode(['ok' => true]);
             break;
 
@@ -327,6 +342,100 @@ try {
             }
 
             echo json_encode(['ok' => true, 'count' => count($depts)]);
+            break;
+
+        // ── Assign RBAC roles to a user (replaces all existing) ─────
+        case 'assign_user_roles':
+            $userId = (int)($_POST['user_id'] ?? 0);
+            $roles  = json_decode($_POST['roles'] ?? '[]', true);
+
+            if (!$userId) {
+                echo json_encode(['ok' => false, 'msg' => 'Missing user ID.']);
+                exit;
+            }
+            if (!is_array($roles)) {
+                echo json_encode(['ok' => false, 'msg' => 'Invalid roles data.']);
+                exit;
+            }
+
+            // Get user_type from users table for the record
+            $utStmt = $pdo->prepare("SELECT user_type FROM users WHERE id = ?");
+            $utStmt->execute([$userId]);
+            $userType = $utStmt->fetchColumn() ?: '';
+
+            // Remove all existing active roles for this user
+            $pdo->prepare("DELETE FROM rbac_user_roles WHERE user_id = ?")->execute([$userId]);
+
+            // Insert new selections
+            if (!empty($roles)) {
+                $ins = $pdo->prepare("
+                    INSERT INTO rbac_user_roles (user_id, user_type, role_name, assigned_by, assigned_at, is_active)
+                    VALUES (?, ?, ?, ?, GETDATE(), 1)
+                ");
+                foreach ($roles as $role) {
+                    $role = trim($role);
+                    if ($role !== '') {
+                        $ins->execute([$userId, $userType, $role, $grantedBy]);
+                    }
+                }
+            }
+
+            echo json_encode(['ok' => true, 'count' => count($roles)]);
+            break;
+
+        // ── Assign modules directly to a user ───────────────────────
+        case 'assign_user_access':
+            $userId  = (int)($_POST['user_id'] ?? 0);
+            $modules = json_decode($_POST['modules'] ?? '[]', true);
+
+            if (!$userId) {
+                echo json_encode(['ok' => false, 'msg' => 'Missing user ID.']);
+                exit;
+            }
+            if (!is_array($modules)) {
+                echo json_encode(['ok' => false, 'msg' => 'Invalid modules data.']);
+                exit;
+            }
+
+            // Wipe existing access for this user
+            $pdo->prepare("DELETE FROM rbac_user_access WHERE user_id = ?")->execute([$userId]);
+
+            // Insert new selections
+            if (!empty($modules)) {
+                $ins = $pdo->prepare("
+                    INSERT INTO rbac_user_access (user_id, module_key, granted_by, granted_at, is_active)
+                    VALUES (?, ?, ?, GETDATE(), 1)
+                ");
+                foreach ($modules as $mk) {
+                    $mk = trim($mk);
+                    if ($mk !== '') {
+                        $ins->execute([$userId, $mk, $grantedBy]);
+                    }
+                }
+            }
+
+            // Clear session cache so gate re-checks on next request
+            $cacheKey = 'rbac_permissions_uid_' . $userId;
+            if (isset($_SESSION[$cacheKey])) unset($_SESSION[$cacheKey]);
+
+            // ── Audit log ─────────────────────────────────────────────
+            $targetUser = $pdo->prepare("SELECT username FROM users WHERE id = ?");
+            $targetUser->execute([$userId]);
+            $targetUsername = $targetUser->fetchColumn() ?: 'unknown';
+
+            $pdo->prepare("
+                INSERT INTO rbac_audit_log
+                    (action_type, target_user, target_uid, performed_by, ip_address, notes)
+                VALUES ('assign_access', ?, ?, ?, ?, ?)
+            ")->execute([
+                $targetUsername,
+                $userId,
+                $grantedBy,
+                $_SERVER['REMOTE_ADDR'] ?? null,
+                count($modules) . ' module(s) assigned: ' . implode(', ', $modules)
+            ]);
+
+            echo json_encode(['ok' => true, 'count' => count($modules)]);
             break;
 
         default:

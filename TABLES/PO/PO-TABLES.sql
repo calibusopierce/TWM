@@ -9,13 +9,6 @@
 USE [TradewellDatabase];
 GO
 
--- PO Categories (Computers, Vehicles, Printers, etc.)
-CREATE TABLE po_categories (
-    category_id   INT IDENTITY(1,1) PRIMARY KEY,
-    category_name NVARCHAR(100) NOT NULL,
-    description   NVARCHAR(255),
-    created_at    DATETIME DEFAULT GETDATE()
-);
 
 -- Seed default categories
 INSERT INTO po_categories (category_name, description) VALUES
@@ -26,7 +19,7 @@ INSERT INTO po_categories (category_name, description) VALUES
 ('Others',                     'Miscellaneous items not covered above');
 
 -- Main Purchase Orders table
-CREATE TABLE purchase_orders (
+CREATE TABLE purchase_order (
     po_id           INT IDENTITY(1,1) PRIMARY KEY,
     po_number       NVARCHAR(20) NOT NULL UNIQUE,   -- e.g. PO-2026-0001
     category_id     INT NOT NULL REFERENCES po_categories(category_id),
@@ -66,9 +59,9 @@ CREATE TABLE purchase_orders (
 );
 
 -- Line items for each PO
-CREATE TABLE po_items (
+CREATE TABLE po_item (
     item_id         INT IDENTITY(1,1) PRIMARY KEY,
-    po_id           INT NOT NULL REFERENCES purchase_orders(po_id) ON DELETE CASCADE,
+    po_id           INT NOT NULL REFERENCES purchase_order(po_id) ON DELETE CASCADE,
     line_no         INT NOT NULL,           -- 1,2,3…
     description     NVARCHAR(255) NOT NULL,
     cash_price      DECIMAL(18,2) DEFAULT 0,
@@ -78,7 +71,7 @@ CREATE TABLE po_items (
 );
 
 -- Index for fast lookups by category and date
-CREATE INDEX IX_po_category  ON purchase_orders(category_id);
-CREATE INDEX IX_po_date      ON purchase_orders(po_date);
-CREATE INDEX IX_po_status    ON purchase_orders(status);
-CREATE INDEX IX_poitems_poid ON po_items(po_id);
+CREATE INDEX IX_po_category  ON purchase_order(category_id);
+CREATE INDEX IX_po_date      ON purchase_order(po_date);
+CREATE INDEX IX_po_status    ON purchase_order(status);
+CREATE INDEX IX_poitem_poid ON po_item(po_id);

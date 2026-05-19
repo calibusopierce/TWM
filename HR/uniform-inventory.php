@@ -15,11 +15,17 @@ rbac_gate($pdo, 'uniform_inventory');
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
 $tab         = $_GET['tab'] ?? 'stocks';
-$validTabs   = ['stocks','released','requests','po','receiving','returns'];
+$validTabs   = ['stocks','released','requests','po','receiving','returns','report'];
 if (!in_array($tab, $validTabs)) $tab = 'stocks';
 $sizes       = ['XS','S','M','L','XL','XXL','XXXL','4XL'];
 $depts       = ['Century','Monde','Multilines','NutriAsia'];
 $uTypes      = ['TSHIRT','POLOSHIRT'];
+
+// ── Department scope detection ─────────────────────────────────
+// Admins/HR see all; department users see only their department's data
+$sessionDept   = trim($_SESSION['Department'] ?? '');
+$isAdminView   = in_array($_SESSION['Role'] ?? '', ['Admin','Administrator','HR']) || !in_array($sessionDept, $depts);
+$deptScope     = $isAdminView ? '' : $sessionDept; // '' means no restriction
 
 function rq($conn,$sql,$p=[]) {
     $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
@@ -35,6 +41,15 @@ function fmtDate($v) {
     return is_string($v) ? date('M d, Y',strtotime($v)) : '—';
 }
 function safe($s) { return htmlspecialchars($s??'',ENT_QUOTES,'UTF-8'); }
+
+// ── Build a WHERE/AND clause fragment for dept scoping ─────────
+// $prefix: table alias prefix e.g. '' or 'r.'
+function deptWhere(string $deptScope, string $prefix='', bool $asAnd=false): string {
+    if ($deptScope === '') return '';
+    $escaped = str_replace("'","''",$deptScope);
+    $clause  = "{$prefix}Department = '{$escaped}'";
+    return $asAnd ? " AND {$clause}" : "WHERE {$clause}";
+}
 
 // ── Pagination helper ──────────────────────────────────────────
 function paginationBar(string $pageParam, int $currentPage, int $totalPages, int $total, array $extra=[]): string {
@@ -594,14 +609,32 @@ foreach ($stocks as $s) $totalStock[$s['UniformType']] += max(0,intval($s['Curre
 
 // ── Released ──────────────────────────────────────────────────
 $relSearch = trim($_GET['rsearch']??'');
-$relWhere  = $relSearch!=='' ? "WHERE (EmployeeName LIKE '%".str_replace("'","''",$relSearch)."%' OR RequestedBy LIKE '%".str_replace("'","''",$relSearch)."%')" : '';
+$relUType  = trim($_GET['reltype']??'');
+$relDept   = trim($_GET['reldept']??'');
+if (!in_array($relUType, ['TSHIRT','POLOSHIRT'])) $relUType = '';
+if (!in_array($relDept, $depts))                   $relDept  = '';
+
+// If dept-scoped user, force their department
+$effectiveRelDept = $deptScope !== '' ? $deptScope : $relDept;
+
+$relConditions = [];
+if ($relSearch !== '') {
+    $s = str_replace("'","''",$relSearch);
+    $relConditions[] = "(EmployeeName LIKE '%{$s}%' OR RequestedBy LIKE '%{$s}%')";
+}
+if ($relUType !== '') $relConditions[] = "UniformType = '" . str_replace("'","''",$relUType) . "'";
+if ($effectiveRelDept !== '') $relConditions[] = "Department = '" . str_replace("'","''",$effectiveRelDept) . "'";
+$relWhere = !empty($relConditions) ? 'WHERE ' . implode(' AND ', $relConditions) : '';
+
 $relAll    = rq($conn,"SELECT * FROM [dbo].[UniformReleased] {$relWhere} ORDER BY DateGiven DESC, CreatedAt DESC");
 $relTotal  = count($relAll);
 $relPages  = max(1,(int)ceil($relTotal/20));
 $relPage   = max(1,min((int)($_GET['relpage']??1),$relPages));
 $released  = array_slice($relAll,($relPage-1)*20,20);
 
-$totalGiven = rq($conn,"SELECT ISNULL(SUM(Quantity),0) AS Total FROM [dbo].[UniformReleased]");
+// Total given count respects dept scope
+$totalGivenWhere = $deptScope !== '' ? "WHERE Department = '" . str_replace("'","''",$deptScope) . "'" : '';
+$totalGiven = rq($conn,"SELECT ISNULL(SUM(Quantity),0) AS Total FROM [dbo].[UniformReleased] {$totalGivenWhere}");
 $totalGivenCount = intval($totalGiven[0]['Total']??0);
 
 // ── Requests ──────────────────────────────────────────────────
@@ -614,9 +647,12 @@ $reqDept    = trim($_GET['rdept']  ?? '');
 if (!in_array($reqUType, ['TSHIRT','POLOSHIRT'])) $reqUType = '';
 if (!in_array($reqDept,  $depts))                  $reqDept  = '';
 
+// If dept-scoped, force their dept (overrides any filter selection)
+$effectiveReqDept = $deptScope !== '' ? $deptScope : $reqDept;
+
 $reqConditions = ["r.IsGiven = " . ($reqStatus === 'given' ? '1' : '0')];
 if ($reqUType !== '') $reqConditions[] = "r.UniformType = '" . str_replace("'","''",$reqUType) . "'";
-if ($reqDept  !== '') $reqConditions[] = "r.Department  = '" . str_replace("'","''",$reqDept)  . "'";
+if ($effectiveReqDept !== '') $reqConditions[] = "r.Department = '" . str_replace("'","''",$effectiveReqDept) . "'";
 $reqWhere = 'WHERE ' . implode(' AND ', $reqConditions);
 
 $reqAll    = rq($conn,
@@ -629,9 +665,10 @@ $reqPages  = max(1,(int)ceil($reqTotal/20));
 $reqPage   = max(1,min((int)($_GET['reqpage']??1),$reqPages));
 $requests  = array_slice($reqAll,($reqPage-1)*20,20);
 
-// Counts for tab badges
-$reqPendingTotal = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=0");
-$reqGivenTotal   = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=1");
+// Counts for tab badges — respect dept scope
+$badgeDeptAnd = $deptScope !== '' ? " AND Department = '" . str_replace("'","''",$deptScope) . "'" : '';
+$reqPendingTotal = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=0{$badgeDeptAnd}");
+$reqGivenTotal   = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=1{$badgeDeptAnd}");
 $reqPendingCount = intval($reqPendingTotal[0]['N'] ?? 0);
 $reqGivenCount   = intval($reqGivenTotal[0]['N']   ?? 0);
 
@@ -696,9 +733,22 @@ if ($editId>0 && $tab==='released') {
 
 // ── Returns ───────────────────────────────────────────────────
 $retSearch = trim($_GET['retsearch'] ?? '');
-$retWhere  = $retSearch !== ''
-    ? "WHERE (EmployeeName LIKE '%" . str_replace("'","''",$retSearch) . "%' OR ReturnedTo LIKE '%" . str_replace("'","''",$retSearch) . "%')"
-    : '';
+$retUType  = trim($_GET['rettype']  ?? '');
+$retDept   = trim($_GET['retdept']  ?? '');
+if (!in_array($retUType, ['TSHIRT','POLOSHIRT'])) $retUType = '';
+if (!in_array($retDept, $depts))                   $retDept  = '';
+
+$effectiveRetDept = $deptScope !== '' ? $deptScope : $retDept;
+
+$retConditions = [];
+if ($retSearch !== '') {
+    $s = str_replace("'","''",$retSearch);
+    $retConditions[] = "(EmployeeName LIKE '%{$s}%' OR ReturnedTo LIKE '%{$s}%')";
+}
+if ($retUType !== '') $retConditions[] = "UniformType = '" . str_replace("'","''",$retUType) . "'";
+if ($effectiveRetDept !== '') $retConditions[] = "Department = '" . str_replace("'","''",$effectiveRetDept) . "'";
+$retWhere = !empty($retConditions) ? 'WHERE ' . implode(' AND ', $retConditions) : '';
+
 $retAll    = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$retWhere} ORDER BY DateReturned DESC, CreatedAt DESC");
 $retTotal  = count($retAll);
 $retPages  = max(1,(int)ceil($retTotal/20));
@@ -712,6 +762,118 @@ $editRetRow = [];
 if ($editRetId > 0 && $tab === 'returns') {
     $tmp = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$editRetId]);
     $editRetRow = $tmp[0] ?? [];
+}
+
+// ── Report data ───────────────────────────────────────────────
+if ($tab === 'report') {
+    // Date range filter
+    $rptFrom  = trim($_GET['rpt_from'] ?? date('Y-01-01'));
+    $rptTo    = trim($_GET['rpt_to']   ?? date('Y-m-d'));
+    $rptDept  = trim($_GET['rpt_dept'] ?? ($deptScope !== '' ? $deptScope : ''));
+    $rptUType = trim($_GET['rpt_type'] ?? '');
+    if (!in_array($rptUType, ['TSHIRT','POLOSHIRT'])) $rptUType = '';
+    if (!in_array($rptDept, $depts) && $rptDept !== '') $rptDept = '';
+    // If dept-scoped user, force their dept
+    if ($deptScope !== '') $rptDept = $deptScope;
+
+    // Build WHERE conditions helper
+    $rptCondRel = ["DateGiven >= '{$rptFrom}' AND DateGiven <= '{$rptTo}'"];
+    $rptCondReq = ["DateRequested >= '{$rptFrom}' AND DateRequested <= '{$rptTo}'"];
+    $rptCondRet = ["DateReturned >= '{$rptFrom}' AND DateReturned <= '{$rptTo}'"];
+    if ($rptDept  !== '') {
+        $rd = str_replace("'","''",$rptDept);
+        $rptCondRel[] = "Department = '{$rd}'";
+        $rptCondReq[] = "Department = '{$rd}'";
+        $rptCondRet[] = "Department = '{$rd}'";
+    }
+    if ($rptUType !== '') {
+        $ru = str_replace("'","''",$rptUType);
+        $rptCondRel[] = "UniformType = '{$ru}'";
+        $rptCondReq[] = "UniformType = '{$ru}'";
+        $rptCondRet[] = "UniformType = '{$ru}'";
+    }
+    $wrRel = 'WHERE ' . implode(' AND ', $rptCondRel);
+    $wrReq = 'WHERE ' . implode(' AND ', $rptCondReq);
+    $wrRet = 'WHERE ' . implode(' AND ', $rptCondRet);
+
+    // ── Summary totals
+    $rptRelTotals = rq($conn,
+        "SELECT UniformType, SUM(Quantity) AS TotalQty, COUNT(*) AS Records
+         FROM [dbo].[UniformReleased] {$wrRel}
+         GROUP BY UniformType");
+
+    $rptReqTotals = rq($conn,
+        "SELECT UniformType, SUM(Quantity) AS TotalQty,
+                SUM(CASE WHEN IsGiven=1 THEN 1 ELSE 0 END) AS GivenCount,
+                SUM(CASE WHEN IsGiven=0 THEN 1 ELSE 0 END) AS PendingCount
+         FROM [dbo].[UniformRequests] {$wrReq}
+         GROUP BY UniformType");
+
+    $rptRetTotals = rq($conn,
+        "SELECT UniformType, SUM(Quantity) AS TotalQty, COUNT(*) AS Records
+         FROM [dbo].[UniformReturns] {$wrRet}
+         GROUP BY UniformType");
+
+    // ── Released by dept breakdown
+    $rptRelByDept = rq($conn,
+        "SELECT Department, UniformType, SUM(Quantity) AS TotalQty
+         FROM [dbo].[UniformReleased] {$wrRel}
+         GROUP BY Department, UniformType
+         ORDER BY Department, UniformType");
+
+    // ── Released by size breakdown
+    $rptRelBySize = rq($conn,
+        "SELECT UniformType, UniformSize AS Size, SUM(Quantity) AS TotalQty
+         FROM [dbo].[UniformReleased] {$wrRel}
+         GROUP BY UniformType, UniformSize
+         ORDER BY UniformType,
+           CASE UniformSize WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4
+                            WHEN 'XL' THEN 5 WHEN 'XXL' THEN 6 WHEN 'XXXL' THEN 7 WHEN '4XL' THEN 8 END");
+
+    // ── Top 10 employees (released)
+    $rptTopEmp = rq($conn,
+        "SELECT TOP 10 EmployeeName, Department, UniformType, SUM(Quantity) AS TotalQty
+         FROM [dbo].[UniformReleased] {$wrRel}
+         GROUP BY EmployeeName, Department, UniformType
+         ORDER BY SUM(Quantity) DESC");
+
+    // ── Current stock snapshot
+    $rptStockSnap = rq($conn,
+        "SELECT UniformType, Size,
+                PreviousStock, AdditionalStock, LessStock, ReturnStock,
+                (PreviousStock + AdditionalStock + ReturnStock - LessStock) AS CurrentStock
+         FROM [dbo].[UniformStock]
+         ORDER BY UniformType DESC,
+           CASE Size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4
+                     WHEN 'XL' THEN 5 WHEN 'XXL' THEN 6 WHEN 'XXXL' THEN 7 WHEN '4XL' THEN 8 END");
+
+    // ── Monthly trend (released, last 12 months)
+    $rptMonthly = rq($conn,
+        "SELECT FORMAT(DateGiven,'yyyy-MM') AS Mo, UniformType, SUM(Quantity) AS TotalQty
+         FROM [dbo].[UniformReleased]
+         WHERE DateGiven >= DATEADD(MONTH,-11,CAST(GETDATE() AS DATE))
+         " . ($rptDept!==''  ? "AND Department = '" . str_replace("'","''",$rptDept)  . "'" : '')
+           . ($rptUType!=='' ? "AND UniformType = '" . str_replace("'","''",$rptUType) . "'" : '') . "
+         GROUP BY FORMAT(DateGiven,'yyyy-MM'), UniformType
+         ORDER BY Mo");
+
+    // ── Returns by condition
+    $rptRetCond = rq($conn,
+        "SELECT Condition, SUM(Quantity) AS TotalQty, COUNT(*) AS Records
+         FROM [dbo].[UniformReturns] {$wrRet}
+         GROUP BY Condition");
+
+    // Helper maps
+    $rptRelMap  = []; foreach ($rptRelTotals as $r) $rptRelMap[$r['UniformType']]  = $r;
+    $rptReqMap  = []; foreach ($rptReqTotals as $r) $rptReqMap[$r['UniformType']]  = $r;
+    $rptRetMap  = []; foreach ($rptRetTotals as $r) $rptRetMap[$r['UniformType']]  = $r;
+    $rptStockMap= []; foreach ($rptStockSnap  as $r) $rptStockMap[$r['UniformType']][$r['Size']] = $r;
+    $rptMonthMap= []; foreach ($rptMonthly    as $r) $rptMonthMap[$r['Mo']][$r['UniformType']] = intval($r['TotalQty']);
+    $rptMonths  = array_unique(array_column($rptMonthly,'Mo'));
+
+    $rptGrandRelQty = array_sum(array_column($rptRelTotals,'TotalQty'));
+    $rptGrandRetQty = array_sum(array_column($rptRetTotals,'TotalQty'));
+    $rptGrandReqQty = array_sum(array_column($rptReqTotals,'TotalQty'));
 }
 ?>
 <!DOCTYPE html>
@@ -796,7 +958,13 @@ if ($editRetId > 0 && $tab === 'returns') {
 <div class="page-header">
   <div><br>
     <div class="page-title">Uniform <span>Inventory</span> System</div>
-    <div class="page-badge">🧥 <?= date('Y') ?> · <?= safe($_SESSION['Department']??'All Departments') ?></div>
+    <div class="page-badge">🧥 <?= date('Y') ?> · 
+      <?php if($deptScope!==''): ?>
+        <span style="background:rgba(59,130,246,.12);color:var(--primary);border-radius:6px;padding:.08rem .45rem;font-weight:700;"><?= safe($deptScope) ?></span> Department View
+      <?php else: ?>
+        <?= safe($sessionDept ?: 'All Departments') ?>
+      <?php endif; ?>
+    </div>
   </div>
   <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal">
     <i class="bi bi-plus-lg"></i> Release Uniform
@@ -813,8 +981,8 @@ if ($editRetId > 0 && $tab === 'returns') {
 <div class="stats-row">
   <div class="stat-card"><div class="stat-icon">👕</div><div class="stat-label">T-Shirt Stock</div><div class="stat-value sv-blue"><?= number_format($totalStock['TSHIRT']) ?></div></div>
   <div class="stat-card"><div class="stat-icon">👔</div><div class="stat-label">Polo Shirt Stock</div><div class="stat-value sv-teal"><?= number_format($totalStock['POLOSHIRT']) ?></div></div>
-  <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-label">Total Uniform Given</div><div class="stat-value sv-amber"><?= number_format($totalGivenCount) ?></div></div>
-  <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-label">Pending Requests</div><div class="stat-value sv-red"><?= count(array_filter($reqAll,fn($r)=>!$r['IsGiven'])) ?></div></div>
+  <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-label">Total Uniform Given<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div><div class="stat-value sv-amber"><?= number_format($totalGivenCount) ?></div></div>
+  <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-label">Pending Requests<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div><div class="stat-value sv-red"><?= $reqPendingCount ?></div></div>
 </div>
 
 <div class="tab-bar">
@@ -824,7 +992,15 @@ if ($editRetId > 0 && $tab === 'returns') {
   <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
   <a href="?tab=receiving" class="tab-btn <?= $tab==='receiving'?'active':'' ?>"><i class="bi bi-box-seam-fill"></i> Receiving Form</a>
   <a href="?tab=returns"   class="tab-btn <?= $tab==='returns'  ?'active':'' ?>"><i class="bi bi-arrow-return-left"></i> Returns</a>
+  <a href="?tab=report"    class="tab-btn <?= $tab==='report'   ?'active':'' ?>"><i class="bi bi-bar-chart-fill"></i> Reports</a>
 </div>
+
+<?php if($deptScope!==''): ?>
+<div style="display:flex;align-items:center;gap:.55rem;background:rgba(59,130,246,.06);border:1.5px solid rgba(59,130,246,.2);border-radius:10px;padding:.55rem 1rem;margin-bottom:.85rem;font-size:.78rem;color:var(--primary);font-weight:600;">
+  <i class="bi bi-building-fill" style="font-size:.95rem;"></i>
+  <span>Showing data for <strong><?= safe($deptScope) ?></strong> department only. Stocks tab shows all inventory.</span>
+</div>
+<?php endif; ?>
 
 <?php
 // ═══ TAB: STOCKS ═══════════════════════════════════════════════
@@ -981,15 +1157,41 @@ elseif($tab==='released'): ?>
   <div class="panel-hdr">
     <div class="panel-title"><i class="bi bi-send-fill" style="color:var(--primary-light)"></i> Uniforms Released / Sent</div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
-      <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Given: <?= number_format($totalGivenCount) ?> pcs</div>
-      <form method="GET" style="display:flex;gap:.4rem;align-items:center;">
-        <input type="hidden" name="tab" value="released">
-        <div class="sbar"><i class="bi bi-search"></i><input type="text" name="rsearch" placeholder="Employee or HR name…" value="<?= safe($relSearch) ?>"></div>
-        <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
-        <?php if($relSearch!==''): ?><a href="?tab=released" class="btn-sm-action btn-del" style="padding:.38rem .65rem;"><i class="bi bi-x-lg"></i></a><?php endif; ?>
-      </form>
+      <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Given: <?= number_format($totalGivenCount) ?> pcs<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div>
       <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal"><i class="bi bi-plus-lg"></i> Add</button>
     </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div style="padding:.65rem 1rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;">
+    <form method="GET" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;width:100%;">
+      <input type="hidden" name="tab" value="released">
+      <input type="hidden" name="relpage" value="1">
+
+      <div class="sbar" style="flex:1;min-width:160px;"><i class="bi bi-search"></i><input type="text" name="rsearch" placeholder="Employee or HR name…" value="<?= safe($relSearch) ?>"></div>
+
+      <select name="reltype" class="form-select" style="width:175px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $relUType===''?'selected':'' ?>>All Uniform Types</option>
+        <option value="TSHIRT"    <?= $relUType==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt</option>
+        <option value="POLOSHIRT" <?= $relUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt</option>
+      </select>
+
+      <?php if($deptScope===''): ?>
+      <select name="reldept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $relDept===''?'selected':'' ?>>All Departments</option>
+        <?php foreach($depts as $d): ?>
+        <option value="<?= $d ?>" <?= $relDept===$d?'selected':'' ?>><?= safe($d) ?></option>
+        <?php endforeach; ?>
+      </select>
+      <?php else: ?>
+      <span style="background:rgba(59,130,246,.09);color:var(--primary);border:1px solid rgba(59,130,246,.2);border-radius:7px;padding:.3rem .65rem;font-size:.75rem;font-weight:700;white-space:nowrap;"><i class="bi bi-building"></i> <?= safe($deptScope) ?></span>
+      <?php endif; ?>
+
+      <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
+      <?php if($relSearch!==''||$relUType!==''||$relDept!==''): ?>
+      <a href="?tab=released" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
+      <?php endif; ?>
+    </form>
   </div>
   <?php if(empty($released)): ?>
   <div class="empty-st"><i class="bi bi-send"></i><p>No release records found.</p></div>
@@ -1026,7 +1228,7 @@ elseif($tab==='released'): ?>
     </tbody>
   </table>
   </div>
-  <?= paginationBar('relpage',$relPage,$relPages,$relTotal,['tab'=>'released','rsearch'=>$relSearch]) ?>
+  <?= paginationBar('relpage',$relPage,$relPages,$relTotal,['tab'=>'released','rsearch'=>$relSearch,'reltype'=>$relUType,'reldept'=>$relDept]) ?>
   <?php endif; ?>
 </div>
 
@@ -1036,7 +1238,7 @@ elseif($tab==='requests'):
 // Build base URL params for filter links (preserves filters across page/tab switches)
 $reqBaseParams = ['tab'=>'requests','rstatus'=>$reqStatus];
 if($reqUType!=='') $reqBaseParams['rutype']=$reqUType;
-if($reqDept !=='') $reqBaseParams['rdept'] =$reqDept;
+if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
 ?>
 <div class="panel">
   <div class="panel-hdr" style="flex-wrap:wrap;gap:.6rem;">
@@ -1082,21 +1284,25 @@ if($reqDept !=='') $reqBaseParams['rdept'] =$reqDept;
         <option value="POLOSHIRT" <?= $reqUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt (Office/Sales)</option>
       </select>
 
+      <?php if($deptScope===''): ?>
       <select name="rdept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
         <option value="" <?= $reqDept===''?'selected':'' ?>>All Departments</option>
         <?php foreach($depts as $d): ?>
         <option value="<?= $d ?>" <?= $reqDept===$d?'selected':'' ?>><?= safe($d) ?></option>
         <?php endforeach; ?>
       </select>
+      <?php else: ?>
+      <span style="background:rgba(59,130,246,.09);color:var(--primary);border:1px solid rgba(59,130,246,.2);border-radius:7px;padding:.3rem .65rem;font-size:.75rem;font-weight:700;white-space:nowrap;"><i class="bi bi-building"></i> <?= safe($deptScope) ?></span>
+      <?php endif; ?>
 
-      <?php if($reqUType!=='' || $reqDept!==''): ?>
+      <?php if($reqUType!=='' || ($deptScope==='' && $reqDept!=='')): ?>
       <a href="?tab=requests&rstatus=<?= $reqStatus ?>" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
       <?php endif; ?>
     </form>
   </div>
 
   <?php if(empty($requests)): ?>
-  <div class="empty-st"><i class="bi bi-clipboard"></i><p>No <?= $reqStatus === 'pending' ? 'pending' : 'given' ?> requests<?= ($reqUType!==''||$reqDept!=='') ? ' matching the selected filters' : '' ?>.</p></div>
+  <div class="empty-st"><i class="bi bi-clipboard"></i><p>No <?= $reqStatus === 'pending' ? 'pending' : 'given' ?> requests<?= ($reqUType!==''||$effectiveReqDept!=='') ? ' matching the selected filters' : '' ?><?= $deptScope!==''?' for '.$deptScope.'' : '' ?>.</p></div>
   <?php else: ?>
   <div style="overflow-x:auto;">
   <table class="utbl">
@@ -1174,7 +1380,7 @@ if($reqDept !=='') $reqBaseParams['rdept'] =$reqDept;
   </table>
   </div>
   <?= paginationBar('reqpage',$reqPage,$reqPages,$reqTotal,
-        array_merge($reqBaseParams,['rutype'=>$reqUType,'rdept'=>$reqDept])) ?>
+        array_merge($reqBaseParams,['rutype'=>$reqUType,'rdept'=>($deptScope!==''?'':$reqDept)])) ?>
   <?php endif; ?>
 </div>
 
@@ -1791,15 +1997,41 @@ elseif($tab==='returns'):
   <div class="panel-hdr">
     <div class="panel-title"><i class="bi bi-arrow-return-left" style="color:var(--primary-light)"></i> Uniform Returns</div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
-      <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Returned: <?= number_format($totalReturnCount) ?> pcs</div>
-      <form method="GET" style="display:flex;gap:.4rem;align-items:center;">
-        <input type="hidden" name="tab" value="returns">
-        <div class="sbar"><i class="bi bi-search"></i><input type="text" name="retsearch" placeholder="Employee or staff name…" value="<?= safe($retSearch) ?>"></div>
-        <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
-        <?php if($retSearch!==''): ?><a href="?tab=returns" class="btn-sm-action btn-del" style="padding:.38rem .65rem;"><i class="bi bi-x-lg"></i></a><?php endif; ?>
-      </form>
+      <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Returned: <?= number_format($totalReturnCount) ?> pcs<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div>
       <button class="btn-add" data-bs-toggle="modal" data-bs-target="#returnModal"><i class="bi bi-plus-lg"></i> Add Return</button>
     </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div style="padding:.65rem 1rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;">
+    <form method="GET" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;width:100%;">
+      <input type="hidden" name="tab" value="returns">
+      <input type="hidden" name="retpage" value="1">
+
+      <div class="sbar" style="flex:1;min-width:160px;"><i class="bi bi-search"></i><input type="text" name="retsearch" placeholder="Employee or staff name…" value="<?= safe($retSearch) ?>"></div>
+
+      <select name="rettype" class="form-select" style="width:175px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $retUType===''?'selected':'' ?>>All Uniform Types</option>
+        <option value="TSHIRT"    <?= $retUType==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt</option>
+        <option value="POLOSHIRT" <?= $retUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt</option>
+      </select>
+
+      <?php if($deptScope===''): ?>
+      <select name="retdept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $retDept===''?'selected':'' ?>>All Departments</option>
+        <?php foreach($depts as $d): ?>
+        <option value="<?= $d ?>" <?= $retDept===$d?'selected':'' ?>><?= safe($d) ?></option>
+        <?php endforeach; ?>
+      </select>
+      <?php else: ?>
+      <span style="background:rgba(59,130,246,.09);color:var(--primary);border:1px solid rgba(59,130,246,.2);border-radius:7px;padding:.3rem .65rem;font-size:.75rem;font-weight:700;white-space:nowrap;"><i class="bi bi-building"></i> <?= safe($deptScope) ?></span>
+      <?php endif; ?>
+
+      <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
+      <?php if($retSearch!==''||$retUType!==''||$retDept!==''): ?>
+      <a href="?tab=returns" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
+      <?php endif; ?>
+    </form>
   </div>
 
   <?php if(empty($retList)): ?>
@@ -1862,11 +2094,474 @@ elseif($tab==='returns'):
     </tbody>
   </table>
   </div>
-  <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch]) ?>
+  <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch,'rettype'=>$retUType,'retdept'=>($deptScope!==''?'':$retDept)]) ?>
   <?php endif; ?>
 </div>
 
+<?php
+// ═══ TAB: REPORT ═══════════════════════════════════════════════
+elseif($tab==='report'):
+?>
+
+<!-- Report filter bar -->
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-hdr">
+    <div class="panel-title"><i class="bi bi-funnel-fill" style="color:var(--primary-light)"></i> Report Filters</div>
+    <div style="display:flex;gap:.5rem;align-items:center;">
+      <button onclick="printReport()" class="btn-add" style="background:#0891b2;border-color:#0891b2;">
+        <i class="bi bi-printer-fill"></i> Print Report
+      </button>
+    </div>
+  </div>
+  <div style="padding:.85rem 1.1rem;">
+    <form method="GET" style="display:flex;gap:.65rem;align-items:flex-end;flex-wrap:wrap;">
+      <input type="hidden" name="tab" value="report">
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.06em;">Date From</label>
+        <input type="date" name="rpt_from" class="form-control" style="width:155px;font-size:.8rem;padding:.32rem .6rem;" value="<?= safe($rptFrom) ?>">
+      </div>
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.06em;">Date To</label>
+        <input type="date" name="rpt_to" class="form-control" style="width:155px;font-size:.8rem;padding:.32rem .6rem;" value="<?= safe($rptTo) ?>">
+      </div>
+      <?php if($deptScope===''): ?>
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.06em;">Department</label>
+        <select name="rpt_dept" class="form-select" style="width:165px;font-size:.8rem;padding:.32rem .6rem;">
+          <option value="">All Departments</option>
+          <?php foreach($depts as $d): ?><option value="<?= $d ?>" <?= $rptDept===$d?'selected':'' ?>><?= safe($d) ?></option><?php endforeach; ?>
+        </select>
+      </div>
+      <?php endif; ?>
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:var(--text-muted);display:block;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.06em;">Uniform Type</label>
+        <select name="rpt_type" class="form-select" style="width:175px;font-size:.8rem;padding:.32rem .6rem;">
+          <option value="">All Types</option>
+          <option value="TSHIRT"    <?= $rptUType==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt</option>
+          <option value="POLOSHIRT" <?= $rptUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt</option>
+        </select>
+      </div>
+      <button type="submit" class="btn-add"><i class="bi bi-search"></i> Generate</button>
+      <a href="?tab=report" class="btn-sm-action" style="padding:.38rem .75rem;align-self:flex-end;"><i class="bi bi-arrow-counterclockwise"></i> Reset</a>
+    </form>
+  </div>
+</div>
+
+<!-- ══ Printable Report ══════════════════════════════════════════ -->
+<div id="reportPrintArea">
+
+<!-- Print-only header (hidden on screen) -->
+<div class="rpt-print-header" style="display:none;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;padding-bottom:.75rem;border-bottom:2px solid #1e40af;">
+    <div>
+      <div style="font-size:1.2rem;font-weight:800;color:#1e40af;">Urban Tradewell Corp.</div>
+      <div style="font-size:.85rem;font-weight:600;color:#64748b;">Uniform Inventory — Summary Report</div>
+    </div>
+    <div style="text-align:right;font-size:.75rem;color:#64748b;">
+      <div><strong>Period:</strong> <?= date('M d, Y', strtotime($rptFrom)) ?> – <?= date('M d, Y', strtotime($rptTo)) ?></div>
+      <div><strong>Department:</strong> <?= $rptDept !== '' ? safe($rptDept) : 'All Departments' ?></div>
+      <div><strong>Uniform Type:</strong> <?= $rptUType !== '' ? safe($rptUType) : 'All Types' ?></div>
+      <div><strong>Generated:</strong> <?= date('M d, Y h:i A') ?> by <?= safe($currentUser) ?></div>
+    </div>
+  </div>
+</div>
+
+<!-- Summary cards row -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.25rem;">
+  <?php
+    $tshirtRel  = intval($rptRelMap['TSHIRT']['TotalQty']   ?? 0);
+    $poloRel    = intval($rptRelMap['POLOSHIRT']['TotalQty'] ?? 0);
+    $tshirtRet  = intval($rptRetMap['TSHIRT']['TotalQty']   ?? 0);
+    $poloRet    = intval($rptRetMap['POLOSHIRT']['TotalQty'] ?? 0);
+    $tshirtCur  = 0; $poloCur = 0;
+    foreach($rptStockSnap as $s){
+        if($s['UniformType']==='TSHIRT')    $tshirtCur += max(0,intval($s['CurrentStock']));
+        if($s['UniformType']==='POLOSHIRT') $poloCur   += max(0,intval($s['CurrentStock']));
+    }
+  ?>
+  <div class="stat-card" style="border-color:rgba(59,130,246,.3);">
+    <div class="stat-icon">📦</div>
+    <div class="stat-label">Total Released</div>
+    <div class="stat-value sv-blue"><?= number_format($rptGrandRelQty) ?></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.2rem;">in selected period</div>
+  </div>
+  <div class="stat-card" style="border-color:rgba(8,145,178,.3);">
+    <div class="stat-icon">👕</div>
+    <div class="stat-label">T-Shirt Released</div>
+    <div class="stat-value sv-blue"><?= number_format($tshirtRel) ?></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.2rem;"><?= number_format($tshirtCur) ?> pcs in stock</div>
+  </div>
+  <div class="stat-card" style="border-color:rgba(5,150,105,.3);">
+    <div class="stat-icon">👔</div>
+    <div class="stat-label">Polo Released</div>
+    <div class="stat-value sv-teal"><?= number_format($poloRel) ?></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.2rem;"><?= number_format($poloCur) ?> pcs in stock</div>
+  </div>
+  <div class="stat-card" style="border-color:rgba(124,58,237,.3);">
+    <div class="stat-icon">↩️</div>
+    <div class="stat-label">Total Returns</div>
+    <div class="stat-value" style="color:#7c3aed;"><?= number_format($rptGrandRetQty) ?></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.2rem;">in selected period</div>
+  </div>
+  <div class="stat-card" style="border-color:rgba(202,138,4,.3);">
+    <div class="stat-icon">📋</div>
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value sv-amber"><?= number_format($rptGrandReqQty) ?></div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.2rem;">in selected period</div>
+  </div>
+</div>
+
+<!-- Row 1: Stock Snapshot + Released by Size -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.25rem;" class="rpt-2col">
+
+  <!-- Stock Snapshot -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-boxes" style="color:var(--primary-light)"></i> Current Stock Snapshot</div></div>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Size</th>
+          <th style="text-align:center;">Prev</th>
+          <th style="text-align:center;">Added</th>
+          <th style="text-align:center;">Less</th>
+          <th style="text-align:center;">Returns</th>
+          <th style="text-align:center;color:var(--primary);">Current</th>
+        </tr>
+      </thead>
+      <tbody>
+      <?php foreach(['TSHIRT','POLOSHIRT'] as $ut):
+        $typeTotal = 0;
+        foreach($sizes as $sz):
+          $sr = $rptStockMap[$ut][$sz] ?? null;
+          if(!$sr) continue;
+          $cur = max(0,intval($sr['CurrentStock']));
+          $typeTotal += $cur;
+          if($cur===0){$dot='#dc2626';}elseif($cur<=5){$dot='#ca8a04';}else{$dot='#10b981';}
+      ?>
+      <tr>
+        <td><span class="bdg <?= $ut==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>" style="font-size:.65rem;"><?= $ut==='TSHIRT'?'TSHIRT':'POLO' ?></span></td>
+        <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= $sz ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;"><?= intval($sr['PreviousStock']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#0891b2;"><?= intval($sr['AdditionalStock']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#dc2626;"><?= intval($sr['LessStock']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#7c3aed;"><?= intval($sr['ReturnStock']) ?></td>
+        <td style="text-align:center;">
+          <span style="font-family:'DM Mono',monospace;font-weight:800;color:<?= $dot ?>;font-size:.85rem;"><?= $cur ?></span>
+        </td>
+      </tr>
+      <?php endforeach; ?>
+      <tr style="background:var(--surface-2);">
+        <td colspan="6" style="font-weight:700;color:<?= $ut==='TSHIRT'?'#1e40af':'#0891b2' ?>;font-size:.75rem;">
+          <?= $ut==='TSHIRT'?'T-Shirt':'Polo Shirt' ?> Subtotal
+        </td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:<?= $ut==='TSHIRT'?'#1e40af':'#0891b2' ?>;"><?= number_format($typeTotal) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <!-- Released by Size -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-send-fill" style="color:var(--primary-light)"></i> Released by Uniform Type &amp; Size</div></div>
+    <?php if(empty($rptRelBySize)): ?>
+    <div class="empty-st"><i class="bi bi-send"></i><p>No release data for the selected period.</p></div>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead><tr><th>Type</th><th>Size</th><th style="text-align:center;">Qty Released</th></tr></thead>
+      <tbody>
+      <?php
+        $prevType='';$typeSubtotal=0;
+        foreach($rptRelBySize as $row):
+          if($prevType!=='' && $prevType!==$row['UniformType']):
+      ?>
+      <tr style="background:var(--surface-2);">
+        <td colspan="2" style="font-weight:700;color:#1e40af;font-size:.75rem;"><?= $prevType==='TSHIRT'?'T-Shirt':'Polo Shirt' ?> Subtotal</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:#1e40af;"><?= number_format($typeSubtotal) ?></td>
+      </tr>
+      <?php $typeSubtotal=0; endif;
+        $prevType=$row['UniformType'];
+        $typeSubtotal+=intval($row['TotalQty']);
+      ?>
+      <tr>
+        <td><span class="bdg <?= $row['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>" style="font-size:.65rem;"><?= $row['UniformType']==='TSHIRT'?'TSHIRT':'POLO' ?></span></td>
+        <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($row['Size']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format(intval($row['TotalQty'])) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      <?php if($prevType!==''): ?>
+      <tr style="background:var(--surface-2);">
+        <td colspan="2" style="font-weight:700;color:#0891b2;font-size:.75rem;"><?= $prevType==='TSHIRT'?'T-Shirt':'Polo Shirt' ?> Subtotal</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:#0891b2;"><?= number_format($typeSubtotal) ?></td>
+      </tr>
+      <?php endif; ?>
+      <tr style="background:var(--primary-glow);">
+        <td colspan="2" style="font-weight:800;color:var(--primary);">Grand Total</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($rptGrandRelQty) ?></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<!-- Row 2: Released by Department + Top Employees -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.25rem;" class="rpt-2col">
+
+  <!-- Released by Department -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-building" style="color:var(--primary-light)"></i> Released by Department</div></div>
+    <?php if(empty($rptRelByDept)): ?>
+    <div class="empty-st"><i class="bi bi-building"></i><p>No department data for the selected period.</p></div>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead><tr><th>Department</th><th>Type</th><th style="text-align:center;">Qty</th></tr></thead>
+      <tbody>
+      <?php
+        $prevDept=''; $deptSub=0;
+        foreach($rptRelByDept as $row):
+          if($prevDept!=='' && $prevDept!==$row['Department']):
+      ?>
+      <tr style="background:var(--surface-2);">
+        <td colspan="2" style="font-weight:700;color:var(--primary);font-size:.74rem;"><?= safe($prevDept) ?> Subtotal</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($deptSub) ?></td>
+      </tr>
+      <?php $deptSub=0; endif;
+        $prevDept=$row['Department'];
+        $deptSub+=intval($row['TotalQty']);
+      ?>
+      <tr>
+        <td style="font-weight:600;"><?= $row['Department']!==''?safe($row['Department']):'<span style="color:var(--text-muted)">—</span>' ?></td>
+        <td><span class="bdg <?= $row['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>" style="font-size:.65rem;"><?= $row['UniformType']==='TSHIRT'?'TSHIRT':'POLO' ?></span></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format(intval($row['TotalQty'])) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      <?php if($prevDept!==''): ?>
+      <tr style="background:var(--surface-2);">
+        <td colspan="2" style="font-weight:700;color:var(--primary);font-size:.74rem;"><?= safe($prevDept) ?> Subtotal</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($deptSub) ?></td>
+      </tr>
+      <?php endif; ?>
+      <tr style="background:var(--primary-glow);">
+        <td colspan="2" style="font-weight:800;color:var(--primary);">Grand Total</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($rptGrandRelQty) ?></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <!-- Top Employees -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-people-fill" style="color:var(--primary-light)"></i> Top 10 Employees (by qty released)</div></div>
+    <?php if(empty($rptTopEmp)): ?>
+    <div class="empty-st"><i class="bi bi-person"></i><p>No employee release data for the selected period.</p></div>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead><tr><th>#</th><th>Employee</th><th>Dept</th><th>Type</th><th style="text-align:center;">Qty</th></tr></thead>
+      <tbody>
+      <?php foreach($rptTopEmp as $i=>$row): ?>
+      <tr>
+        <td style="color:var(--text-muted);font-family:'DM Mono',monospace;font-weight:700;"><?= $i+1 ?></td>
+        <td style="font-weight:700;color:var(--text-primary);"><?= safe($row['EmployeeName']) ?></td>
+        <td><?= $row['Department']?'<span class="bdg dept-'.safe($row['Department']).'">'.safe($row['Department']).'</span>':'—' ?></td>
+        <td><span class="bdg <?= $row['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>" style="font-size:.65rem;"><?= $row['UniformType']==='TSHIRT'?'TSHIRT':'POLO' ?></span></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format(intval($row['TotalQty'])) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<!-- Row 3: Returns Summary + Request Summary -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.25rem;" class="rpt-2col">
+
+  <!-- Returns summary -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-arrow-return-left" style="color:var(--primary-light)"></i> Returns Summary</div></div>
+    <?php if(empty($rptRetTotals) && empty($rptRetCond)): ?>
+    <div class="empty-st"><i class="bi bi-arrow-return-left"></i><p>No return records for the selected period.</p></div>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead><tr><th>Metric</th><th>TSHIRT</th><th>POLOSHIRT</th><th style="text-align:center;">Total</th></tr></thead>
+      <tbody>
+      <tr>
+        <td style="font-weight:600;">Total Returned (pcs)</td>
+        <td style="font-family:'DM Mono',monospace;"><?= number_format(intval($rptRetMap['TSHIRT']['TotalQty']??0)) ?></td>
+        <td style="font-family:'DM Mono',monospace;"><?= number_format(intval($rptRetMap['POLOSHIRT']['TotalQty']??0)) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format($rptGrandRetQty) ?></td>
+      </tr>
+      <tr>
+        <td style="font-weight:600;">Records</td>
+        <td style="font-family:'DM Mono',monospace;"><?= intval($rptRetMap['TSHIRT']['Records']??0) ?></td>
+        <td style="font-family:'DM Mono',monospace;"><?= intval($rptRetMap['POLOSHIRT']['Records']??0) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= intval($rptRetMap['TSHIRT']['Records']??0)+intval($rptRetMap['POLOSHIRT']['Records']??0) ?></td>
+      </tr>
+      </tbody>
+    </table>
+    <?php if(!empty($rptRetCond)): ?>
+    <div style="padding:.6rem .85rem;border-top:1px solid var(--border);font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">By Condition</div>
+    <table class="utbl">
+      <thead><tr><th>Condition</th><th style="text-align:center;">Records</th><th style="text-align:center;">Qty</th></tr></thead>
+      <tbody>
+      <?php foreach($rptRetCond as $rc): $isGood=($rc['Condition']??'Good')==='Good'; ?>
+      <tr>
+        <td><?= $isGood?'<span style="color:#059669;font-weight:700;">✅ Good</span>':'<span style="color:#ca8a04;font-weight:700;">⚠️ Damaged</span>' ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;"><?= intval($rc['Records']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format(intval($rc['TotalQty'])) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <?php endif; ?>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <!-- Requests summary -->
+  <div class="panel" style="margin-bottom:0;">
+    <div class="panel-hdr"><div class="panel-title"><i class="bi bi-clipboard-check" style="color:var(--primary-light)"></i> Requests Summary</div></div>
+    <?php if(empty($rptReqTotals)): ?>
+    <div class="empty-st"><i class="bi bi-clipboard"></i><p>No request records for the selected period.</p></div>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="utbl">
+      <thead><tr><th>Type</th><th style="text-align:center;">Total Qty</th><th style="text-align:center;">Given</th><th style="text-align:center;">Pending</th><th style="text-align:center;">Fulfillment %</th></tr></thead>
+      <tbody>
+      <?php foreach($rptReqTotals as $rr):
+        $totalRec = intval($rr['GivenCount'])+intval($rr['PendingCount']);
+        $pct = $totalRec>0 ? round(intval($rr['GivenCount'])/$totalRec*100) : 0;
+      ?>
+      <tr>
+        <td><span class="bdg <?= $rr['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $rr['UniformType'] ?></span></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format(intval($rr['TotalQty'])) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;color:#059669;font-weight:700;"><?= intval($rr['GivenCount']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;color:#dc2626;font-weight:700;"><?= intval($rr['PendingCount']) ?></td>
+        <td style="text-align:center;">
+          <div style="display:flex;align-items:center;gap:.4rem;">
+            <div style="flex:1;background:#e2e8f0;border-radius:20px;height:6px;overflow:hidden;">
+              <div style="width:<?= $pct ?>%;background:<?= $pct>=80?'#059669':($pct>=50?'#ca8a04':'#dc2626') ?>;height:100%;border-radius:20px;"></div>
+            </div>
+            <span style="font-family:'DM Mono',monospace;font-size:.73rem;font-weight:700;min-width:32px;"><?= $pct ?>%</span>
+          </div>
+        </td>
+      </tr>
+      <?php endforeach; ?>
+      <tr style="background:var(--primary-glow);">
+        <td style="font-weight:800;color:var(--primary);">Total</td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($rptGrandReqQty) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;color:#059669;"><?= array_sum(array_column($rptReqTotals,'GivenCount')) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;color:#dc2626;"><?= array_sum(array_column($rptReqTotals,'PendingCount')) ?></td>
+        <td></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<!-- Monthly Trend -->
+<?php if(!empty($rptMonths)): ?>
+<div class="panel" style="margin-bottom:1.25rem;">
+  <div class="panel-hdr"><div class="panel-title"><i class="bi bi-graph-up" style="color:var(--primary-light)"></i> Monthly Release Trend (Last 12 Months)</div></div>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead>
+      <tr>
+        <th>Month</th>
+        <?php foreach(['TSHIRT','POLOSHIRT'] as $ut): ?>
+        <th style="text-align:center;"><?= $ut==='TSHIRT'?'👕 T-Shirt':'👔 Polo Shirt' ?></th>
+        <?php endforeach; ?>
+        <th style="text-align:center;">Monthly Total</th>
+      </tr>
+    </thead>
+    <tbody>
+    <?php
+      $colMax = 1;
+      foreach($rptMonths as $mo) {
+          $tot = 0;
+          foreach(['TSHIRT','POLOSHIRT'] as $ut) $tot += intval($rptMonthMap[$mo][$ut]??0);
+          if($tot>$colMax) $colMax=$tot;
+      }
+      $grandMonthTotal = 0;
+      $monthTotByType  = ['TSHIRT'=>0,'POLOSHIRT'=>0];
+      foreach($rptMonths as $mo):
+        $moTotal = 0;
+        foreach(['TSHIRT','POLOSHIRT'] as $ut) $moTotal += intval($rptMonthMap[$mo][$ut]??0);
+        $grandMonthTotal += $moTotal;
+    ?>
+    <tr>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;white-space:nowrap;"><?= date('M Y', strtotime($mo.'-01')) ?></td>
+      <?php foreach(['TSHIRT','POLOSHIRT'] as $ut):
+        $v = intval($rptMonthMap[$mo][$ut]??0);
+        $monthTotByType[$ut] += $v;
+        $barW = $colMax>0 ? round($v/$colMax*80) : 0;
+      ?>
+      <td style="text-align:center;min-width:120px;">
+        <?php if($v>0): ?>
+        <div style="display:flex;align-items:center;justify-content:center;gap:.4rem;">
+          <div style="width:<?= $barW ?>px;min-width:4px;max-width:80px;height:10px;border-radius:3px;background:<?= $ut==='TSHIRT'?'#3b82f6':'#0891b2' ?>;"></div>
+          <span style="font-family:'DM Mono',monospace;font-weight:700;font-size:.78rem;"><?= number_format($v) ?></span>
+        </div>
+        <?php else: ?><span style="color:var(--text-muted);font-size:.75rem;">—</span><?php endif; ?>
+      </td>
+      <?php endforeach; ?>
+      <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($moTotal) ?></td>
+    </tr>
+    <?php endforeach; ?>
+    <tr style="background:var(--primary-glow);font-weight:700;">
+      <td style="color:var(--primary);font-weight:800;">Total</td>
+      <?php foreach(['TSHIRT','POLOSHIRT'] as $ut): ?>
+      <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($monthTotByType[$ut]) ?></td>
+      <?php endforeach; ?>
+      <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:var(--primary);"><?= number_format($grandMonthTotal) ?></td>
+    </tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<!-- Print footer -->
+<div class="rpt-print-footer" style="display:none;margin-top:1.5rem;padding-top:.75rem;border-top:1.5px solid #e2e8f0;display:none;">
+  <div style="display:flex;justify-content:space-between;font-size:.72rem;color:#94a3b8;">
+    <span>Urban Tradewell Corp. — Uniform Inventory System</span>
+    <span>Printed: <?= date('M d, Y h:i A') ?></span>
+  </div>
+</div>
+
+</div><!-- /#reportPrintArea -->
+
+<style>
+@media print {
+  body * { visibility: hidden; }
+  #reportPrintArea, #reportPrintArea * { visibility: visible; }
+  #reportPrintArea { position: fixed; left: 0; top: 0; width: 100%; padding: 1.5rem 2rem; }
+  .rpt-print-header, .rpt-print-footer { display: block !important; }
+  .rpt-2col { grid-template-columns: 1fr 1fr !important; }
+  .panel { break-inside: avoid; box-shadow: none !important; border: 1px solid #e2e8f0 !important; }
+  .panel-hdr { background: #f8fafc !important; }
+  .utbl thead th { background: #f1f5f9 !important; }
+  .btn-add, form, .panel-hdr > div:last-child { display: none !important; }
+  a { color: inherit !important; text-decoration: none !important; }
+}
+</style>
+
 <?php endif; // ═══ end if/elseif tab chain ?>
+
 </div><!-- /container -->
 
 <!-- ══ MODAL: Release Uniform ══════════════════════════════════ -->
@@ -2180,6 +2875,10 @@ function printPO(poid,poNum){
 function printReceiving(recId){
   const win=window.open('uniform-receiving-print.php?recid='+recId,'_blank','width=900,height=700,scrollbars=yes');
   if(!win) Swal.fire('Popup blocked','Please allow popups for this site to print receiving documents.','warning');
+}
+
+function printReport(){
+  window.print();
 }
 
 document.addEventListener('DOMContentLoaded', function(){

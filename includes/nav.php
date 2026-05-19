@@ -44,6 +44,7 @@ define('ROUTES', [
     // ── Logistics Module
     'fuel_dashboard'    => 'LOGISTICS/fuel_dashboard.php',
     'graphs'            => 'LOGISTICS/graphs.php',
+    'team_schedule'      => 'LOGISTICS/team_schedule.php',
 
     // ── PO Module
     'po_index'            => 'PO/index.php',
@@ -51,6 +52,11 @@ define('ROUTES', [
     // ── FINANCE Module
     'delivery_remittance'     => 'FINANCE/delivery_remittance.php',
     'ar_remittance'           => 'FINANCE/ar_remittance.php',
+    'invoice_monitoring'           => 'FINANCE/invoice_monitoring.php',
+
+
+    // ── TEST Module
+    'message_user'           => 'TEST/messages.php',
 
     // ── Forms
     'awards'            => 'forms/awards.php',

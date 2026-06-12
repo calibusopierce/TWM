@@ -72,7 +72,7 @@ $nextUrl = $curPage < $totalPages ? pageUrl($curPage + 1) : '';
 $refueledCount    = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'REFUELED'));
 $notRefueledCount = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'NOT REFUELED'));
 
-sqlsrv_close($conn);
+
 
 ?>
 <!DOCTYPE html>
@@ -93,7 +93,7 @@ sqlsrv_close($conn);
   <div style="font-weight:700;color:#3b82f6;">⏳ Loading Monthly Checklist...</div>
 </div>
 
-<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
+<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; sqlsrv_close($conn); ?>
 
 <div class="container">
 

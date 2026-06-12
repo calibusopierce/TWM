@@ -95,7 +95,7 @@ $displayData = array_slice($data, $offset, $rowLimit);
 $prevUrl = $curPage > 1           ? pageUrl($curPage - 1) : '';
 $nextUrl = $curPage < $totalPages ? pageUrl($curPage + 1) : '';
 
-sqlsrv_close($conn);
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -111,7 +111,7 @@ sqlsrv_close($conn);
 </head>
 <body>
 
-<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
+<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; sqlsrv_close($conn); ?>
 
 <div class="container">
 

@@ -782,6 +782,7 @@ function renderSharedModals(): void { ?>
 // SHARED INLINE STYLES (filter bar + combobox)
 // ============================================================
 function renderSharedStyles(): void { ?>
+<link href="<?= base_url('assets/vendor/bootstrap-icons/bootstrap-icons.min.css') ?>" rel="stylesheet">
 <style>
 .filter-bar-card{background:var(--surface,#fff);border:1.5px solid var(--border,#e2e8f0);border-radius:14px;padding:1rem 1.25rem;margin-bottom:1rem;box-shadow:0 1px 4px rgba(0,0,0,.04);}
 .filter-section-label{font-size:.65rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted,#64748b);margin-bottom:.5rem;display:flex;align-items:center;gap:.35rem;}

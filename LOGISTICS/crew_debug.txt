@@ -1,0 +1,28 @@
+2026-05-29 07:52:45
+ROW COUNT: 2003
+
+FIRST ROW:
+Array
+(
+    [TruckScheduleID] => 141925
+    [EmployeeID] => TID-8827-2022
+    [Employee_Name] => ORLANDO, VIDAL
+    [Position] => DELIVERY HELPER
+    [EmploymentStatus] => Regular Cash
+    [Mobile_Number] => 09107756899
+)
+
+
+SQL:
+
+SELECT
+    ts.TruckScheduleID,
+    ts.EmployeeID,
+    RTRIM(ISNULL(ts.Employee_Name, ''))  AS Employee_Name,
+    RTRIM(ISNULL(ts.Position, ''))       AS Position,
+    RTRIM(ISNULL(ts.Status, ''))         AS EmploymentStatus,
+    RTRIM(ISNULL(ts.Mobile_Number, ''))  AS Mobile_Number
+FROM [dbo].[teamschedule] ts
+WHERE ts.ScheduleDate BETWEEN '2026-04-29' AND '2026-05-29'
+GROUP BY ts.TruckScheduleID, ts.EmployeeID, ts.Employee_Name, ts.Position, ts.Status, ts.Mobile_Number
+ORDER BY ts.TruckScheduleID, ts.Position ASC

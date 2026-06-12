@@ -410,7 +410,6 @@ $anomalyCountRow = runQuery($conn, "
        OR ((ar.Liters-ba.BracketAreaAvg)/NULLIF(ba.BracketAreaAvg,0))>0.5");
 $anomalyCount = $anomalyCountRow[0]['cnt'] ?? 0;
 
-sqlsrv_close($conn);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -420,6 +419,7 @@ sqlsrv_close($conn);
 <title>Fuel Graphs — Tradewell</title>
 <link href="<?= base_url('assets/img/logo.png') ?>" rel="icon">
 <link href="<?= base_url('assets/vendor/fonts/fonts.css') ?>" rel="stylesheet">
+<link href="<?= base_url('assets/vendor/bootstrap-icons/bootstrap-icons.min.css') ?>" rel="stylesheet">
 <link href="<?= base_url('assets/css/fuel.css') ?>" rel="stylesheet">
 <link href="<?= base_url('assets/css/topbar.css') ?>" rel="stylesheet">
 <script src="<?= base_url('assets/vendor/chartjs/chart.umd.min.js') ?>"></script>
@@ -538,7 +538,7 @@ sqlsrv_close($conn);
 </head>
 <body>
 
-<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
+<?php $topbar_page = 'fuel'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; sqlsrv_close($conn); ?>
 
 <div class="container">
 

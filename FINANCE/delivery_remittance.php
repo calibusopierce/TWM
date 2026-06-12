@@ -12,7 +12,7 @@ $currentUserDept   = $_SESSION['Department']  ?? ($_SESSION['department']  ?? ''
 $currentUserBranch = $_SESSION['Branch']      ?? ($_SESSION['branch']      ?? '');
 
 // ── Valid tabs ───────────────────────────────────────────────
-$validTabs = ['summary', 'pending', 'unserved', 'delivered', 'unremitted', 'remitted', 'received', 'by_salesman', 'shorts', 'by_leadman', 'short_stocks'];
+$validTabs = ['summary', 'pending', 'unserved', 'delivered', 'unremitted', 'remitted', 'received', 'by_salesman', 'shorts', 'by_leadman'];
 $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] : 'summary';
 
 // ── Date filters ─────────────────────────────────────────────
@@ -411,31 +411,6 @@ GROUP BY RemittedByName
 ORDER BY TotalRemitted DESC
 ";
 
-$ssView       = isset($_GET['ss_view']) ? trim($_GET['ss_view']) : 'confirmed';
-$ssViewFilter = match($ssView) {
-    'all'       => '',
-    'created'   => " AND UPPER(RTRIM(LTRIM(Status1))) = 'CREATED'",
-    'void'      => " AND UPPER(RTRIM(LTRIM(Status1))) = 'VOID'",
-    default     => " AND UPPER(RTRIM(LTRIM(Status1))) = 'CONFIRMED'",
-};
-
-// ── Build short_stocks dept WHERE (uses Department column) ───
-$ssDeptWhere = $deptActive ? " AND RTRIM(LTRIM(Department)) = '$_deptSafe'" : '';
-
-$q_short_stocks = "
-SELECT
-    SEID, SDID, EmployeeID, EmployeeName, [Position], [Status],
-    Amount, PaidAmount, DID, Department, DateSchedule,
-    PlateNumber, Area, Outlet, TypeShort, RefNo,
-    TotalAmount, NumAccountable, AmountDue, Status1,
-    UserID, DateTimeInput, Balance, [Name]
-FROM [dbo].[View_EmployeeShort]
-WHERE TRY_CAST(Balance AS FLOAT) > 0
-  $ssViewFilter
-  $ssDeptWhere
-ORDER BY TRY_CAST(Balance AS FLOAT) DESC, DateSchedule DESC
-";
-
 $queryMap = [
     'summary'      => $q_summary,
     'pending'      => $q_pending,
@@ -447,7 +422,6 @@ $queryMap = [
     'by_salesman'  => $q_by_salesman,
     'shorts'       => $q_shorts,
     'by_leadman'   => $q_by_leadman,
-    'short_stocks' => $q_short_stocks,
 ];
 $data = runQuery($conn, $queryMap[$tab]);
 
@@ -553,74 +527,12 @@ foreach ($shortsModalRows as $r) {
     $shortsGrouped[$name][] = $r;
 }
 
-// ── Short Stocks stat (Balance > 0, respects dept + status filters) ──
-$shortStocksStatSql = "
-SELECT
-    COUNT(*)                                            AS ShortStocksCount,
-    ROUND(SUM(TRY_CAST(Balance AS FLOAT)), 2)           AS TotalBalance,
-    COUNT(DISTINCT EmployeeID)                          AS TotalEmployees
-FROM [dbo].[View_EmployeeShort]
-WHERE TRY_CAST(Balance AS FLOAT) > 0
-  $ssViewFilter
-  $ssDeptWhere
-";
-$shortStocksStatRow   = runQuery($conn, $shortStocksStatSql)[0] ?? [];
-$shortStocksCount     = $shortStocksStatRow['ShortStocksCount'] ?? 0;
-$shortStocksTotalBal  = $shortStocksStatRow['TotalBalance']     ?? 0;
-$shortStocksEmployees = $shortStocksStatRow['TotalEmployees']   ?? 0;
 
-// ── Short Stocks grouped by SDID (for modal drill-down) ──────
-$shortStocksGroupedSql = "
-SELECT
-    SEID, SDID, EmployeeID, EmployeeName, [Position], [Status],
-    Amount, PaidAmount, DID, Department, DateSchedule,
-    PlateNumber, Area, Outlet, TypeShort, RefNo,
-    TotalAmount, NumAccountable, AmountDue, Status1,
-    UserID, DateTimeInput, Balance, [Name]
-FROM [dbo].[View_EmployeeShort]
-WHERE TRY_CAST(Balance AS FLOAT) > 0
-  $ssViewFilter
-  $ssDeptWhere
-ORDER BY SDID, TRY_CAST(Balance AS FLOAT) DESC
-";
-$shortStocksAllRows = runQuery($conn, $shortStocksGroupedSql);
-$shortStocksGrouped = []; // keyed by SDID
-foreach ($shortStocksAllRows as $r) {
-    foreach ($r as $k => $v) {
-        if ($v instanceof DateTime) $r[$k] = $v->format('Y-m-d');
-    }
-    $sdid = $r['SDID'] ?? 'Unknown';
-    $shortStocksGrouped[$sdid][] = $r;
-}
-
-// Build per-SDID summary (for the grouped table rows)
-$shortStocksSummaryBySdid = [];
-foreach ($shortStocksGrouped as $sdid => $rows) {
-    $totalBal   = array_sum(array_map(fn($r) => (float)($r['Balance']     ?? 0), $rows));
-    $totalAmt   = array_sum(array_map(fn($r) => (float)($r['TotalAmount'] ?? 0), $rows));
-    $totalPaid  = array_sum(array_map(fn($r) => (float)($r['PaidAmount']  ?? 0), $rows));
-    $depts      = array_unique(array_filter(array_map(fn($r) => trim($r['Department'] ?? ''), $rows)));
-    $areas      = array_unique(array_filter(array_map(fn($r) => trim($r['Area']       ?? ''), $rows)));
-    $datesSched = array_filter(array_map(fn($r) => $r['DateSchedule'] ?? '', $rows));
-    $latestDate = !empty($datesSched) ? max($datesSched) : '';
-    // Representative employee (first row)
-    $firstRow   = $rows[0];
-    $shortStocksSummaryBySdid[$sdid] = [
-        'SDID'          => $sdid,
-        'RowCount'      => count($rows),
-        'TotalBalance'  => $totalBal,
-        'TotalAmount'   => $totalAmt,
-        'TotalPaid'     => $totalPaid,
-        'Departments'   => implode(', ', $depts),
-        'Areas'         => implode(', ', $areas),
-        'LatestDate'    => $latestDate,
-        'PlateNumber'   => $firstRow['PlateNumber'] ?? '',
-        'Status1'       => $firstRow['Status1']     ?? '',
-    ];
-}
-
-sqlsrv_close($conn);
-
+// NOTE: $conn is intentionally NOT closed here.
+// topbar.php (included later on this page) calls get_employee_profile($conn),
+// which runs a sqlsrv_query against the same connection. Closing $conn here
+// caused: "supplied resource is not a valid ss_sqlsrv_conn resource" on line 172
+// of nav.php. PHP will close the connection automatically when the script ends.
 
 // ── Helpers ──────────────────────────────────────────────────
 function peso($v): string { return '₱ ' . number_format((float)($v ?? 0), 2); }
@@ -1056,13 +968,6 @@ function tabUrl(string $t): string {
       </span>
       <?php endif; ?>
     </a>
-    <a href="<?= tabUrl('short_stocks') ?>" class="stat-card" style="border-left:3px solid #7c3aed;">
-      <span class="sc-icon">📦</span>
-      <span class="sc-label">Short Stocks</span>
-      <span class="sc-value" style="color:#7c3aed"><?= number_format(count($shortStocksSummaryBySdid)) ?></span>
-      <span class="sc-sub" style="color:#7c3aed;font-weight:700;">₱ <?= number_format($shortStocksTotalBal, 2) ?> total balance</span>
-      <span class="sc-sub"><?= number_format($shortStocksEmployees) ?> employee<?= $shortStocksEmployees != 1 ? 's' : '' ?> · <?= number_format($shortStocksCount) ?> records</span>
-    </a>
     <a href="<?= tabUrl('by_leadman') ?>" class="stat-card" style="border-left:3px solid var(--remit-blue);">
       <span class="sc-icon">👥</span>
       <span class="sc-label">By Leadman</span>
@@ -1186,7 +1091,6 @@ function tabUrl(string $t): string {
     <a href="<?= tabUrl('shorts') ?>"      class="<?= $tab === 'shorts'      ? 'active' : '' ?>" style="<?= $tab !== 'shorts' ? 'color:var(--remit-red);border-color:#fca5a5;' : '' ?>"><i class="bi bi-graph-down-arrow"></i> Shorts <span class="tab-badge" style="<?= $tab !== 'shorts' && $shortsCount > 0 ? 'background:#fee2e2;color:#991b1b;' : '' ?>"><?= number_format($shortsCount) ?></span></a>
     <a href="<?= tabUrl('by_leadman') ?>"  class="<?= $tab === 'by_leadman'  ? 'active' : '' ?>"><i class="bi bi-people-fill"></i> By Leadman <span class="tab-badge"><?= number_format($totalLeadmen) ?></span></a>
     <a href="<?= tabUrl('by_salesman') ?>" class="<?= $tab === 'by_salesman' ? 'active' : '' ?>"><i class="bi bi-person-lines-fill"></i> By Salesman</a>
-    <a href="<?= tabUrl('short_stocks') ?>" class="<?= $tab === 'short_stocks' ? 'active' : '' ?>" style="<?= $tab !== 'short_stocks' && $shortStocksCount > 0 ? 'color:#7c3aed;border-color:#c4b5fd;' : '' ?>"><i class="bi bi-box-seam"></i> Short Stocks <span class="tab-badge" style="<?= $tab !== 'short_stocks' && $shortStocksCount > 0 ? 'background:#ede9fe;color:#5b21b6;' : '' ?>"><?= number_format(count($shortStocksSummaryBySdid)) ?></span></a>
   </div>
 
   <!-- ── Table Section ────────────────────────────────────── -->
@@ -1205,7 +1109,6 @@ function tabUrl(string $t): string {
             'by_salesman' => '🧑‍💼 Summary by Salesman',
             'shorts'       => '📉 Shorts (Under-remitted)',
             'by_leadman'   => '👥 By Leadman / Remitter',
-            'short_stocks' => '📦 Short Stocks — Employees with Outstanding Balance',
         ];
         echo $tabTitles[$tab];
         ?>
@@ -1229,32 +1132,6 @@ function tabUrl(string $t): string {
           </a>
           <a href="<?= shortsViewUrl('settled') ?>" class="svt-btn <?= $shortsViewCurrent === 'settled' ? 'svt-active' : '' ?>" style="<?= $shortsViewCurrent === 'settled' ? 'background:#dcfce7;color:#166534 !important;' : '' ?>">
             ✓ Settled <span style="background:<?= $shortsViewCurrent === 'settled' ? 'rgba(22,101,52,.15)' : '#e5e7eb' ?>;border-radius:999px;padding:0 6px;font-size:.68rem;"><?= number_format($settledShortsCount) ?></span>
-          </a>
-        </div>
-        <?php endif; ?>
-        <?php if ($tab === 'short_stocks'): ?>
-        <?php
-          function ssViewUrl(string $v): string {
-              $p = $_GET; $p['ss_view'] = $v; unset($p['page']);
-              return '?' . http_build_query($p);
-          }
-        ?>
-        <div class="summary-view-toggle">
-          <a href="<?= ssViewUrl('confirmed') ?>" class="svt-btn <?= $ssView === 'confirmed' ? 'svt-active' : '' ?>"
-             style="<?= $ssView === 'confirmed' ? 'background:#dcfce7;color:#166534 !important;' : '' ?>">
-            ✓ Confirmed
-          </a>
-          <a href="<?= ssViewUrl('created') ?>" class="svt-btn <?= $ssView === 'created' ? 'svt-active' : '' ?>"
-             style="<?= $ssView === 'created' ? 'background:#fef9c3;color:#713f12 !important;' : '' ?>">
-            🕐 Created
-          </a>
-          <a href="<?= ssViewUrl('void') ?>" class="svt-btn <?= $ssView === 'void' ? 'svt-active' : '' ?>"
-             style="<?= $ssView === 'void' ? 'background:#fee2e2;color:#991b1b !important;' : '' ?>">
-            ✕ Void
-          </a>
-          <a href="<?= ssViewUrl('all') ?>" class="svt-btn <?= $ssView === 'all' ? 'svt-active' : '' ?>"
-             style="<?= $ssView === 'all' ? 'background:#dbeafe;color:#1e40af !important;' : '' ?>">
-            📋 All
           </a>
         </div>
         <?php endif; ?>
@@ -1748,75 +1625,6 @@ function tabUrl(string $t): string {
       <?php endforeach; endif; ?>
       </tbody>
 
-      <?php elseif ($tab === 'short_stocks'): ?>
-      <!-- ══ SHORT STOCKS tab ══════════════════════════════════════
-           Grouped by SDID. Click a row to see all employees in that group.
-           ═══════════════════════════════════════════════════════ -->
-      <thead><tr>
-        <th onclick="sortTable(0)">SDID <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(1)" class="right"># Records <span class="sort-icon">⇅</span></th>
-        <th>Department(s)</th>
-        <th>Area(s)</th>
-        <th>Plate No.</th>
-        <th onclick="sortTable(5)">Latest Schedule <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(6)" class="right">Total Amount <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(7)" class="right">Amount Paid <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(8)" class="right">Balance Due <span class="sort-icon">⇅</span></th>
-        <th>Status</th>
-        <th style="text-align:center;">Action</th>
-      </tr></thead>
-      <tbody>
-      <?php if (empty($shortStocksSummaryBySdid)): ?>
-        <tr><td colspan="11"><div class="empty-state"><span class="icon">✅</span><p>No short stocks found. All confirmed employee balances have been fully paid!</p></div></td></tr>
-      <?php else:
-        // Sort summaries by TotalBalance descending
-        $sdidSummaries = array_values($shortStocksSummaryBySdid);
-        usort($sdidSummaries, fn($a, $b) => $b['TotalBalance'] <=> $a['TotalBalance']);
-        foreach ($sdidSummaries as $summary):
-          $sBal   = (float)$summary['TotalBalance'];
-          $rowBg  = $sBal >= 5000 ? 'background:#fff0f0;border-left:3px solid #ef4444;'
-                  : ($sBal >= 1000 ? 'background:#fffbeb;border-left:3px solid #eab308;'
-                  : '');
-          $s1     = strtoupper(trim($summary['Status1'] ?? ''));
-          [$s1bg, $s1color, $s1border, $s1icon] = match($s1) {
-              'CONFIRMED' => ['#dcfce7','#166534','#4ade80','✓'],
-              'CREATED'   => ['#fef9c3','#713f12','#fde047','🕐'],
-              'VOID'      => ['#fee2e2','#991b1b','#f87171','✕'],
-              default     => ['#f3f4f6','#374151','#d1d5db','•'],
-          };
-          $sdidJs = htmlspecialchars(json_encode((string)$summary['SDID']), ENT_QUOTES);
-      ?>
-        <tr style="<?= $rowBg ?> cursor:pointer;" onclick="openShortStocksModal(<?= $sdidJs ?>)" title="Click to view all records for SDID <?= htmlspecialchars((string)$summary['SDID']) ?>">
-          <td>
-            <span style="font-weight:700;font-size:.9rem;font-family:monospace;color:#7c3aed;"><?= htmlspecialchars((string)$summary['SDID']) ?></span>
-          </td>
-          <td class="right mono bold">
-            <span style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:999px;padding:2px 10px;font-size:.78rem;font-weight:700;">
-              <?= number_format($summary['RowCount']) ?>
-            </span>
-          </td>
-          <td><?= htmlspecialchars($summary['Departments'] !== '' ? $summary['Departments'] : '—') ?></td>
-          <td class="dim"><?= htmlspecialchars($summary['Areas'] !== '' ? $summary['Areas'] : '—') ?></td>
-          <td class="dim" style="font-size:.82rem;"><?= htmlspecialchars($summary['PlateNumber'] ?? '—') ?></td>
-          <td class="mono dim"><?= fmtDate($summary['LatestDate']) ?></td>
-          <td class="right mono bold amount-pos"><?= peso($summary['TotalAmount']) ?></td>
-          <td class="right mono" style="color:var(--remit-green);"><?= peso($summary['TotalPaid']) ?></td>
-          <td class="right mono bold" style="color:var(--remit-red);font-size:1rem;">▼ <?= peso($sBal) ?></td>
-          <td>
-            <span style="background:<?= $s1bg ?>;color:<?= $s1color ?>;border:1px solid <?= $s1border ?>;border-radius:999px;padding:2px 9px;font-size:.73rem;font-weight:700;white-space:nowrap;">
-              <?= $s1icon ?> <?= htmlspecialchars($summary['Status1'] ?? '—') ?>
-            </span>
-          </td>
-          <td style="text-align:center;">
-            <button onclick="event.stopPropagation(); openShortStocksModal(<?= $sdidJs ?>)"
-                    style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:4px 12px;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">
-              <i class="bi bi-eye"></i> View <?= number_format($summary['RowCount']) ?> record<?= $summary['RowCount'] != 1 ? 's' : '' ?>
-            </button>
-          </td>
-        </tr>
-      <?php endforeach; endif; ?>
-      </tbody>
-
       <?php endif; ?>
 
     </table>
@@ -1935,28 +1743,6 @@ function tabUrl(string $t): string {
   </div>
 </div>
 
-<!-- ════════════════════════════════════════════════════════════
-     MODAL 4: Short Stocks — SDID Detail Drill-Down
-     ════════════════════════════════════════════════════════════ -->
-<div id="shortStocksModal" class="lm-modal-overlay">
-  <div class="lm-modal-box" style="max-width:1100px;">
-    <div class="lm-modal-header">
-      <div class="lm-modal-header-left">
-        <div class="lm-modal-title">📦 Short Stocks — SDID Detail</div>
-        <div class="lm-modal-sub" id="shortStocksModalSub"></div>
-      </div>
-      <div class="lm-modal-header-right">
-        <button class="modal-export-btn csv"   onclick="ssModalExportCSV()"><i class="bi bi-download"></i> CSV</button>
-        <button class="modal-export-btn excel" onclick="ssModalExportExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
-        <button class="modal-export-btn print" onclick="ssModalPrint()"><i class="bi bi-printer"></i> Print</button>
-        <button class="modal-close-btn" onclick="closeShortStocksModal()">&times;</button>
-      </div>
-    </div>
-    <div class="lm-modal-body" id="shortStocksModalBody">
-      <div style="text-align:center;padding:2rem;color:var(--text-dim,#6b7280);">Loading...</div>
-    </div>
-  </div>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <script>
@@ -1966,7 +1752,6 @@ const HEADERS           = Object.keys(ALL_DATA[0] ?? {});
 const UNRECEIVED_DATA   = <?= json_encode($unreceivedGrouped) ?>;
 const RECEIVED_DATA     = <?= json_encode($receivedGrouped) ?>;
 const SHORTS_MODAL_DATA = <?= json_encode($shortsGrouped) ?>;
-const SHORT_STOCKS_GROUPED = <?= json_encode($shortStocksGrouped) ?>;
 
 // ── Active modal tracking (used by export functions) ──────
 let _activeModalName   = '';  // 'unreceived' | 'received' | 'shorts'
@@ -2111,13 +1896,9 @@ function closeModal(modalId) {
         if (e.target === this) closeModal(id);
     });
 });
-document.getElementById('shortStocksModal').addEventListener('click', function(e) {
-    if (e.target === this) closeShortStocksModal();
-});
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         ['unreceivedModal', 'receivedModal', 'shortsModal'].forEach(closeModal);
-        closeShortStocksModal();
         closeRemarksModal();
     }
 });
@@ -2638,40 +2419,6 @@ function printTable() {
               <td class="r" style="color:${shorts>0?'#dc2626':'#6b7280'};font-weight:700">${shorts>0 ? '▼ '+peso(shorts) : '—'}</td>
             </tr>`;
         }).join('') + '</tbody>';
-    } else if (tab === 'short_stocks') {
-        thead = `<thead><tr>
-          <th>SDID</th><th class="r"># Records</th><th>Department(s)</th><th>Area(s)</th>
-          <th>Plate No.</th><th>Latest Schedule</th>
-          <th class="r">Total Amount</th><th class="r">Amount Paid</th><th class="r">Balance Due</th>
-          <th>Status</th>
-        </tr></thead>`;
-        // Use SHORT_STOCKS_GROUPED to build summary rows for print
-        const ssEntries = Object.entries(SHORT_STOCKS_GROUPED).map(([sdid, rows]) => {
-            const totalBal  = rows.reduce((s, r) => s + parseFloat(r.Balance     || 0), 0);
-            const totalAmt  = rows.reduce((s, r) => s + parseFloat(r.TotalAmount || 0), 0);
-            const totalPaid = rows.reduce((s, r) => s + parseFloat(r.PaidAmount  || 0), 0);
-            const depts     = [...new Set(rows.map(r => (r.Department||'').trim()).filter(Boolean))].join(', ');
-            const areas     = [...new Set(rows.map(r => (r.Area||'').trim()).filter(Boolean))].join(', ');
-            const dates     = rows.map(r => r.DateSchedule || '').filter(Boolean);
-            const latest    = dates.length ? dates.sort().pop() : '';
-            return { sdid, rowCount: rows.length, totalBal, totalAmt, totalPaid, depts, areas, latest, status: (rows[0]?.Status1 || ''), plateNo: (rows[0]?.PlateNumber || '') };
-        }).sort((a, b) => b.totalBal - a.totalBal);
-
-        tbody = '<tbody>' + ssEntries.map(e => {
-            const rowBg = e.totalBal >= 5000 ? '#fff0f0' : (e.totalBal >= 1000 ? '#fffbeb' : '');
-            return `<tr style="background:${rowBg}">
-              <td style="font-weight:700;font-family:monospace;color:#7c3aed">${e.sdid}</td>
-              <td class="r">${e.rowCount}</td>
-              <td>${e.depts||'—'}</td>
-              <td>${e.areas||'—'}</td>
-              <td>${e.plateNo||'—'}</td>
-              <td>${e.latest ? String(e.latest).substring(0,10) : '—'}</td>
-              <td class="r" style="color:#16a34a;font-weight:700">${peso(e.totalAmt)}</td>
-              <td class="r">${peso(e.totalPaid)}</td>
-              <td class="r" style="color:#dc2626;font-weight:800">▼ ${peso(e.totalBal)}</td>
-              <td>${e.status||'—'}</td>
-            </tr>`;
-        }).join('') + '</tbody>';
     }
 
     const win = window.open('', '_blank', 'width=1200,height=800');
@@ -2712,275 +2459,6 @@ function printTable() {
         <div class="print-header">
           <h3>${tabTitle}</h3>
           <p>Date Range: <?= htmlspecialchars($baseFrom) ?> → <?= htmlspecialchars($baseTo) ?><br>Exported: <?= date('Y-m-d H:i:s') ?> &nbsp;|&nbsp; Total: ${ALL_DATA.length} records</p>
-        </div>
-        <table>${thead}${tbody}</table>
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
-    win.close();
-}
-
-// ── Short Stocks SDID Modal ───────────────────────────────
-let _ssActiveRows = [];
-let _ssActiveSdid = '';
-
-function openShortStocksModal(sdid) {
-    const rows = SHORT_STOCKS_GROUPED[sdid] || [];
-    _ssActiveRows = rows;
-    _ssActiveSdid = sdid;
-
-    const modal  = document.getElementById('shortStocksModal');
-    const bodyEl = document.getElementById('shortStocksModalBody');
-    const subEl  = document.getElementById('shortStocksModalSub');
-
-    // Summary totals
-    const totalBal  = rows.reduce((s, r) => s + parseFloat(r.Balance     || 0), 0);
-    const totalAmt  = rows.reduce((s, r) => s + parseFloat(r.TotalAmount || 0), 0);
-    const totalPaid = rows.reduce((s, r) => s + parseFloat(r.PaidAmount  || 0), 0);
-
-    subEl.innerHTML = `SDID: <b style="color:#7c3aed;font-family:monospace">${sdid}</b>
-        &nbsp;·&nbsp; ${rows.length} record${rows.length !== 1 ? 's' : ''}
-        &nbsp;·&nbsp; Balance: <b style="color:#dc2626">${pesoFmt(totalBal)}</b>
-        &nbsp;·&nbsp; Total Amt: <b style="color:#16a34a">${pesoFmt(totalAmt)}</b>
-        &nbsp;·&nbsp; Paid: <b>${pesoFmt(totalPaid)}</b>`;
-
-    bodyEl.innerHTML = buildShortStocksTable(rows);
-    modal.style.display = 'flex';
-    document.body.style.overflow = 'hidden';
-}
-
-function closeShortStocksModal() {
-    document.getElementById('shortStocksModal').style.display = 'none';
-    document.body.style.overflow = '';
-    _ssActiveRows = [];
-    _ssActiveSdid = '';
-}
-
-function buildShortStocksTable(rows) {
-    if (!rows.length) {
-        return '<div style="text-align:center;padding:2rem;color:#6b7280;">No records found for this SDID.</div>';
-    }
-
-    const headers = [
-        'Employee Name', 'Employee ID', 'Position', 'Department',
-        'Area', 'Schedule Date', 'Outlet / Route', 'Type of Short',
-        'Total Amount', 'Amount Paid', 'Balance Due',
-        'Ref No.', '# Accountable', 'Status', 'Encoded By', 'Date Encoded'
-    ];
-    const rightCols = new Set([8, 9, 10, 12]);
-
-    let html = `<table style="width:100%;border-collapse:collapse;font-size:.82rem;">
-        <thead><tr style="background:var(--input-bg,#f3f4f6);">`;
-    headers.forEach((h, i) => {
-        const align = rightCols.has(i) ? 'text-align:right;' : '';
-        html += `<th style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);font-weight:700;white-space:nowrap;${align}">${h}</th>`;
-    });
-    html += `</tr></thead><tbody>`;
-
-    // Totals accumulators
-    let sumAmt = 0, sumPaid = 0, sumBal = 0;
-
-    rows.forEach((r, i) => {
-        const balance  = parseFloat(r.Balance     || 0);
-        const totalAmt = parseFloat(r.TotalAmount || 0);
-        const paidAmt  = parseFloat(r.PaidAmount  || 0);
-        sumAmt  += totalAmt;
-        sumPaid += paidAmt;
-        sumBal  += balance;
-
-        const rowBgStyle = balance >= 5000 ? 'background:#fff0f0;'
-                         : balance >= 1000  ? 'background:#fffbeb;'
-                         : (i % 2 === 0 ? '' : 'background:var(--input-bg,#f9fafb);');
-
-        const s1 = (r.Status1 || '').toUpperCase().trim();
-        const [s1bg, s1color, s1border, s1icon] =
-            s1 === 'CONFIRMED' ? ['#dcfce7','#166534','#4ade80','✓'] :
-            s1 === 'CREATED'   ? ['#fef9c3','#713f12','#fde047','🕐'] :
-            s1 === 'VOID'      ? ['#fee2e2','#991b1b','#f87171','✕'] :
-                                 ['#f3f4f6','#374151','#d1d5db','•'];
-
-        const typeShort = (r.TypeShort || '').trim();
-        const dFmt = v => {
-            if (!v) return '—';
-            if (typeof v === 'object' && v.date) return v.date.substring(0, 10);
-            return String(v).substring(0, 10);
-        };
-
-        const cells = [
-            `<span style="font-weight:700;">${r.EmployeeName || '—'}</span>`,
-            `<span style="font-size:.78rem;font-family:monospace;">${r.EmployeeID || '—'}</span>`,
-            `<span style="font-size:.8rem;">${r.Position || '—'}</span>`,
-            (() => {
-                const deptMap = {
-                    'monde':      ['rgba(239,68,68,.15)',  '#ef4444','#fca5a5'],
-                    'century':    ['rgba(59,130,246,.15)', '#3b82f6','#93c5fd'],
-                    'multilines': ['rgba(234,179,8,.15)',  '#ca8a04','#fde047'],
-                    'nutriasia':  ['rgba(16,185,129,.15)', '#059669','#6ee7b7'],
-                    'silverswan': ['rgba(99,102,241,.15)', '#6366f1','#a5b4fc'],
-                };
-                const key = (r.Department || '').toLowerCase().trim();
-                const [bg, color, border] = deptMap[key] || ['rgba(107,114,128,.15)','#6b7280','#9ca3af'];
-                return `<span style="background:${bg};color:${color};border:1px solid ${border};padding:2px 8px;border-radius:999px;font-size:.73rem;font-weight:600;white-space:nowrap;">${r.Department || '—'}</span>`;
-            })(),
-            r.Area || '—',
-            dFmt(r.DateSchedule),
-            `<span style="font-size:.8rem;display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(r.Outlet || '').replace(/"/g, '&quot;')}">${r.Outlet || '—'}</span>`,
-            typeShort ? `<span style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:999px;padding:2px 9px;font-size:.73rem;font-weight:600;white-space:nowrap;">${typeShort}</span>` : '—',
-            `<span style="color:#16a34a;font-weight:700;">${pesoFmt(totalAmt)}</span>`,
-            pesoFmt(paidAmt),
-            `<b style="color:#dc2626;">▼ ${pesoFmt(balance)}</b>`,
-            `<span style="font-size:.78rem;">${r.RefNo || '—'}</span>`,
-            r.NumAccountable || '—',
-            `<span style="background:${s1bg};color:${s1color};border:1px solid ${s1border};border-radius:999px;padding:2px 9px;font-size:.73rem;font-weight:700;white-space:nowrap;">${s1icon} ${r.Status1 || '—'}</span>`,
-            `<span style="font-size:.78rem;">${r.Name || '—'}</span>`,
-            dFmt(r.DateTimeInput),
-        ];
-
-        html += `<tr style="${rowBgStyle}">`;
-        cells.forEach((cell, ci) => {
-            const align = rightCols.has(ci) ? 'text-align:right;' : '';
-            html += `<td style="padding:5px 10px;border:1px solid var(--border,#e5e7eb);${align}">${cell}</td>`;
-        });
-        html += '</tr>';
-    });
-
-    // Totals footer row
-    html += `<tr style="background:var(--input-bg,#f0f0f0);font-weight:700;border-top:2px solid #ccc;">
-        <td colspan="8" style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);font-weight:700;">
-          TOTAL (${rows.length} record${rows.length !== 1 ? 's' : ''})
-        </td>
-        <td style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);text-align:right;color:#16a34a;font-weight:700;">${pesoFmt(sumAmt)}</td>
-        <td style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);text-align:right;font-weight:700;">${pesoFmt(sumPaid)}</td>
-        <td style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);text-align:right;color:#dc2626;font-weight:700;">▼ ${pesoFmt(sumBal)}</td>
-        <td colspan="5" style="padding:6px 10px;border:1px solid var(--border,#e5e7eb);"></td>
-      </tr>`;
-
-    html += '</tbody></table>';
-    return html;
-}
-
-function ssModalExportCSV() {
-    if (!_ssActiveRows.length) return alert('No data to export.');
-    const fields = ['EmployeeName','EmployeeID','Position','Department','Area','DateSchedule',
-                    'Outlet','TypeShort','TotalAmount','PaidAmount','Balance','RefNo',
-                    'NumAccountable','Status1','Name','DateTimeInput'];
-    const labels = ['Employee Name','Employee ID','Position','Department','Area','Schedule Date',
-                    'Outlet/Route','Type of Short','Total Amount','Amount Paid','Balance',
-                    'Ref No.','# Accountable','Status','Encoded By','Date Encoded'];
-    const dFmt = v => {
-        if (!v) return '';
-        if (typeof v === 'object' && v.date) return v.date.substring(0, 10);
-        return String(v).substring(0, 10);
-    };
-    const csv = [
-        labels.map(h => `"${h}"`).join(','),
-        ...(_ssActiveRows.map(r => fields.map(f => {
-            let v = f.includes('Date') || f === 'DateTimeInput' || f === 'DateSchedule'
-                ? dFmt(r[f]) : (r[f] ?? '');
-            return `"${String(v).replace(/"/g, '""')}"`;
-        }).join(',')))
-    ].join('\n');
-    const a = document.createElement('a');
-    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-    a.download = `short_stocks_sdid_${_ssActiveSdid}_<?= date('Ymd') ?>.csv`;
-    a.click();
-}
-
-function ssModalExportExcel() {
-    if (!_ssActiveRows.length) return alert('No data to export.');
-    const fields = ['EmployeeName','EmployeeID','Position','Department','Area','DateSchedule',
-                    'Outlet','TypeShort','TotalAmount','PaidAmount','Balance','RefNo',
-                    'NumAccountable','Status1','Name','DateTimeInput'];
-    const labels = ['Employee Name','Employee ID','Position','Department','Area','Schedule Date',
-                    'Outlet/Route','Type of Short','Total Amount','Amount Paid','Balance',
-                    'Ref No.','# Accountable','Status','Encoded By','Date Encoded'];
-    const dFmt = v => {
-        if (!v) return '';
-        if (typeof v === 'object' && v.date) return v.date.substring(0, 10);
-        return String(v).substring(0, 10);
-    };
-    const plain = _ssActiveRows.map(r => {
-        const row = {};
-        fields.forEach((f, i) => {
-            let v = f.includes('Date') || f === 'DateTimeInput' || f === 'DateSchedule'
-                ? dFmt(r[f]) : (r[f] ?? '');
-            row[labels[i]] = v;
-        });
-        return row;
-    });
-    const ws = XLSX.utils.json_to_sheet(plain);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, `SDID_${_ssActiveSdid}`);
-    XLSX.writeFile(wb, `short_stocks_sdid_${_ssActiveSdid}_<?= date('Ymd') ?>.xlsx`);
-}
-
-function ssModalPrint() {
-    if (!_ssActiveRows.length) return alert('No data to print.');
-    const subEl = document.getElementById('shortStocksModalSub');
-    const subText = subEl ? subEl.textContent : '';
-
-    const headers = ['Employee Name','Employee ID','Position','Department','Area','Schedule Date',
-                     'Outlet/Route','Type of Short','Total Amount','Amount Paid','Balance',
-                     'Ref No.','# Accountable','Status','Encoded By','Date Encoded'];
-    const fields  = ['EmployeeName','EmployeeID','Position','Department','Area','DateSchedule',
-                     'Outlet','TypeShort','TotalAmount','PaidAmount','Balance','RefNo',
-                     'NumAccountable','Status1','Name','DateTimeInput'];
-    const amtCols = new Set([8, 9, 10]);
-    const dFmt = v => {
-        if (!v) return '—';
-        if (typeof v === 'object' && v.date) return v.date.substring(0, 10);
-        return String(v).substring(0, 10);
-    };
-
-    let thead = '<thead><tr>' + headers.map((h, i) =>
-        `<th style="padding:3px 5px;border:1px solid #ccc;background:#e8e8e8;font-size:7.5px;text-align:${amtCols.has(i) ? 'right' : 'left'};white-space:nowrap;">${h}</th>`
-    ).join('') + '</tr></thead>';
-
-    let sumAmt = 0, sumPaid = 0, sumBal = 0;
-    let tbody = '<tbody>' + _ssActiveRows.map((r, i) => {
-        const bg = parseFloat(r.Balance||0) >= 5000 ? 'background:#fff0f0;'
-                 : parseFloat(r.Balance||0) >= 1000  ? 'background:#fffbeb;'
-                 : (i % 2 === 0 ? '' : 'background:#f9fafb;');
-        sumAmt  += parseFloat(r.TotalAmount || 0);
-        sumPaid += parseFloat(r.PaidAmount  || 0);
-        sumBal  += parseFloat(r.Balance     || 0);
-        return `<tr style="${bg}">` + fields.map((f, ci) => {
-            let v;
-            if (f === 'DateSchedule' || f === 'DateTimeInput') v = dFmt(r[f]);
-            else if (amtCols.has(ci)) v = '₱ ' + parseFloat(r[f]||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
-            else v = r[f] ?? '—';
-            const align = amtCols.has(ci) ? 'text-align:right;' : '';
-            return `<td style="padding:2px 4px;border:1px solid #ccc;font-size:8px;${align}">${v}</td>`;
-        }).join('') + '</tr>';
-    }).join('');
-    // Footer
-    tbody += `<tr style="background:#f0f0f0;font-weight:800;">
-        <td colspan="8" style="padding:3px 5px;border:1px solid #ccc;font-size:8px;">TOTAL (${_ssActiveRows.length} records)</td>
-        <td style="padding:3px 5px;border:1px solid #ccc;font-size:8px;text-align:right;color:#166534;">₱ ${sumAmt.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
-        <td style="padding:3px 5px;border:1px solid #ccc;font-size:8px;text-align:right;">₱ ${sumPaid.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
-        <td style="padding:3px 5px;border:1px solid #ccc;font-size:8px;text-align:right;color:#dc2626;">▼ ₱ ${sumBal.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
-        <td colspan="5" style="padding:3px 5px;border:1px solid #ccc;font-size:8px;"></td>
-    </tr></tbody>`;
-
-    const win = window.open('', '_blank', 'width=1200,height=800');
-    win.document.write(`<!DOCTYPE html><html><head>
-        <title>Short Stocks — SDID ${_ssActiveSdid}</title>
-        <style>
-          @page { size: landscape; margin: 10mm 8mm; }
-          * { box-sizing: border-box; }
-          body { font-family: Arial, sans-serif; font-size: 8.5px; color: #111; margin: 0; padding: 6px 8px; }
-          .print-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5px; border-bottom: 1.5px solid #333; padding-bottom: 4px; }
-          .print-header h3 { margin: 0; font-size: 11px; font-weight: 800; }
-          .print-header p  { margin: 0; font-size: 7.5px; color: #555; text-align: right; }
-          table { width: 100%; border-collapse: collapse; table-layout: auto; }
-          thead { display: table-header-group; }
-          @media print { body { padding: 0; } }
-        </style>
-      </head><body>
-        <div class="print-header">
-          <h3>📦 Short Stocks — SDID ${_ssActiveSdid}</h3>
-          <p>${subText}<br>Printed: <?= date('Y-m-d H:i:s') ?></p>
         </div>
         <table>${thead}${tbody}</table>
       </body></html>`);

@@ -20,17 +20,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'docno_detail') {
         WHERE DocNo = '$docnoSafe' AND CreditAmount > 2 AND ARCreate = 0
         ORDER BY DocDate DESC
     ";
-    $stmt = sqlsrv_query($conn, $sql);
-    $rows = [];
-    if ($stmt) {
-        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-            foreach ($row as $k => $v) {
-                if ($v instanceof DateTime) $row[$k] = $v->format('Y-m-d');
-            }
-            $rows[] = $row;
-        }
-        sqlsrv_free_stmt($stmt);
-    }
+    $rows = runQuery($conn, $sql);
     sqlsrv_close($conn);
     echo json_encode($rows);
     exit;
@@ -84,17 +74,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'ar_detail') {
         WHERE ARForCollectionID = $afcId
         ORDER BY InvoiceDate DESC
     ";
-    $stmt = sqlsrv_query($conn, $sql);
-    $rows = [];
-    if ($stmt) {
-        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-            foreach ($row as $k => $v) {
-                if ($v instanceof DateTime) $row[$k] = $v->format('Y-m-d');
-            }
-            $rows[] = $row;
-        }
-        sqlsrv_free_stmt($stmt);
-    }
+    $rows = runQuery($conn, $sql);
     sqlsrv_close($conn);
     echo json_encode($rows);
     exit;
@@ -383,7 +363,7 @@ $queryMap = [
         SELECT
             DocNo, Branch, Department, Salesman, Area,
             MIN(DocDate)      AS DocDate,
-            MIN(Customer)     AS Customer,
+            MIN(RemarksSummary) AS RemarksSummary,
             SUM(CreditAmount) AS CreditAmount,
             COUNT(*)          AS InvoiceCount,
             DATEDIFF(day, CAST(MIN(DocDate) AS DATE), CAST(GETDATE() AS DATE)) AS DaysOld
@@ -392,7 +372,7 @@ $queryMap = [
           AND DocDate BETWEEN '$baseFrom' AND '$baseTo'
           $commonWhere
         GROUP BY DocNo, Branch, Department, Salesman, Area
-        ORDER BY MIN(DocDate) DESC, DocNo
+        ORDER BY DaysOld DESC, DocNo
     ",
     'ar_created' => "
         SELECT
@@ -407,7 +387,7 @@ $queryMap = [
           AND DeliveryDate BETWEEN '$baseFrom' AND '$baseTo'
           $commonWhereAR
         GROUP BY ARForCollectionID, ARCollectionNo, Department, Area, Salesman
-        ORDER BY MIN(DateCollection) DESC, ARForCollectionID
+        ORDER BY DaysOld DESC, ARForCollectionID
     ",
     'ar_collection' => "
         SELECT
@@ -422,7 +402,7 @@ $queryMap = [
           AND DeliveryDate BETWEEN '$baseFrom' AND '$baseTo'
           $commonWhereAR
         GROUP BY ARForCollectionID, ARCollectionNo, Department, Area, Salesman
-        ORDER BY MIN(DateCollection) DESC, ARForCollectionID
+        ORDER BY DaysOld DESC, ARForCollectionID
     ",
     'remitted' => "
         SELECT
@@ -437,7 +417,7 @@ $queryMap = [
           AND DeliveryDate BETWEEN '$baseFrom' AND '$baseTo'
           $commonWhereAR
         GROUP BY ARForCollectionID, ARCollectionNo, Department, Area, Salesman
-        ORDER BY MIN(DateCollection) DESC, ARForCollectionID
+        ORDER BY DaysOld DESC, ARForCollectionID
     ",
     'received' => "
         SELECT
@@ -455,7 +435,8 @@ $queryMap = [
             MIN(d.DeliveryDate)                                 AS DocDate,
             MIN(d.Salesman)                                     AS Salesman,
             ISNULL(SUM(d.InvoiceAmount), 0)                    AS NetAmount,
-            ISNULL(MIN(e.FirstName) + ' ' + MIN(e.LastName), '—') AS ReceivedBy
+            ISNULL(MIN(e.FirstName) + ' ' + MIN(e.LastName), '—') AS ReceivedBy,
+            DATEDIFF(day, CAST(MIN(d.DeliveryDate) AS DATE), CAST(GETDATE() AS DATE)) AS DaysOld
         FROM [dbo].[View_Rimettance_Received] r
         LEFT JOIN [dbo].[View_ARForCollectionDetails] d
             ON d.ARForCollectionID = r.ARForColID
@@ -470,7 +451,7 @@ $queryMap = [
             r.Branch, r.Department, r.Area,
             r.RemittedByname, r.ReceivingDate,
             r.TotalCash, r.TotalCheck
-        ORDER BY r.ReceivingDate DESC, r.RRDID
+        ORDER BY DaysOld DESC, r.RRDID
     ",
     'uncollected' => "
         SELECT
@@ -486,21 +467,13 @@ $queryMap = [
           AND DeliveryDate BETWEEN '$baseFrom' AND '$baseTo'
           $commonWhereAR
         GROUP BY ARForCollectionID, ARCollectionNo, Department, Area, Salesman
-        ORDER BY MIN(DeliveryDate) ASC, ARForCollectionID
+        ORDER BY DaysOld DESC, ARForCollectionID
     ",
 ];
 
 // ── Fetch active tab data (one query, paginate in PHP) ───────
 $sqlError = null;
 $data = runQuery($conn, $queryMap[$tab]);
-
-// Normalize DateTime objects
-foreach ($data as &$row) {
-    foreach ($row as $k => $v) {
-        if ($v instanceof DateTime) $row[$k] = $v->format('Y-m-d');
-    }
-}
-unset($row);
 
 // ── Pagination (PHP-based, no extra COUNT query) ──────────────
 $rowLimit   = 20;
@@ -530,7 +503,14 @@ if ($tab === 'uncollected') {
     $uncollectedAmount = array_sum(array_column($exportData, 'Balance'));
 }
 
-sqlsrv_close($conn);
+// NOTE: $conn is intentionally NOT closed here.
+// topbar.php (included later on this page) calls get_employee_profile($conn),
+// which runs sqlsrv_query() against the same connection. Closing $conn here
+// caused: "supplied resource is not a valid ss_sqlsrv_conn resource" on line 172
+// of nav.php. PHP closes the connection automatically when the script ends.
+// The sqlsrv_close() calls in the AJAX blocks above (lines 34, 59, 72, 98) are
+// safe because those blocks all call exit immediately after — they never reach
+// the topbar include.
 
 function pageUrl(int $p): string {
     $params = $_GET; $params['page'] = $p;
@@ -1025,7 +1005,7 @@ function daysBadgeClass(int $days): string {
               <?php if ($tab === 'total_credit'): ?>
                 <th onclick="sortTable(0)">Doc No</th>
                 <th class="r" onclick="sortTable(1)"># Invoices</th>
-                <th onclick="sortTable(2)">Customer</th>
+                <th onclick="sortTable(2)">Remarks</th>
                 <th onclick="sortTable(3)">Branch</th>
                 <th onclick="sortTable(4)">Department</th>
                 <th onclick="sortTable(5)">Salesman</th>
@@ -1049,7 +1029,7 @@ function daysBadgeClass(int $days): string {
               <?php else: ?>
                 <th onclick="sortTable(0)">AFC No.</th>
                 <th onclick="sortTable(1)">AR Collection No</th>
-                <th onclick="sortTable(2)">Customer</th>
+                <th onclick="sortTable(2)">Remarks</th>
                 <th onclick="sortTable(3)">Doc No</th>
                 <th class="r" onclick="sortTable(4)"># Invoices</th>
                 <th onclick="sortTable(5)">Department</th>
@@ -1092,7 +1072,7 @@ function daysBadgeClass(int $days): string {
               <?php if ($tab === 'total_credit'): ?>
                 <td><b style="color:var(--ar-accent);font-family:'JetBrains Mono',monospace"><?= htmlspecialchars($row['DocNo'] ?? '—') ?></b> <span style="font-size:.65rem;color:#a78bfa;margin-left:.25rem;" title="Click to view invoice lines">&#128269; expand</span></td>
                 <td class="r" style="font-weight:700"><?= (int)($row['InvoiceCount'] ?? 0) ?></td>
-                <td><?= htmlspecialchars($row['Customer'] ?? '—') ?></td>
+                <td><?= htmlspecialchars($row['RemarksSummary'] ?? '—') ?></td>
                 <td><?= branchBadge($row['Branch'] ?? null) ?></td>
                 <td><?= deptBadge($row['Department'] ?? null) ?></td>
                 <td><?= htmlspecialchars($row['Salesman'] ?? '—') ?></td>
@@ -1165,6 +1145,9 @@ function daysBadgeClass(int $days): string {
 // ── Full dataset for export/print (not paginated) ────────────
 const ALL_DATA = <?= json_encode(array_values($exportData), JSON_UNESCAPED_UNICODE) ?>;
 const TAB      = '<?= $tab ?>';
+
+// Sort ALL_DATA by DaysOld descending so print/export matches the table order
+ALL_DATA.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
 const TAB_TITLE = {
     total_credit:  '💳 Total Credit',
     ar_created:    '📋 AR Created',
@@ -1288,6 +1271,7 @@ function printTable() {
           <th>Salesman</th><th>Area</th>
           <th class="r">Net Amount</th><th class="r">Cash</th><th class="r">Check</th>
           <th class="r">Total Remit</th><th>Remitted By</th><th>Received Date</th><th>Received By</th>
+          <th class="r">Days Old</th>
         </tr></thead>`;
         tbody = '<tbody>' + ALL_DATA.map(r => `<tr>
           <td class="mono text-blue">${r.AFCNo??r.ARForColID??'—'}</td>
@@ -1303,6 +1287,7 @@ function printTable() {
           <td>${r.RemittedByname??'—'}</td>
           <td>${fmtDate(r.ReceivedDate)}</td>
           <td>${r.ReceivedBy??'—'}</td>
+          <td class="r">${daysBadge(parseInt(r.DaysOld||0))}</td>
         </tr>`).join('') + '</tbody>';
     } else if (TAB === 'uncollected') {
         thead = `<thead><tr>
@@ -1423,6 +1408,7 @@ function openDocNoModal(docno, customer, invoiceCount) {
                 document.getElementById('modalEmpty').style.display = 'block';
                 return;
             }
+            rows.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
             var total = 0;
             var html  = '';
             rows.forEach(function(r) {
@@ -1487,6 +1473,7 @@ function openARModal(afcId, arcNo, customer, invoiceCount) {
         .then(function(rows) {
             document.getElementById('arModalLoading').style.display = 'none';
             if (!rows || !rows.length) { document.getElementById('arModalEmpty').style.display = 'block'; return; }
+            rows.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
             var totalAmt = 0, totalPaid = 0, totalBal = 0, html = '';
             rows.forEach(function(r) {
                 var amt = parseFloat(r.InvoiceAmount||0), paid = parseFloat(r.PaidAmount||0), bal = parseFloat(r.Balance||0);
@@ -1551,6 +1538,7 @@ function openARDetailModal(afcId, arcNo, customer, invoiceCount) {
                 document.getElementById('arDetailEmpty').style.display = 'block';
                 return;
             }
+            rows.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
 
             var f    = function(v) { return '\u20B1\u00A0' + parseFloat(v||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); };
             var dash = function(v) { var n = parseFloat(v||0); return n === 0 ? '\u2014' : f(n); };

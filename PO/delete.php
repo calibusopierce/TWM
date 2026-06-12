@@ -4,6 +4,13 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator']);
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+rbac_gate($pdo, 'po_index');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
+if (rbac_is_view_only('po_index')) {
+    header("Location: " . base_url('PO/index.php'));
+    exit;
+}
 
 $po_id = (int)($_GET['id'] ?? 0);
 if (!$po_id) { header("Location: index.php"); exit; }

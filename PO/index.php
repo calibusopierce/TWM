@@ -3,6 +3,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator']);
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+rbac_gate($pdo, 'po_index');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
+$isViewOnly = rbac_is_view_only('po_index');
 
 // Filters
 $filter_category = isset($_GET['category']) ? (int)$_GET['category'] : 0;
@@ -154,12 +158,14 @@ $rowCount = count($rows_data);
       <div class="page-subtitle">Create and manage company purchase orders by category</div>
     </div>
     <div style="display:flex;gap:.6rem;">
+      <?php if (!$isViewOnly): ?>
       <a href="<?= base_url('PO/categories.php') ?>" class="btn btn-secondary-custom">
         <i class="bi bi-tags-fill"></i> Categories
       </a>
       <a href="<?= base_url('PO/create.php') ?>" class="btn btn-add">
         <i class="bi bi-plus-lg"></i> New PO
       </a>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -276,14 +282,18 @@ $rowCount = count($rows_data);
                 <div class="action-wrap">
                   <a href="<?= base_url('PO/view.php?id='.$row['po_id']) ?>"
                      class="btn-icon view" title="View"><i class="bi bi-eye-fill"></i></a>
+                  <?php if (!$isViewOnly): ?>
                   <a href="<?= base_url('PO/edit.php?id='.$row['po_id']) ?>"
                      class="btn-icon edit" title="Edit"><i class="bi bi-pencil-fill"></i></a>
+                  <?php endif; ?>
                   <a href="<?= base_url('PO/print.php?id='.$row['po_id']) ?>"
                      class="btn-icon print" title="Print" target="_blank"><i class="bi bi-printer-fill"></i></a>
+                  <?php if (!$isViewOnly): ?>
                   <a href="<?= base_url('PO/delete.php?id='.$row['po_id']) ?>"
                      class="btn-icon del" title="Delete"
                      onclick="return confirm('Delete PO <?= htmlspecialchars($row['po_number']) ?>?')">
                      <i class="bi bi-trash-fill"></i></a>
+                  <?php endif; ?>
                 </div>
               </td>
             </tr>

@@ -3,10 +3,18 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator']);
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+rbac_gate($pdo, 'po_index');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
+$isViewOnly = rbac_is_view_only('po_index');
 
 $messages = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if ($isViewOnly) {
+        $messages[] = ['type' => 'danger', 'text' => 'You have view-only access — changes are not allowed.'];
+        goto render_page;
+    }
 
     // ── ADD ──────────────────────────────────────────────────
     if ($_POST['action'] === 'add') {
@@ -68,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+render_page:
 // Fetch all categories with PO count
 $cats = sqlsrv_query($conn, "
     SELECT c.category_id, c.category_name, c.description,
@@ -168,6 +177,7 @@ $rowCount = count($rows);
   <?php endforeach; ?>
 
   <!-- Add Category Card -->
+  <?php if (!$isViewOnly): ?>
   <div class="add-card">
     <div class="add-card-header">
       <i class="bi bi-plus-circle-fill"></i> Add New Category
@@ -191,6 +201,7 @@ $rowCount = count($rows);
       </form>
     </div>
   </div>
+  <?php endif; ?>
 
   <!-- Categories Table -->
   <div class="table-card">
@@ -241,6 +252,7 @@ $rowCount = count($rows);
               </td>
               <td>
                 <div class="action-wrap">
+                  <?php if (!$isViewOnly): ?>
                   <!-- Edit Button — triggers modal -->
                   <button type="button" class="btn-icon edit" title="Edit"
                     data-bs-toggle="modal" data-bs-target="#editModal"
@@ -265,6 +277,7 @@ $rowCount = count($rows);
                       <i class="bi bi-trash-fill"></i>
                     </span>
                   <?php endif; ?>
+                  <?php endif; // !$isViewOnly ?>
                 </div>
               </td>
             </tr>

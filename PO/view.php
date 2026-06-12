@@ -3,6 +3,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check(['Admin', 'Administrator']);
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+rbac_gate($pdo, 'po_index');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
+$isViewOnly = rbac_is_view_only('po_index');
 
 $po_id = (int)($_GET['id'] ?? 0);
 if (!$po_id) { header("Location: index.php"); exit; }
@@ -96,9 +100,11 @@ $bs = $bs_map[$po['status']] ?? 'bs-draft';
       <a href="<?= base_url('PO/index.php') ?>" class="btn btn-secondary-custom">
         <i class="bi bi-arrow-left"></i> Back
       </a>
+      <?php if (!$isViewOnly): ?>
       <a href="<?= base_url('PO/edit.php?id='.$po_id) ?>" class="btn btn-secondary-custom">
         <i class="bi bi-pencil-fill"></i> Edit
       </a>
+      <?php endif; ?>
       <a href="<?= base_url('PO/print.php?id='.$po_id) ?>" class="btn btn-add" target="_blank">
         <i class="bi bi-printer-fill"></i> Print
       </a>

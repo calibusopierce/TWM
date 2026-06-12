@@ -264,6 +264,7 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
     )
     SELECT
         ja.ApplicationID, ja.FullName, ja.Email, ja.Phone,
+        ja.Mobile_Number,
         ja.Position, ja.Status, ja.DateApplied, ja.DepartmentID,
         ja.TransferredToEmployee,
         d.DepartmentName, d.ColorCode,
@@ -295,6 +296,7 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
                 'FullName'          => $r['FullName']     ?? '',
                 'Email'             => $r['Email']        ?? '',
                 'Phone'             => $r['Phone']        ?? '',
+                'Mobile_Number'     => $r['Mobile_Number'] ?? '',
                 'Position'          => $r['Position']     ?? '',
                 'Status'            => (int)($r['Status'] ?? 0),
                 'DateApplied'       => $r['DateApplied']  ?? null,
@@ -925,6 +927,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
               <div class="app-sub">
                 <i class="bi bi-telephone" style="font-size:.65rem;"></i>
                 <?= htmlspecialchars($app['Phone'] ?: '—') ?>
+              </div>
+              <div class="app-sub">
+                <i class="bi bi-phone" style="font-size:.65rem;"></i>
+                <?= htmlspecialchars($app['Mobile_Number'] ?: '—') ?>
               </div>
             </td>
 

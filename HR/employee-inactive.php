@@ -12,10 +12,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
 rbac_gate($pdo, 'employee_list');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 
 // ── Session context ────────────────────────────────────────────
-$_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$_userType  = $_SESSION['UserType'] ?? '';
+$isAdmin    = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$isViewOnly = rbac_is_view_only('employee_list');
 
 // ══════════════════════════════════════════════════════════════
 //  AJAX / POST handlers (must run before any output)
@@ -98,6 +100,9 @@ if (isset($_GET['export']) && $_GET['export'] === 'excel') {
 // ── CRUD AJAX ──────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
     header('Content-Type: application/json');
+
+    // ── Block all writes for view-only users ──────────────────────
+    rbac_enforce_full_access('employee_list', isAjax: true);
 
     $action = $_POST['_action'];
     $fileNo = (int)($_POST['FileNo'] ?? 0);
@@ -1012,14 +1017,16 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <button type="button" class="btn btn-sm" onclick="printProfile()" style="background:rgba(100,116,139,.1);color:#475569;border:1px solid rgba(100,116,139,.3);font-weight:600;">
             <i class="bi bi-printer"></i> Print Profile
           </button>
-          <?php if ($isAdmin): ?>
+          <?php if ($isAdmin && !$isViewOnly): ?>
           <button type="button" class="btn btn-sm btn-success" id="btnReactivate" onclick="reactivateEmp()">
             <i class="bi bi-person-check"></i> Reactivate
           </button>
           <?php endif; ?>
+          <?php if (!$isViewOnly): ?>
           <button type="button" class="btn btn-sm btn-primary" id="btnEdit" onclick="enterEditMode()">
             <i class="bi bi-pencil"></i> Edit
           </button>
+          <?php endif; ?>
           <!-- Removed Pansamantagal 
           <button type="button" class="btn btn-sm btn-danger" id="btnDelete" onclick="deleteEmp()">
             <i class="bi bi-trash"></i> Delete
@@ -1070,6 +1077,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 // ── State ──────────────────────────────────────────────────────
 let _currentEmp   = {};
 const isAdmin     = <?= $isAdmin ? 'true' : 'false' ?>;
+const IS_VIEW_ONLY = <?= $isViewOnly ? 'true' : 'false' ?>;
 
 // ── Avatar colors (must match PHP) ────────────────────────────
 const _colors = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#ef4444','#06b6d4','#f97316'];
@@ -1207,6 +1215,7 @@ function populateModal(emp) {
 
 // ── Edit mode ──────────────────────────────────────────────────
 function enterEditMode() {
+  if (IS_VIEW_ONLY) { showToast('You have view-only access — editing is not allowed.', 'error'); return; }
   document.getElementById('modalBody').classList.add('edit-mode');
   document.getElementById('editModeStrip').classList.add('active');
   document.getElementById('viewModeActions').style.display = 'none';
@@ -1221,6 +1230,7 @@ function exitEditMode() {
 
 // ── Save ───────────────────────────────────────────────────────
 async function saveEmp() {
+  if (IS_VIEW_ONLY) { showToast('You have view-only access — changes are not allowed.', 'error'); return; }
   const btn = document.getElementById('btnSave');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…';
@@ -1299,6 +1309,7 @@ function showConfirm({ icon, title, message, okLabel, okClass, onOk }) {
 
 // ── Reactivate ────────────────────────────────────────────────
 function reactivateEmp() {
+  if (IS_VIEW_ONLY) { showToast('You have view-only access — reactivation is not allowed.', 'error'); return; }
   showConfirm({
     icon: '<i class="bi bi-person-check-fill" style="color:#10b981;"></i>',
     title: 'Reactivate Employee',

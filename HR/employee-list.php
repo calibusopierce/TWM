@@ -21,9 +21,11 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
 rbac_gate($pdo, 'employee_list');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 
-$_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$_userType  = $_SESSION['UserType'] ?? '';
+$isAdmin    = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$isViewOnly = rbac_is_view_only('employee_list');
 
 // ── FIX: Define $viewAll / $activeDept BEFORE the POST handler ─
 $_sessionDept = trim($_SESSION['Department'] ?? '');
@@ -62,6 +64,12 @@ function serializeRow(array $row): array {
 //  INLINE AJAX — POST handler
 // ══════════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
+
+    // ── Block all writes for view-only users ──────────────────────
+    $readOnlyActions = ['fetch_next_fileno', 'fetch_applicant_for_add', 'export_data'];
+    if (!in_array($_POST['_action'], $readOnlyActions)) {
+        rbac_enforce_full_access('employee_list', isAjax: true);
+    }
 
     // ── UPDATE employee fields ────────────────────────────────
     if ($_POST['_action'] === 'update') {
@@ -626,9 +634,10 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
     #missingFieldsPanel.has-missing{display:block;}
     #missingFieldsPanel ul{margin:.3rem 0 0;padding-left:1.2rem;}
     #missingFieldsPanel li{line-height:1.8;}
-  </style>
-</head>
+    </style>
+  </head>
 <body>
+<script>const IS_VIEW_ONLY = <?= $isViewOnly ? 'true' : 'false' ?>;</script>
 
 <?php $topbar_page = 'employees'; require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
@@ -644,7 +653,7 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       </div>
     </div>
     <div class="action-toolbar">
-      <?php if ($isAdmin): ?>
+      <?php if ($isAdmin && !$isViewOnly): ?>
       <button class="btn btn-sm btn-success" id="btnAddEmployee"
         style="background:rgba(16,185,129,.12);color:#059669;border:1px solid rgba(16,185,129,.35);font-weight:600;">
         <i class="bi bi-person-plus-fill"></i> Add Employee
@@ -820,7 +829,7 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
           <div class="modal-emp-name" id="modalEmpName">—</div>
           <div class="modal-emp-role" id="modalEmpRole">—</div>
           <div style="margin-top:.5rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;" id="modalEmpBadges"></div>
-          <?php if ($isAdmin): ?>
+          <?php if ($isAdmin && !$isViewOnly): ?>
           <div class="active-toggle-wrap mt-2" id="activeToggleWrap">
             <label class="toggle-switch" title="Toggle active status">
               <input type="checkbox" id="activeToggle">
@@ -1395,12 +1404,16 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('editButtons').style.display  = 'none';
   }
 
-  document.getElementById('btnEdit')?.addEventListener('click', enterEditMode);
+  document.getElementById('btnEdit')?.addEventListener('click', () => {
+    if (IS_VIEW_ONLY) { showToast('You have view-only access — editing is not allowed.', 'warning'); return; }
+    enterEditMode();
+  });
   document.getElementById('btnCancelEdit')?.addEventListener('click', () => {
     populateModal(currentEmp); exitEditMode();
   });
 
   document.getElementById('btnSave')?.addEventListener('click', async () => {
+    if (IS_VIEW_ONLY) { showToast('You have view-only access — changes are not allowed.', 'warning'); return; }
     const btn = document.getElementById('btnSave');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…';
@@ -1557,6 +1570,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btnConfirmUpload')?.addEventListener('click', async () => {
+    if (IS_VIEW_ONLY) { showToast('You have view-only access — photo upload is not allowed.', 'warning'); return; }
     if (!selectedFile) return;
 
     const btn     = document.getElementById('btnConfirmUpload');

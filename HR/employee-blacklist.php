@@ -12,10 +12,12 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 
 rbac_gate($pdo, 'employee_list');
+rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 
 // ── Session context ────────────────────────────────────────────
-$_userType = $_SESSION['UserType'] ?? '';
-$isAdmin   = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$_userType  = $_SESSION['UserType'] ?? '';
+$isAdmin    = in_array($_userType, ['Admin', 'Administrator', 'HR']);
+$isViewOnly = rbac_is_view_only('employee_list');
 
 // ── Pagination & filters ───────────────────────────────────────
 $perPage    = 20;

@@ -20,7 +20,7 @@ if (isset($_POST['login'])) {
     // still using MD5 (based on your current DB setup)
     $hashedPassword = md5($password);
 
-    $sql = "SELECT id, username, user_type, Department, DisplayName 
+    $sql = "SELECT id, username, user_type, Department, DisplayName, EmployeeID 
             FROM [dbo].[ViewUserLogIn] 
             WHERE username = ? AND password = ? AND Active = 1";
 
@@ -44,7 +44,7 @@ if (isset($_POST['login'])) {
         $_SESSION['UserType']         = $row['user_type'];
         $_SESSION['Department']       = trim($row['Department']);
         $_SESSION['DisplayName']      = $row['DisplayName'];
-
+        $_SESSION['EmployeeID']       = $row['EmployeeID'];
         // department lookup (safe)
         $_SESSION['DepartmentID'] = null;
 

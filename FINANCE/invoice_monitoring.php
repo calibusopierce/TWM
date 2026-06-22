@@ -520,7 +520,118 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
                 while ($r = sqlsrv_fetch_array($stmtcs, SQLSRV_FETCH_ASSOC)) { $rowscs[] = $r; }
                 sqlsrv_free_stmt($stmtcs);
 
-                $ARFCNo = $rowscs[0]['ARForCollectionID'] ?? null;
+                // Use the highest ARForCollectionID — that's the latest AR collection slip for this invoice
+                $ARFCNo = null;
+                $allARFCIds = [];
+                foreach ($rowscs as $row) {
+                    if (!empty($row['ARForCollectionID'])) {
+                        $allARFCIds[] = (int)$row['ARForCollectionID'];
+                        if ($row['ARForCollectionID'] > $ARFCNo) {
+                            $ARFCNo = $row['ARForCollectionID'];
+                        }
+                    }
+                }
+
+                /* Latest Delivery Received Date
+                 * RType IN ('OP','OC','RE') = delivery records in View_Rimettance_Received
+                 * Joined on DocNo to match the delivery slip for this invoice.
+                 */
+                $latestDeliveryReceivedDate = null;
+                $sqlDeliveryReceived = "
+                    SELECT MAX(r.ReceivingDate) AS DateReceived
+                    FROM [dbo].[View_RemittanceCollectionSlip] v
+                    INNER JOIN [dbo].[View_Rimettance_Received] r
+                        ON r.DocNo = v.DocNo
+                       AND r.RType IN ('OP', 'OC', 'RE')
+                    WHERE v.InvoiceNo = '" . $InvoiceNo . "'
+                      AND ISNULL(r.Void, 0) = 0
+                      AND r.ReceivingDate IS NOT NULL
+                ";
+                $stmtDR = sqlsrv_query($conn, $sqlDeliveryReceived);
+                if ($stmtDR) {
+                    $rowDR = sqlsrv_fetch_array($stmtDR, SQLSRV_FETCH_ASSOC);
+                    if ($rowDR && $rowDR['DateReceived'] instanceof DateTime) {
+                        $latestDeliveryReceivedDate = $rowDR['DateReceived'];
+                    }
+                    sqlsrv_free_stmt($stmtDR);
+                }
+
+                /* Latest AR Received Date
+                 * RType = 'CC' = AR records in View_Rimettance_Received
+                 * Filtered on ARForColID (integer — no quotes).
+                 */
+                $latestARReceivedDate = null;
+                $latestReceivedDate   = null;
+                $receivedARCount      = 0;
+                if (!empty($allARFCIds)) {
+                    $idList = implode(',', $allARFCIds);
+                    $sqlARReceived = "
+                        SELECT MAX(r.ReceivingDate) AS DateReceived,
+                               COUNT(DISTINCT r.ARForColID) AS ReceivedCount
+                        FROM [dbo].[View_Rimettance_Received] r
+                        WHERE r.ARForColID IN (" . $idList . ")
+                          AND r.RType = 'CC'
+                          AND ISNULL(r.Void, 0) = 0
+                          AND r.ReceivingDate IS NOT NULL
+                    ";
+                    $stmtARR = sqlsrv_query($conn, $sqlARReceived);
+                    if ($stmtARR) {
+                        $rowARR = sqlsrv_fetch_array($stmtARR, SQLSRV_FETCH_ASSOC);
+                        if ($rowARR && $rowARR['DateReceived'] instanceof DateTime) {
+                            $latestARReceivedDate = $rowARR['DateReceived'];
+                            $latestReceivedDate   = $rowARR['DateReceived'];
+                        }
+                        $receivedARCount = $rowARR ? (int)$rowARR['ReceivedCount'] : 0;
+                        sqlsrv_free_stmt($stmtARR);
+                    }
+                }
+                $unreceivedARSlips = [];
+                foreach ($rowscs as $csrow) {
+                    $afcId = (int)$csrow['ARForCollectionID'];
+                    $arNo  = $csrow['ARCollectionNo'] ?? '';
+                    if (!isset($unreceivedARSlips[$afcId])) {
+                        $unreceivedARSlips[$afcId] = $arNo;
+                    }
+                }
+                // Now remove the ones that ARE received
+                if (!empty($allARFCIds) && !empty($idList)) {
+                    $sqlRecvIds = "
+                        SELECT DISTINCT r.ARForColID
+                        FROM [dbo].[View_Rimettance_Received] r
+                        WHERE r.ARForColID IN (" . $idList . ")
+                          AND r.RType = 'CC'
+                          AND ISNULL(r.Void, 0) = 0
+                    ";
+                    $stmtRI = sqlsrv_query($conn, $sqlRecvIds);
+                    if ($stmtRI) {
+                        while ($rowRI = sqlsrv_fetch_array($stmtRI, SQLSRV_FETCH_ASSOC)) {
+                            unset($unreceivedARSlips[(int)$rowRI['ARForColID']]);
+                        }
+                        sqlsrv_free_stmt($stmtRI);
+                    }
+                }
+                $unreceivedARCount = count($unreceivedARSlips);
+
+                // Unreceived delivery slips
+                $unreceivedDeliveryDocs = [];
+                $sqlUnrecvDel = "
+                    SELECT v.DocNo
+                    FROM [dbo].[View_RemittanceCollectionSlip] v
+                    LEFT JOIN [dbo].[View_Rimettance_Received] r
+                        ON r.DocNo = v.DocNo
+                       AND r.RType IN ('OP', 'OC', 'RE')
+                       AND ISNULL(r.Void, 0) = 0
+                    WHERE v.InvoiceNo = '" . $InvoiceNo . "'
+                      AND r.RRDID IS NULL
+                ";
+                $stmtUD = sqlsrv_query($conn, $sqlUnrecvDel);
+                if ($stmtUD) {
+                    while ($rowUD = sqlsrv_fetch_array($stmtUD, SQLSRV_FETCH_ASSOC)) {
+                        $unreceivedDeliveryDocs[] = $rowUD['DocNo'];
+                    }
+                    sqlsrv_free_stmt($stmtUD);
+                }
+                $unreceivedDeliveryCount = count($unreceivedDeliveryDocs);
 
             ?>
 
@@ -573,10 +684,40 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
                     <div style="font-size:15px;font-weight:600;color:#111827;"><?php echo htmlspecialchars($summary['Department']); ?></div>
                 </div>
                 <div style="background:#fff;border:1.5px solid #e2e5ea;border-radius:12px;padding:14px 20px;flex:1;min-width:160px;box-shadow:0 1px 4px rgba(0,0,0,.04);">
-                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:4px;">Invoice Date</div>
-                    <div style="font-size:15px;font-weight:600;color:#111827;"><?php echo $summary['InvoiceDate'] instanceof DateTime ? $summary['InvoiceDate']->format('M d, Y') : '—'; ?></div>
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:4px;">Invoice Date</div>
+                <div style="font-size:15px;font-weight:600;color:#111827;">
+                    <?php echo $summary['InvoiceDate'] instanceof DateTime ? $summary['InvoiceDate']->format('M d, Y') : '—'; ?>
                 </div>
             </div>
+
+             <div style="background:#fff;border:1.5px solid #e2e5ea;border-radius:12px;padding:14px 20px;flex:1;min-width:160px;box-shadow:0 1px 4px rgba(0,0,0,.04);">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:4px;">Delivery Received</div>
+                <div style="font-size:15px;font-weight:600;color:#16a34a;">
+                    <?php echo ($latestDeliveryReceivedDate instanceof DateTime) ? $latestDeliveryReceivedDate->format('M d, Y') : '—'; ?>
+                </div>
+                <?php if (!empty($unreceivedDeliveryDocs)): ?>
+                <div style="font-size:11px;color:#dc2626;margin-top:5px;line-height:1.7;">
+                    <?php foreach ($unreceivedDeliveryDocs as $uDoc): ?>
+                    <div>&#9679; <span style="font-family:'IBM Plex Mono',monospace;"><?php echo htmlspecialchars($uDoc); ?></span> not received</div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <div style="background:#fff;border:1.5px solid #e2e5ea;border-radius:12px;padding:14px 20px;flex:1;min-width:160px;box-shadow:0 1px 4px rgba(0,0,0,.04);">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:4px;">AR Received</div>
+                <div style="font-size:15px;font-weight:600;color:#7c3aed;">
+                    <?php echo ($latestARReceivedDate instanceof DateTime) ? $latestARReceivedDate->format('M d, Y') : '—'; ?>
+                </div>
+                <?php if (!empty($unreceivedARSlips)): ?>
+                <div style="font-size:11px;color:#dc2626;margin-top:5px;line-height:1.7;">
+                    <?php foreach ($unreceivedARSlips as $afcId => $arNo): ?>
+                    <div>&#9679; <span style="font-family:'IBM Plex Mono',monospace;">AFC <?php echo $afcId; ?> · <?php echo htmlspecialchars($arNo); ?></span> not received</div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
             <?php endif; ?>
 
             <!-- ══════════════════════════════════════════════════

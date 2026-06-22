@@ -68,8 +68,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'ar_detail') {
     $afcId = (int)($_GET['afc_id'] ?? 0);
     if ($afcId === 0) { echo json_encode([]); exit; }
     $sql = "
-        SELECT InvoiceNo, InvoiceDate, InvoiceAmount, PaidAmount, Balance,
-               DATEDIFF(day, CAST(DeliveryDate AS DATE), CAST(GETDATE() AS DATE)) AS DaysOld
+        SELECT InvoiceNo, InvoiceDate, CustomerName1 AS CustomerName, InvoiceAmount, PaidAmount, Balance,
+        DATEDIFF(day, CAST(DeliveryDate AS DATE), CAST(GETDATE() AS DATE)) AS DaysOld
         FROM [dbo].[View_ARForCollectionDetails]
         WHERE ARForCollectionID = $afcId
         ORDER BY InvoiceDate DESC
@@ -1030,7 +1030,7 @@ function daysBadgeClass(int $days): string {
                 <th onclick="sortTable(0)">AFC No.</th>
                 <th onclick="sortTable(1)">AR Collection No</th>
                 <th onclick="sortTable(2)">Remarks</th>
-                <th onclick="sortTable(3)">Doc No</th>
+                <th onclick="sortTable(3)">Date Collection</th>
                 <th class="r" onclick="sortTable(4)"># Invoices</th>
                 <th onclick="sortTable(5)">Department</th>
                 <th onclick="sortTable(6)">Area</th>
@@ -1097,7 +1097,7 @@ function daysBadgeClass(int $days): string {
                 <td><b style="color:var(--ar-accent);font-family:'JetBrains Mono',monospace"><?= htmlspecialchars($row['ARForCollectionID'] ?? '—') ?></b> <span style="font-size:.65rem;color:#a78bfa;margin-left:.25rem;">&#128269; expand</span></td>
                 <td><b style="font-family:'JetBrains Mono',monospace;color:var(--ar-blue)"><?= htmlspecialchars($row['ARCollectionNo'] ?? '—') ?></b></td>
                 <td><?= htmlspecialchars($row['CustomerName'] ?? '—') ?></td>
-                <td><?= htmlspecialchars($row['DocNo'] ?? '—') ?></td>
+                <td><?= fmtDate($row['DateCollection'] ?? null) ?></td>
                 <td class="r" style="font-weight:700"><?= (int)($row['InvoiceCount'] ?? 0) ?></td>
                 <td><?= deptBadge($row['Department'] ?? null) ?></td>
                 <td><?= htmlspecialchars($row['Area'] ?? '—') ?></td>
@@ -1318,7 +1318,7 @@ function printTable() {
     } else {
         thead = `<thead><tr>
           <th>AFC No.</th><th>AR Collection No</th><th>Customer</th>
-          <th>Doc No</th><th># Invoices</th><th>Department</th><th>Area</th>
+          <th>Date Collection</th><th># Invoices</th><th>Department</th><th>Area</th>
           <th>Salesman</th><th>Delivery Date</th>
           <th class="r">Invoice Amt</th><th class="r">Paid</th><th class="r">Balance</th>
           <th class="r">Days Old</th>
@@ -1329,7 +1329,7 @@ function printTable() {
               <td class="mono text-purple">${r.ARForCollectionID??'—'}</td>
               <td class="mono">${r.ARCollectionNo??'—'}</td>
               <td>${r.CustomerName??'—'}</td>
-              <td class="mono">${r.DocNo??'—'}</td>
+              <td>${fmtDate(r.DateCollection)}</td>
               <td class="r">${r.InvoiceCount??0}</td>
               <td>${deptBadge(r.Department)}</td>
               <td>${r.Area??'—'}</td>
@@ -1484,6 +1484,7 @@ function openARModal(afcId, arcNo, customer, invoiceCount) {
                 html += '<tr style="border-left:3px solid var(--ar-blue)">'
                     + '<td style="font-family:\'JetBrains Mono\',monospace">'+(r.InvoiceNo||'\u2014')+'</td>'
                     + '<td>'+((r.InvoiceDate||'').toString().substring(0,10)||'\u2014')+'</td>'
+                    + '<td>'+(r.CustomerName||'\u2014')+'</td>'
                     + '<td class="r" style="color:var(--ar-green);font-weight:700">'+f(amt)+'</td>'
                     + '<td class="r">'+f(paid)+'</td>'
                     + '<td class="r" style="'+(bal>0?'color:var(--ar-red);font-weight:700':'')+'">'+f(bal)+'</td>'
@@ -1493,7 +1494,7 @@ function openARModal(afcId, arcNo, customer, invoiceCount) {
             document.getElementById('arModalTbody').innerHTML = html;
             var f2 = function(v){ return '&#8369; '+v.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); };
             document.getElementById('arModalTfoot').innerHTML =
-                '<tr><td colspan="2" style="text-align:right;font-size:.75rem;color:var(--text-dim,#6b7280);padding:.5rem .75rem;">TOTAL ('+rows.length+' line'+(rows.length===1?'':'s')+')</td>'
+                '<tr><td colspan="3" style="text-align:right;font-size:.75rem;color:var(--text-dim,#6b7280);padding:.5rem .75rem;">TOTAL ('+rows.length+' line'+(rows.length===1?'':'s')+')</td>'
                 +'<td class="r" style="color:var(--ar-green);font-weight:700;padding:.5rem .75rem;">'+f2(totalAmt)+'</td>'
                 +'<td class="r" style="padding:.5rem .75rem;">'+f2(totalPaid)+'</td>'
                 +'<td class="r" style="'+(totalBal>0?'color:var(--ar-red);':'')+'font-weight:700;padding:.5rem .75rem;">'+f2(totalBal)+'</td>'
@@ -1666,7 +1667,7 @@ function _adRender(rows) {
         + '<td class="r" style="color:var(--ar-accent);">' + (tCheck>0?f(tCheck):'\u2014') + '</td>'
         + '<td class="r" style="color:var(--ar-green);">'  + (tCash>0?f(tCash):'\u2014')   + '</td>'
         + '<td class="r" style="color:' + (tBal>0?'#dc2626':'var(--ar-green)') + ';">' + f(tBal) + '</td>'
-        + '<td colspan="2"></td>'
+        + '<td colspan="3"></td>'
         + '</tr>';
 
     document.getElementById('arDetailTbody').innerHTML = tbody;
@@ -1728,7 +1729,7 @@ document.getElementById('arDetailModal').addEventListener('click', function(e) {
       <div id="arModalLoading" style="text-align:center;padding:2.5rem;color:var(--text-dim,#9ca3af);"><div style="font-size:1.5rem;margin-bottom:.5rem;">⏳</div>Loading invoices...</div>
       <table id="arModalTable" class="main-table" style="display:none;">
         <thead><tr>
-          <th>Invoice No</th><th>Invoice Date</th>
+          <th>Invoice No</th><th>Invoice Date</th><th>Customer</th>
           <th class="r">Invoice Amt</th><th class="r">Paid</th>
           <th class="r">Balance</th><th class="r">Days Old</th>
         </tr></thead>

@@ -23,8 +23,8 @@ $selBranch   = isset($_GET['branch'])   ? trim($_GET['branch'])   : '';
 $selSalesman = isset($_GET['salesman']) ? trim($_GET['salesman']) : '';
 $selArea     = isset($_GET['area'])     ? trim($_GET['area'])     : '';
 
-// ── Date filter — default to last 7 days (lighter default load) ──
-$defaultFrom = date('Y-m-d', strtotime('-6 days')); // last 7 days, inclusive of today
+// ── Date filter — default to last 15 days (inclusive of today) ──
+$defaultFrom = date('Y-m-d', strtotime('-14 days')); // last 15 days, inclusive of today
 $defaultTo   = date('Y-m-d');
 $dateFrom    = isset($_GET['date_from']) && $_GET['date_from'] !== '' ? trim($_GET['date_from']) : $defaultFrom;
 $dateTo      = isset($_GET['date_to'])   && $_GET['date_to']   !== '' ? trim($_GET['date_to'])   : $defaultTo;

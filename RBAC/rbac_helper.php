@@ -46,6 +46,8 @@ function rbac_module_urls(): array {
     return [
         // ── RBAC / Access Control ───────────────────────────────────────────
         'RBAC' => '/TWM/RBAC/index.php',
+        // ── Accounting ───────────────────────────────────────────────────────
+        'short_stocks_paid' => '/TWM/ACCOUNTING/short_stocks_paid.php',
 
         // ── Add more overrides here as needed ───────────────────────────────
         // 'payroll'        => '/TWM/Finance/payroll/index.php',
@@ -145,7 +147,7 @@ function rbac_is_view_only(string $moduleKey): bool {
     $userType = $_SESSION['UserType'] ?? '';
     if (in_array($userType, rbac_superadmin_roles())) return false;
 
-    $userId   = (int)($_SESSION['UserID'] ?? 0);
+    $userId   = (int)($_SESSION['UserID'] ?? 0);            
     $cacheKey = 'rbac_permissions_uid_' . $userId;
     $map      = $_SESSION[$cacheKey] ?? [];
     return ($map[$moduleKey] ?? 'full') === 'view_only';
@@ -165,10 +167,12 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
 
     $categoryMeta = [
         'hr'      => ['label' => 'Human Resources',       'icon' => 'bi-people-fill',    'css' => 'cat-hr'],
-        'fleet'   => ['label' => 'Fleet &amp; Logistics',  'icon' => 'bi-truck',          'css' => 'cat-fleet'],
-        'finance' => ['label' => 'Finance',                'icon' => 'bi-receipt-cutoff', 'css' => 'cat-finance'],
-        'customers' => ['label' => 'Customers',             'icon' => 'bi-geo-alt-fill',   'css' => 'cat-customers'],
-        'general'   => ['label' => 'General',               'icon' => 'bi-grid-fill',      'css' => 'cat-general'],
+        'fleet'   => ['label' => 'Warehouse & Logistics',  'icon' => 'bi-truck',          'css' => 'cat-fleet'],
+        'accounting' => ['label' => 'Accounting',             'icon' => 'bi-calculator',     'css' => 'cat-accounting'],
+        'finance' => ['label' => 'Finance',  'icon' => 'bi-receipt-cutoff', 'css' => 'cat-finance'],
+        'sales'   => ['label' => 'Sales',                  'icon' => 'bi bi-graph-up-arrow',     'css' => 'cat-sales'],
+        'customers' => ['label' => 'Customers',             'icon' => 'bi bi-shop',   'css' => 'cat-customers'],
+        'general'   => ['label' => 'General',               'icon' => 'bi bi-gear-wide-connected',      'css' => 'cat-general'],
     ];
 
     $sections = [];
@@ -188,7 +192,7 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
 
     // Return known categories in fixed order first, then any custom ones alphabetically
     $orderedSections = [];
-    foreach (['hr', 'fleet', 'finance', 'customers', 'general'] as $cat) {
+    foreach (['hr', 'fleet', 'accounting', 'finance', 'sales', 'customers', 'general'] as $cat) {
         if (isset($sections[$cat])) {
             $orderedSections[$cat] = $sections[$cat];
         }

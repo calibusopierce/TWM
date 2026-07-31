@@ -721,9 +721,20 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             $bgColor  = avatarColor($fullName);
             $isActive = (int)($emp['Active']??0) === 1;
             $isBlack  = (int)($emp['Blacklisted']??0) === 1;
-            $picPath  = trim($emp['Picture']??'');
-            if ($picPath && !str_starts_with($picPath,'/')) $picPath = '/TWM/'.$picPath;
-            $hasPic   = !empty($picPath);
+            // Resolve picture path — TWM stores forward-slash paths under employee_pics/,
+            // legacy portal stores backslash paths directly under uploads\
+            $rawPic   = trim($emp['Picture']??'');
+            $normPic  = str_replace('\\', '/', $rawPic); // normalize backslashes
+            $picFile  = $normPic ? basename($normPic) : '';
+            $twmPic   = '';
+            $legacyPic= '';
+            if ($picFile) {
+                $twmPic    = strpos($normPic,'employee_pics') !== false
+                    ? (str_starts_with($normPic,'/') ? $normPic : '/TWM/'.$normPic)
+                    : '/TWM/uploads/employee_pics/'.$picFile;
+                $legacyPic = '/tradewellportal/uploads/'.$picFile;
+            }
+            $hasPic   = !empty($twmPic);
             $empJson = json_encode($emp, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
         ?>
           <tr class="emp-row" data-emp="<?= htmlspecialchars($empJson ?: '{}', ENT_QUOTES, 'UTF-8') ?>"
@@ -731,7 +742,29 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
             <td>
               <div class="emp-name-wrap">
                 <?php if ($hasPic): ?>
-                  <img src="<?= htmlspecialchars($picPath) ?>" class="emp-avatar" alt="<?= htmlspecialchars($fullName) ?>" onerror="this.outerHTML='<div class=\'emp-avatar\' style=\'background:<?= $bgColor ?>;display:inline-flex;align-items:center;justify-content:center;\'><?= htmlspecialchars($initials) ?></div>'">
+                  <img src="<?= htmlspecialchars($twmPic) ?>"
+                       class="emp-avatar"
+                       alt="<?= htmlspecialchars($fullName) ?>"
+                       data-legacy="<?= htmlspecialchars($legacyPic) ?>"
+                       data-initials="<?= htmlspecialchars($initials) ?>"
+                       data-color="<?= htmlspecialchars($bgColor) ?>"
+                       onload="this.removeAttribute('data-legacy-tried')"
+                       onerror="(function(img){
+                         var leg=img.getAttribute('data-legacy');
+                         if(leg&&!img.getAttribute('data-legacy-tried')){
+                           img.setAttribute('data-legacy-tried','1');
+                           img.src=leg;
+                         } else {
+                           var d=document.createElement('div');
+                           d.className='emp-avatar';
+                           d.style.background=img.getAttribute('data-color');
+                           d.style.display='inline-flex';
+                           d.style.alignItems='center';
+                           d.style.justifyContent='center';
+                           d.textContent=img.getAttribute('data-initials');
+                           img.parentNode.replaceChild(d,img);
+                         }
+                       })(this)">
                 <?php else: ?>
                   <div class="emp-avatar" style="background:<?= $bgColor ?>;"><?= htmlspecialchars($initials) ?></div>
                 <?php endif; ?>
@@ -1261,17 +1294,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const isActive  = parseInt(emp.Active||0)===1;
     const isBlack   = parseInt(emp.Blacklisted||0)===1;
 
-    // Avatar with upload overlay
+    // Avatar — resolve picture path from either TWM or legacy portal format
+    // TWM stores:    uploads/employee_pics/filename.jpg  (forward slash, subdirectory)
+    // Legacy stores: uploads\filename.jpg                (backslash, no subdirectory)
     const avatarEl = document.getElementById('modalAvatarEl');
-    let picSrc = (emp.Picture||'').trim();
-    if (picSrc && !picSrc.startsWith('/')) picSrc = '/TWM/'+picSrc;
-    if (picSrc) {
+    const rawPic = (emp.Picture||'').trim();
+    let twmPicSrc = '', legacyPicSrc = '';
+    if (rawPic) {
+      const normalized = rawPic.replace(/\\/g, '/'); // normalize backslashes
+      const filename   = normalized.split('/').pop();
+      // TWM path: always under uploads/employee_pics/
+      twmPicSrc    = normalized.includes('employee_pics')
+        ? (normalized.startsWith('/') ? normalized : '/TWM/' + normalized)
+        : '/TWM/uploads/employee_pics/' + filename;
+      // Legacy path: always under tradewellportal/uploads/
+      legacyPicSrc = '/tradewellportal/uploads/' + filename;
+    }
+    if (twmPicSrc || legacyPicSrc) {
       const img = document.createElement('img');
-      img.src = picSrc;
+      img.src = twmPicSrc || legacyPicSrc;
       img.className = 'modal-avatar';
       img.alt = fullName;
+      img.dataset.legacy = legacyPicSrc;
       img.onerror = function() {
-        this.parentElement.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials}</div>`;
+        const legacy = this.dataset.legacy;
+        if (legacy && !this.dataset.legacyTried) {
+          this.dataset.legacyTried = '1';
+          this.src = legacy; // try legacy portal path
+        } else {
+          // both failed — show initials
+          this.parentElement.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials}</div>`;
+        }
       };
       avatarEl.innerHTML = '';
       avatarEl.appendChild(img);
@@ -1645,9 +1698,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ══ Print single employee ═════════════════════════════════════
   document.getElementById('btnPrint')?.addEventListener('click', () => {
-    buildPrintArea(currentEmp);
-    document.getElementById('printListArea').innerHTML = '';
-    window.print();
+    buildPrintArea(currentEmp, () => {
+      document.getElementById('printListArea').innerHTML = '';
+      window.print();
+    });
   });
 
   function pv(v) { const s=(v===null||v===undefined)?'':String(v).trim(); return s||'—'; }
@@ -1658,15 +1712,30 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="${cls}">${rows.map(([l,v])=>`<div class="print-item"><label>${l}</label><span>${v}</span></div>`).join('')}</div></div>`;
   }
 
-  function buildPrintArea(emp) {
+  function buildPrintArea(emp, onReady) {
     const firstName=emp.FirstName||'', lastName=emp.LastName||'';
     const fullName=`${firstName} ${lastName}`.trim();
     const initials=((firstName[0]||'')+(lastName[0]||'')).toUpperCase();
     const color=avatarColor(fullName);
-    let picSrc=(emp.Picture||'').trim();
-    if (picSrc&&!picSrc.startsWith('/')) picSrc='/TWM/'+picSrc;
-    const avatarHtml=picSrc
-      ?`<img class="print-avatar" src="${picSrc}" alt="${fullName}" onerror="this.outerHTML='<div class=\\'print-avatar-initials\\" style=\\"background:${color};\\">${initials}</div>'">`
+    // Resolve picture path from either TWM or legacy portal format
+    // TWM stores:    uploads/employee_pics/filename.jpg  (forward slash, subdirectory)
+    // Legacy stores: uploads\filename.jpg                (backslash, no subdirectory)
+    const rawPic=(emp.Picture||'').trim();
+    let twmPicSrc='', legacyPicSrc='';
+    if (rawPic) {
+      const normalized=rawPic.replace(/\\/g,'/');
+      const filename=normalized.split('/').pop();
+      twmPicSrc=normalized.includes('employee_pics')
+        ?(normalized.startsWith('/')?normalized:'/TWM/'+normalized)
+        :'/TWM/uploads/employee_pics/'+filename;
+      legacyPicSrc='/tradewellportal/uploads/'+filename;
+    }
+    // For legacy photos (no employee_pics in path), try legacyPicSrc first
+    const isLegacyPic = rawPic && !rawPic.replace(/\\/g,'/').includes('employee_pics');
+    const primarySrc  = isLegacyPic ? legacyPicSrc : twmPicSrc;
+    const fallbackSrc = isLegacyPic ? twmPicSrc    : legacyPicSrc;
+    const avatarHtml=(primarySrc||fallbackSrc)
+      ?`<img class="print-avatar" id="printAvatarImg" src="${primarySrc||fallbackSrc}" alt="${fullName}" data-legacy="${fallbackSrc}">`
       :`<div class="print-avatar-initials" style="background:${color};">${initials}</div>`;
     const isActive=parseInt(emp.Active||0)===1;
     const isBlack=parseInt(emp.Blacklisted||0)===1;
@@ -1688,6 +1757,44 @@ document.addEventListener('DOMContentLoaded', () => {
       ${section('Government IDs',[['SSS Number',pv(emp.SSS_Number)],['TIN Number',pv(emp.TIN_Number)],['PhilHealth',pv(emp.Philhealth_Number)],['HDMF / Pag-IBIG',pv(emp.HDMF)]])}
       ${section('Note',[['Notes',pv(emp.Notes)]])}
       <div class="print-footer">Printed on ${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})} · HR Employee List</div>`;
+    // Wait for image to fully resolve (including legacy fallback) then call onReady
+    const _printImg = document.getElementById('printAvatarImg');
+    if (!_printImg) {
+      if (onReady) onReady();
+      return;
+    }
+    function _doReady() { if (onReady) onReady(); }
+    _printImg.onerror = function() {
+      const legacy = this.dataset.legacy;
+      if (legacy && !this.dataset.legacyTried) {
+        this.dataset.legacyTried = '1';
+        this.onload  = () => _doReady();
+        this.onerror = () => {
+          // both failed — show initials then print
+          const fb = document.createElement('div');
+          fb.className = 'print-avatar-initials';
+          fb.style.background = color;
+          fb.textContent = initials;
+          this.parentNode.replaceChild(fb, this);
+          _doReady();
+        };
+        this.src = legacy;
+      } else {
+        const fb = document.createElement('div');
+        fb.className = 'print-avatar-initials';
+        fb.style.background = color;
+        fb.textContent = initials;
+        this.parentNode.replaceChild(fb, this);
+        _doReady();
+      }
+    };
+    if (_printImg.complete && _printImg.naturalWidth > 0) {
+      _doReady(); // already loaded (cached)
+    } else if (_printImg.complete) {
+      _printImg.onerror(); // complete but broken — trigger fallback
+    } else {
+      _printImg.onload = () => _doReady();
+    }
   }
 
   // ══ Print employee LIST — fetches ALL records via server ══════

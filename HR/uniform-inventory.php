@@ -15,8 +15,11 @@ rbac_gate($pdo, 'uniform_inventory');
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
 $tab         = $_GET['tab'] ?? 'stocks';
-$validTabs   = ['stocks','released','requests','po','receiving','returns','report'];
+$validTabs   = ['stocks','stockview','released','requests','po','receiving','returns','report'];
 if (!in_array($tab, $validTabs)) $tab = 'stocks';
+// Editable Stocks tab is restricted to full-access users; view-only users
+// get bounced to the read-only Stock Overview tab further down, once
+// $canManageStock is resolved (right after department scope detection).
 $sizes       = ['XS','S','M','L','XL','XXL','XXXL','4XL'];
 $depts       = ['Century','Monde','Multilines','NutriAsia'];
 $uTypes      = ['TSHIRT','POLOSHIRT'];
@@ -26,6 +29,41 @@ $uTypes      = ['TSHIRT','POLOSHIRT'];
 $sessionDept   = trim($_SESSION['Department'] ?? '');
 $isAdminView   = in_array($_SESSION['Role'] ?? '', ['Admin','Administrator','HR']) || !in_array($sessionDept, $depts);
 $deptScope     = $isAdminView ? '' : $sessionDept; // '' means no restriction
+
+// ── Stock-edit restriction (RBAC-driven) ────────────────────────
+// Editing raw stock numbers and inspecting returns requires FULL
+// access to the uniform_inventory module. View-only accounts still
+// get the module and the read-only Stock Overview / Returns history —
+// they just don't get the editable Stocks tab or the inspect/dispose/
+// cleaning action buttons. This reuses the same permission_level
+// ('full' vs 'view_only') that already gates Employee List, Blacklist,
+// Inactive, and the PO module — nothing new to maintain per-module.
+$canManageStock  = !rbac_is_view_only('uniform_inventory');
+if ($tab === 'stocks' && !$canManageStock) $tab = 'stockview';
+
+// ── Global write gate for view-only users ───────────────────────
+// View-only accounts get exactly ONE write privilege in this whole
+// module: creating a new entry on the Requested List (save_request).
+// Every other mutating action — releasing, editing, deleting,
+// inspecting returns, POs, receiving, stock edits, everything — is
+// blocked outright here, in one place, rather than trusting each
+// handler below to remember to check. Viewing every tab is untouched.
+if (!$canManageStock && $_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['save_request'])) {
+    $blockedActions = [
+        'save_stock','save_released','delete_released','edit_released',
+        'mark_given','delete_request','save_po','delete_po',
+        'save_receiving','delete_receiving','post_to_stocks','unpost_from_stocks',
+        'save_return','inspect_return','complete_cleaning','add_to_stock',
+        'delete_return','edit_return',
+    ];
+    foreach ($blockedActions as $ba) {
+        if (isset($_POST[$ba])) {
+            $messages[] = ['type'=>'danger','text'=>'Your account has view-only access — you can only submit new entries on the Requested List. This action was not saved.'];
+            unset($_POST[$ba]);
+            break;
+        }
+    }
+}
 
 function rq($conn,$sql,$p=[]) {
     $stmt = empty($p) ? sqlsrv_query($conn,$sql) : sqlsrv_query($conn,$sql,$p);
@@ -74,16 +112,20 @@ function paginationBar(string $pageParam, int $currentPage, int $totalPages, int
     return $h;
 }
 
-// ── POST: Update Stock ─────────────────────────────────────────
+// ── POST: Update Stock (stock managers only) ────────────────────
 if (isset($_POST['save_stock'])) {
-    $type=$_POST['UniformType']??''; $size=$_POST['Size']??'';
-    $prev=intval($_POST['PreviousStock']??0);
-    $add =intval($_POST['AdditionalStock']??0);
-    $less=intval($_POST['LessStock']??0);
-    $stmt=@sqlsrv_query($conn,
-        "UPDATE [dbo].[UniformStock] SET PreviousStock=?,AdditionalStock=?,LessStock=?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
-        [$prev,$add,$less,$currentUser,$type,$size]);
-    $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to update stock.']:['type'=>'success','text'=>"Stock updated: {$type} {$size}."];
+    if (!$canManageStock) {
+        $messages[]=['type'=>'danger','text'=>'You do not have permission to edit stock numbers.'];
+    } else {
+        $type=$_POST['UniformType']??''; $size=$_POST['Size']??'';
+        $prev=intval($_POST['PreviousStock']??0);
+        $add =intval($_POST['AdditionalStock']??0);
+        $less=intval($_POST['LessStock']??0);
+        $stmt=@sqlsrv_query($conn,
+            "UPDATE [dbo].[UniformStock] SET PreviousStock=?,AdditionalStock=?,LessStock=?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",
+            [$prev,$add,$less,$currentUser,$type,$size]);
+        $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to update stock.']:['type'=>'success','text'=>"Stock updated: {$type} {$size}."];
+    }
     $tab='stocks';
 }
 
@@ -498,6 +540,10 @@ if (isset($_POST['unpost_from_stocks'])) {
 }
 
 // ── POST: Save Return ─────────────────────────────────────────
+// NOTE: Returns no longer touch stock at submission time. Every
+// return lands as "Pending Inspection" — a uniform only becomes
+// available again (or moves to cleaning/repair or gets written off)
+// once a stock manager inspects it via inspect_return below.
 if (isset($_POST['save_return'])) {
     $emp    = trim($_POST['ReturnEmployeeName'] ?? '');
     $ut     = trim($_POST['ReturnUniformType']  ?? '');
@@ -505,7 +551,11 @@ if (isset($_POST['save_return'])) {
     $qty    = intval($_POST['ReturnQuantity']   ?? 1);
     $dept   = trim($_POST['ReturnDepartment']   ?? '');
     $dr     = trim($_POST['DateReturned']       ?? date('Y-m-d'));
-    $cond   = in_array($_POST['Condition'] ?? '', ['Good','Damaged']) ? $_POST['Condition'] : 'Good';
+    // Reported condition is descriptive only — it does NOT decide stock
+    // placement. The inspector decides that separately after looking
+    // at the actual item.
+    $condOptions = ['Good','Faded','Stained','Torn','Other'];
+    $cond   = in_array($_POST['Condition'] ?? '', $condOptions) ? $_POST['Condition'] : 'Good';
     $rto    = trim($_POST['ReturnedTo']         ?? '');
     $rem    = trim($_POST['ReturnRemarks']      ?? '');
     $relId  = intval($_POST['ReturnReleasedID'] ?? 0);
@@ -515,18 +565,132 @@ if (isset($_POST['save_return'])) {
     } else {
         $stmt = @sqlsrv_query($conn,
             "INSERT INTO [dbo].[UniformReturns]
-                (ReleasedID,EmployeeName,UniformType,UniformSize,Quantity,Department,DateReturned,Condition,ReturnedTo,Remarks,CreatedBy)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (ReleasedID,EmployeeName,UniformType,UniformSize,Quantity,Department,DateReturned,Condition,InspectionStatus,ReturnedTo,Remarks,CreatedBy)
+             VALUES(?,?,?,?,?,?,?,?,'Pending Inspection',?,?,?)",
             [$relId ?: null, $emp, $ut, $us, $qty, $dept, $dr, $cond, $rto, $rem, $currentUser]);
         if ($stmt !== false) {
-            @sqlsrv_query($conn,
-                "UPDATE [dbo].[UniformStock]
-                 SET ReturnStock=ReturnStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
-                 WHERE UniformType=? AND Size=?",
-                [$qty, $currentUser, $ut, $us]);
-            $messages[] = ['type'=>'success','text'=>"Return recorded: {$qty}x {$ut} ({$us}) from {$emp}. Stock updated."];
+            $messages[] = ['type'=>'success','text'=>"Return recorded: {$qty}x {$ut} ({$us}) from {$emp}. Awaiting inspection — stock not yet updated."];
         } else {
             $messages[] = ['type'=>'danger','text'=>'Failed to save return.'];
+        }
+    }
+    $tab = 'returns';
+}
+
+// ── POST: Inspect Return (stock managers only) ─────────────────
+// Moves a "Pending Inspection" return into exactly one of:
+//   Returned          → UniformStock.ReturnedStock (HELD — confirmed
+//                        good, but NOT counted as Available yet)
+//   Cleaning/Repair    → UniformStock.CleaningStock (held, not available)
+//   Disposed           → UniformStock.DisposedStock (permanently removed)
+// Note: "Returned" still needs a separate "Add to Stock" action before
+// it counts toward Available — see add_to_stock below.
+if (isset($_POST['inspect_return'])) {
+    $id       = intval($_POST['ReturnID'] ?? 0);
+    $decision = $_POST['Decision'] ?? '';
+    $validDecisions = ['Returned'=>'ReturnedStock','Cleaning/Repair'=>'CleaningStock','Disposed'=>'DisposedStock'];
+    if (!$canManageStock) {
+        $messages[] = ['type'=>'danger','text'=>'You do not have permission to inspect returns.'];
+    } elseif ($id<=0 || !isset($validDecisions[$decision])) {
+        $messages[] = ['type'=>'danger','text'=>'Invalid inspection request.'];
+    } else {
+        $row = rq($conn,"SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?",[$id]);
+        if (empty($row)) {
+            $messages[] = ['type'=>'danger','text'=>'Return record not found.'];
+        } elseif (($row[0]['InspectionStatus'] ?? '') !== 'Pending Inspection') {
+            $messages[] = ['type'=>'danger','text'=>'This return has already been inspected.'];
+        } else {
+            $r0 = $row[0];
+            $col = $validDecisions[$decision];
+            $upd = @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformStock] SET {$col}={$col}+?, UpdatedAt=GETDATE(), UpdatedBy=? WHERE UniformType=? AND Size=?",
+                [intval($r0['Quantity']), $currentUser, $r0['UniformType'], $r0['UniformSize']]);
+            if ($upd !== false) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformReturns] SET InspectionStatus=?, InspectedBy=?, InspectedAt=GETDATE() WHERE ReturnID=?",
+                    [$decision, $currentUser, $id]);
+                $inspectMsg = $decision === 'Returned'
+                    ? "Inspected: {$r0['Quantity']}x {$r0['UniformType']} ({$r0['UniformSize']}) confirmed Returned — still needs Add to Stock to count as Available."
+                    : "Inspected: {$r0['Quantity']}x {$r0['UniformType']} ({$r0['UniformSize']}) marked {$decision}.";
+                $messages[] = ['type'=>'success','text'=>$inspectMsg];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to update stock during inspection.'];
+            }
+        }
+    }
+    $tab = 'returns';
+}
+
+// ── POST: Complete Cleaning/Repair (stock managers only) ────────
+// Moves a previously "Cleaning/Repair" return into the SAME "Returned"
+// holding bucket as a fresh good return — it still needs a separate
+// Add to Stock action before it counts as Available. This keeps one
+// consistent final gate no matter which path an item took.
+if (isset($_POST['complete_cleaning'])) {
+    $id = intval($_POST['ReturnID'] ?? 0);
+    if (!$canManageStock) {
+        $messages[] = ['type'=>'danger','text'=>'You do not have permission to update this record.'];
+    } elseif ($id<=0) {
+        $messages[] = ['type'=>'danger','text'=>'Invalid request.'];
+    } else {
+        $row = rq($conn,"SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?",[$id]);
+        if (empty($row)) {
+            $messages[] = ['type'=>'danger','text'=>'Return record not found.'];
+        } elseif (($row[0]['InspectionStatus'] ?? '') !== 'Cleaning/Repair') {
+            $messages[] = ['type'=>'danger','text'=>'This item is not currently in cleaning/repair.'];
+        } else {
+            $r0  = $row[0];
+            $qty = intval($r0['Quantity']);
+            $upd = @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformStock]
+                 SET CleaningStock=CleaningStock-?, ReturnedStock=ReturnedStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
+                 WHERE UniformType=? AND Size=?",
+                [$qty, $qty, $currentUser, $r0['UniformType'], $r0['UniformSize']]);
+            if ($upd !== false) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformReturns] SET InspectionStatus='Returned', InspectedBy=?, InspectedAt=GETDATE() WHERE ReturnID=?",
+                    [$currentUser, $id]);
+                $messages[] = ['type'=>'success','text'=>"{$qty}x {$r0['UniformType']} ({$r0['UniformSize']}) repaired — moved to Returned, still needs Add to Stock to count as Available."];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to update stock.'];
+            }
+        }
+    }
+    $tab = 'returns';
+}
+
+// ── POST: Add to Stock (stock managers only) ────────────────────
+// The final gate: moves a "Returned" (held) item into actual Available
+// stock. This is the ONLY action that increments ReturnStock, which is
+// the only return-related column counted in the CurrentStock formula.
+if (isset($_POST['add_to_stock'])) {
+    $id = intval($_POST['ReturnID'] ?? 0);
+    if (!$canManageStock) {
+        $messages[] = ['type'=>'danger','text'=>'You do not have permission to update stock.'];
+    } elseif ($id<=0) {
+        $messages[] = ['type'=>'danger','text'=>'Invalid request.'];
+    } else {
+        $row = rq($conn,"SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?",[$id]);
+        if (empty($row)) {
+            $messages[] = ['type'=>'danger','text'=>'Return record not found.'];
+        } elseif (($row[0]['InspectionStatus'] ?? '') !== 'Returned') {
+            $messages[] = ['type'=>'danger','text'=>'This item is not in the Returned holding bucket.'];
+        } else {
+            $r0  = $row[0];
+            $qty = intval($r0['Quantity']);
+            $upd = @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformStock]
+                 SET ReturnedStock=ReturnedStock-?, ReturnStock=ReturnStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
+                 WHERE UniformType=? AND Size=?",
+                [$qty, $qty, $currentUser, $r0['UniformType'], $r0['UniformSize']]);
+            if ($upd !== false) {
+                @sqlsrv_query($conn,
+                    "UPDATE [dbo].[UniformReturns] SET InspectionStatus='Stocked', InspectedBy=?, InspectedAt=GETDATE() WHERE ReturnID=?",
+                    [$currentUser, $id]);
+                $messages[] = ['type'=>'success','text'=>"{$qty}x {$r0['UniformType']} ({$r0['UniformSize']}) added to stock — now counted as Available."];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to update stock.'];
+            }
         }
     }
     $tab = 'returns';
@@ -535,19 +699,24 @@ if (isset($_POST['save_return'])) {
 // ── POST: Delete Return ───────────────────────────────────────
 if (isset($_POST['delete_return'])) {
     $id = intval($_POST['ReturnID'] ?? 0);
-    if ($id > 0) {
+    if (!$canManageStock) {
+        $messages[] = ['type'=>'danger','text'=>'You do not have permission to delete return records.'];
+    } elseif ($id > 0) {
         $row = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
         if (!empty($row)) {
-            $r0  = $row[0];
-            $qty = intval($r0['Quantity']);
+            $r0     = $row[0];
+            $qty    = intval($r0['Quantity']);
+            $status = $r0['InspectionStatus'] ?? 'Pending Inspection';
+            // Only reverse stock if this return had already moved into a bucket.
+            $bucketCol = ['Returned'=>'ReturnedStock','Cleaning/Repair'=>'CleaningStock','Disposed'=>'DisposedStock','Stocked'=>'ReturnStock'][$status] ?? null;
             $stmt = @sqlsrv_query($conn, "DELETE FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
             if ($stmt !== false) {
-                @sqlsrv_query($conn,
-                    "UPDATE [dbo].[UniformStock]
-                     SET ReturnStock=ReturnStock-?, UpdatedAt=GETDATE(), UpdatedBy=?
-                     WHERE UniformType=? AND Size=?",
-                    [$qty, $currentUser, $r0['UniformType'], $r0['UniformSize']]);
-                $messages[] = ['type'=>'success','text'=>'Return deleted and stock reversed.'];
+                if ($bucketCol !== null) {
+                    @sqlsrv_query($conn,
+                        "UPDATE [dbo].[UniformStock] SET {$bucketCol}={$bucketCol}-?, UpdatedAt=GETDATE(), UpdatedBy=? WHERE UniformType=? AND Size=?",
+                        [$qty, $currentUser, $r0['UniformType'], $r0['UniformSize']]);
+                }
+                $messages[] = ['type'=>'success','text'=>'Return deleted' . ($bucketCol!==null ? ' and stock reversed.' : ' (was still pending inspection — no stock change needed).')];
             } else {
                 $messages[] = ['type'=>'danger','text'=>'Failed to delete return.'];
             }
@@ -557,6 +726,12 @@ if (isset($_POST['delete_return'])) {
 }
 
 // ── POST: Edit Return ─────────────────────────────────────────
+// While a return is still "Pending Inspection", every field is
+// editable — nothing is in stock yet so there's nothing to reverse.
+// Once it has been inspected (Returned/Cleaning/Repair/Disposed/Stocked),
+// only descriptive fields can change — type/size/qty are locked
+// because editing them would require unwinding whichever stock
+// bucket it already moved into. Use Delete + re-add for that instead.
 if (isset($_POST['edit_return'])) {
     $id   = intval($_POST['ReturnID']          ?? 0);
     $emp  = trim($_POST['ReturnEmployeeName']  ?? '');
@@ -565,35 +740,35 @@ if (isset($_POST['edit_return'])) {
     $qty  = intval($_POST['ReturnQuantity']    ?? 1);
     $dept = trim($_POST['ReturnDepartment']    ?? '');
     $dr   = trim($_POST['DateReturned']        ?? date('Y-m-d'));
-    $cond = in_array($_POST['Condition'] ?? '', ['Good','Damaged']) ? $_POST['Condition'] : 'Good';
+    $condOptions = ['Good','Faded','Stained','Torn','Other'];
+    $cond = in_array($_POST['Condition'] ?? '', $condOptions) ? $_POST['Condition'] : 'Good';
     $rto  = trim($_POST['ReturnedTo']          ?? '');
     $rem  = trim($_POST['ReturnRemarks']       ?? '');
     if (!$id || !$emp || !$ut || !$us) {
         $messages[] = ['type'=>'danger','text'=>'Name, type and size are required.'];
     } else {
         $old = rq($conn, "SELECT * FROM [dbo].[UniformReturns] WHERE ReturnID=?", [$id]);
-        $stmt = @sqlsrv_query($conn,
-            "UPDATE [dbo].[UniformReturns]
-             SET EmployeeName=?,UniformType=?,UniformSize=?,Quantity=?,Department=?,
-                 DateReturned=?,Condition=?,ReturnedTo=?,Remarks=?
-             WHERE ReturnID=?",
-            [$emp, $ut, $us, $qty, $dept, $dr, $cond, $rto, $rem, $id]);
-        if ($stmt !== false) {
-            if (!empty($old)) {
-                @sqlsrv_query($conn,
-                    "UPDATE [dbo].[UniformStock]
-                     SET ReturnStock=ReturnStock-?, UpdatedAt=GETDATE(), UpdatedBy=?
-                     WHERE UniformType=? AND Size=?",
-                    [$old[0]['Quantity'], $currentUser, $old[0]['UniformType'], $old[0]['UniformSize']]);
-            }
-            @sqlsrv_query($conn,
-                "UPDATE [dbo].[UniformStock]
-                 SET ReturnStock=ReturnStock+?, UpdatedAt=GETDATE(), UpdatedBy=?
-                 WHERE UniformType=? AND Size=?",
-                [$qty, $currentUser, $ut, $us]);
-            $messages[] = ['type'=>'success','text'=>"Return updated for {$emp}."];
+        if (empty($old)) {
+            $messages[] = ['type'=>'danger','text'=>'Return record not found.'];
         } else {
-            $messages[] = ['type'=>'danger','text'=>'Failed to update return.'];
+            $isPending = ($old[0]['InspectionStatus'] ?? 'Pending Inspection') === 'Pending Inspection';
+            if (!$isPending) {
+                // Lock type/size/qty to whatever was originally inspected.
+                $ut  = $old[0]['UniformType'];
+                $us  = $old[0]['UniformSize'];
+                $qty = intval($old[0]['Quantity']);
+            }
+            $stmt = @sqlsrv_query($conn,
+                "UPDATE [dbo].[UniformReturns]
+                 SET EmployeeName=?,UniformType=?,UniformSize=?,Quantity=?,Department=?,
+                     DateReturned=?,Condition=?,ReturnedTo=?,Remarks=?
+                 WHERE ReturnID=?",
+                [$emp, $ut, $us, $qty, $dept, $dr, $cond, $rto, $rem, $id]);
+            if ($stmt !== false) {
+                $messages[] = ['type'=>'success','text'=>"Return updated for {$emp}." . (!$isPending ? ' (type/size/qty locked — already inspected)' : '')];
+            } else {
+                $messages[] = ['type'=>'danger','text'=>'Failed to update return.'];
+            }
         }
     }
     $tab = 'returns';
@@ -756,6 +931,16 @@ $retPage   = max(1,min((int)($_GET['retpage']??1),$retPages));
 $retList   = array_slice($retAll,($retPage-1)*20,20);
 $totalReturnCount = array_sum(array_column($retAll,'Quantity'));
 
+// Pending-inspection queue and items currently out for cleaning/repair
+// (dept-scoped the same way as the main returns list, but not paginated —
+// this is meant to be a short actionable queue, not a full history).
+$pendingInspectionWhere = $retWhere !== '' ? $retWhere." AND InspectionStatus='Pending Inspection'" : "WHERE InspectionStatus='Pending Inspection'";
+$cleaningWhere          = $retWhere !== '' ? $retWhere." AND InspectionStatus='Cleaning/Repair'"     : "WHERE InspectionStatus='Cleaning/Repair'";
+$returnedReadyWhere     = $retWhere !== '' ? $retWhere." AND InspectionStatus='Returned'"            : "WHERE InspectionStatus='Returned'";
+$pendingInspectionList  = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$pendingInspectionWhere} ORDER BY DateReturned ASC, CreatedAt ASC");
+$cleaningList           = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$cleaningWhere} ORDER BY DateReturned ASC, CreatedAt ASC");
+$returnedReadyList      = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$returnedReadyWhere} ORDER BY InspectedAt ASC");
+
 // ── Edit mode (Returns) ───────────────────────────────────────
 $editRetId  = intval($_GET['editretid'] ?? 0);
 $editRetRow = [];
@@ -840,7 +1025,7 @@ if ($tab === 'report') {
     // ── Current stock snapshot
     $rptStockSnap = rq($conn,
         "SELECT UniformType, Size,
-                PreviousStock, AdditionalStock, LessStock, ReturnStock,
+                PreviousStock, AdditionalStock, LessStock, ReturnedStock, ReturnStock, CleaningStock, DisposedStock,
                 (PreviousStock + AdditionalStock + ReturnStock - LessStock) AS CurrentStock
          FROM [dbo].[UniformStock]
          ORDER BY UniformType DESC,
@@ -857,11 +1042,11 @@ if ($tab === 'report') {
          GROUP BY FORMAT(DateGiven,'yyyy-MM'), UniformType
          ORDER BY Mo");
 
-    // ── Returns by condition
+    // ── Returns by inspection status
     $rptRetCond = rq($conn,
-        "SELECT Condition, SUM(Quantity) AS TotalQty, COUNT(*) AS Records
+        "SELECT InspectionStatus, SUM(Quantity) AS TotalQty, COUNT(*) AS Records
          FROM [dbo].[UniformReturns] {$wrRet}
-         GROUP BY Condition");
+         GROUP BY InspectionStatus");
 
     // Helper maps
     $rptRelMap  = []; foreach ($rptRelTotals as $r) $rptRelMap[$r['UniformType']]  = $r;
@@ -966,9 +1151,11 @@ if ($tab === 'report') {
       <?php endif; ?>
     </div>
   </div>
+  <?php if($canManageStock): ?>
   <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal">
     <i class="bi bi-plus-lg"></i> Release Uniform
   </button>
+  <?php endif; ?>
 </div>
 
 <?php foreach($messages as $m): ?>
@@ -986,7 +1173,10 @@ if ($tab === 'report') {
 </div>
 
 <div class="tab-bar">
+  <?php if($canManageStock): ?>
   <a href="?tab=stocks"    class="tab-btn <?= $tab==='stocks'   ?'active':'' ?>"><i class="bi bi-boxes"></i> Stocks</a>
+  <?php endif; ?>
+  <a href="?tab=stockview" class="tab-btn <?= $tab==='stockview'?'active':'' ?>"><i class="bi bi-eye-fill"></i> Stock Overview</a>
   <a href="?tab=released"  class="tab-btn <?= $tab==='released' ?'active':'' ?>"><i class="bi bi-send-fill"></i> Uniforms Released</a>
   <a href="?tab=requests"  class="tab-btn <?= $tab==='requests' ?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
   <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
@@ -1003,8 +1193,13 @@ if ($tab === 'report') {
 <?php endif; ?>
 
 <?php
-// ═══ TAB: STOCKS ═══════════════════════════════════════════════
+// ═══ TAB: STOCKS (stock managers only) ═══════════════════════════
 if ($tab==='stocks'):
+if (!$canManageStock):
+?>
+<div class="empty-st"><i class="bi bi-lock-fill"></i><p>You don't have permission to edit stock numbers. Use the <strong>Stock Overview</strong> tab to view current levels.</p></div>
+<?php
+else:
 $typeTotals=[];
 foreach(['TSHIRT','POLOSHIRT'] as $t){
     $sum=0;
@@ -1012,14 +1207,24 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
     $typeTotals[$t]=$sum;
 }
 ?>
-<div style="display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:.65rem 1.1rem;margin-bottom:1.25rem;font-size:.76rem;">
-  <span style="font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;font-size:.68rem;">How to read</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#64748b;display:inline-block;"></span> Previous — stock carried over</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#0891b2;display:inline-block;"></span> Additional — new stock received</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#dc2626;display:inline-block;"></span> Less — released / used</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:10px;height:10px;border-radius:50%;background:#7c3aed;display:inline-block;"></span> Returns — uniforms returned</span>
-  <span style="display:flex;align-items:center;gap:.35rem;color:var(--text-secondary);"><span style="width:22px;height:10px;border-radius:3px;background:linear-gradient(90deg,#1e40af,#3b82f6);display:inline-block;"></span> Current = Previous + Additional + Returns − Less</span>
-  <span style="margin-left:auto;display:flex;align-items:center;gap:.35rem;color:var(--text-muted);font-style:italic;"><i class="bi bi-pencil-square"></i> Edit any number and hit Save</span>
+<!-- ── At-a-glance pipeline: mirrors the Returns tab lifecycle, so the ── -->
+<!-- ── numbers below make sense without anyone explaining them.       ── -->
+<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:1.25rem;">
+  <div style="font-size:.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.65rem;">How a returned uniform becomes Available again</div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;font-size:.78rem;">
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(234,179,8,.08);border:1px solid #fde047;color:#854d0e;border-radius:20px;padding:.3rem .7rem;font-weight:700;">⏳ Pending Inspection</span>
+    <i class="bi bi-arrow-right" style="color:var(--text-muted);"></i>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(67,56,202,.08);border:1px solid #a5b4fc;color:#4338ca;border-radius:20px;padding:.3rem .7rem;font-weight:700;">📦 Returned <span style="font-weight:400;opacity:.8;">(held)</span></span>
+    <i class="bi bi-arrow-right" style="color:var(--text-muted);"></i>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(16,185,129,.08);border:1px solid #6ee7b7;color:#059669;border-radius:20px;padding:.3rem .7rem;font-weight:700;">✅ Stocked <span style="font-weight:400;opacity:.8;">→ counts as Available</span></span>
+    <span style="margin-left:.4rem;color:var(--text-muted);">or</span>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(13,148,136,.08);border:1px solid #5eead4;color:#0d9488;border-radius:20px;padding:.3rem .7rem;font-weight:700;">💧 Cleaning/Repair <span style="font-weight:400;opacity:.8;">(held, then → Returned)</span></span>
+    <span style="color:var(--text-muted);">or</span>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(220,38,38,.08);border:1px solid #fca5a5;color:#dc2626;border-radius:20px;padding:.3rem .7rem;font-weight:700;">🗑️ Disposed <span style="font-weight:400;opacity:.8;">(never counted)</span></span>
+  </div>
+  <div style="margin-top:.6rem;font-size:.73rem;color:var(--text-muted);display:flex;align-items:center;gap:.35rem;">
+    <i class="bi bi-info-circle-fill"></i> Only what's <strong style="color:#059669;">Stocked</strong> below counts toward the big number for each size. Manage returns on the <strong>Returns</strong> tab — click <strong>Edit</strong> here only to adjust raw stock counts (new purchases, corrections).
+  </div>
 </div>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;" class="stock-side-grid">
@@ -1051,46 +1256,152 @@ foreach(['TSHIRT','POLOSHIRT'] as $t){
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 1fr 90px 70px;background:var(--surface-2);border-bottom:1px solid var(--border);padding:0 .85rem;">
-    <div style="padding:.45rem 0;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);">Size</div>
-    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#64748b;text-align:center;"><i class="bi bi-arrow-counterclockwise"></i> Previous</div>
-    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#0891b2;text-align:center;"><i class="bi bi-plus-circle-fill"></i> Additional</div>
-    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#dc2626;text-align:center;"><i class="bi bi-dash-circle-fill"></i> Less</div>
-    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#7c3aed;text-align:center;"><i class="bi bi-arrow-return-left"></i> Returns</div>
-    <div style="padding:.45rem .3rem;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:<?= $meta['accent'] ?>;text-align:center;"><i class="bi bi-check-circle-fill"></i> Current</div>
-    <div></div>
+  <div>
+  <?php foreach($sizes as $sz):
+    $row=$stockMap[$type][$sz]??['PreviousStock'=>0,'AdditionalStock'=>0,'LessStock'=>0,'ReturnedStock'=>0,'ReturnStock'=>0,'CleaningStock'=>0,'DisposedStock'=>0,'CurrentStock'=>0];
+    $cur=max(0,intval($row['CurrentStock']??0));
+    if($cur===0){$dot='#dc2626';$tip='Out of stock';$statusLbl='Out of stock';}
+    elseif($cur<=5){$dot='#ca8a04';$tip='Low stock';$statusLbl='Low stock';}
+    else{$dot='#10b981';$tip='In stock';$statusLbl='available';}
+    $returnedQ=intval($row['ReturnedStock']??0);
+    $cleaningQ=intval($row['CleaningStock']??0);
+    $disposedQ=intval($row['DisposedStock']??0);
+    $hasPipeline = ($returnedQ>0 || $cleaningQ>0 || $disposedQ>0);
+    $prevS=intval($row['PreviousStock']??0); $addS=intval($row['AdditionalStock']??0); $lessS=intval($row['LessStock']??0); $stockedS=intval($row['ReturnStock']??0);
+  ?>
+  <div style="padding:.75rem 1.1rem;border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:.85rem;flex-wrap:wrap;">
+      <span style="background:<?= $meta['light'] ?>;color:<?= $meta['accent'] ?>;border:1px solid <?= $meta['border'] ?>;border-radius:6px;padding:.25rem .55rem;font-family:'DM Mono',monospace;font-size:.8rem;font-weight:800;min-width:40px;text-align:center;"><?= $sz ?></span>
+
+      <div style="display:flex;align-items:baseline;gap:.4rem;min-width:110px;">
+        <span style="font-family:'DM Mono',monospace;font-weight:800;font-size:1.35rem;color:<?= $dot ?>;line-height:1;"><?= $cur ?></span>
+        <span style="font-size:.72rem;color:var(--text-muted);font-weight:600;"><?= $statusLbl ?></span>
+      </div>
+
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;flex:1;">
+        <?php if($returnedQ>0): ?><span style="background:rgba(67,56,202,.08);color:#4338ca;border:1px solid rgba(67,56,202,.2);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Confirmed good, waiting to be added to stock">📦 <?= $returnedQ ?> returned</span><?php endif; ?>
+        <?php if($cleaningQ>0): ?><span style="background:rgba(13,148,136,.08);color:#0d9488;border:1px solid rgba(13,148,136,.2);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Out for cleaning/repair">💧 <?= $cleaningQ ?> cleaning</span><?php endif; ?>
+        <?php if($disposedQ>0): ?><span style="background:rgba(153,27,27,.06);color:#991b1b;border:1px solid rgba(153,27,27,.15);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Lifetime written off">🗑️ <?= $disposedQ ?> disposed (lifetime)</span><?php endif; ?>
+        <?php if(!$hasPipeline): ?><span style="color:var(--text-muted);font-size:.72rem;font-style:italic;">✓ nothing pending</span><?php endif; ?>
+      </div>
+
+      <?php if($canManageStock): ?>
+      <details style="margin-left:auto;">
+        <summary style="cursor:pointer;list-style:none;background:var(--surface-2);border:1px solid var(--border);border-radius:7px;padding:.3rem .6rem;font-size:.72rem;font-weight:700;color:var(--text-secondary);display:inline-flex;align-items:center;gap:.3rem;user-select:none;"><i class="bi bi-pencil-square"></i> Edit</summary>
+        <form method="POST" style="margin-top:.65rem;padding:.85rem;background:var(--surface-2);border:1px dashed var(--border);border-radius:10px;">
+          <input type="hidden" name="save_stock" value="1">
+          <input type="hidden" name="UniformType" value="<?= $type ?>">
+          <input type="hidden" name="Size" value="<?= $sz ?>">
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;">
+            <div>
+              <label style="display:block;font-size:.65rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;">Previous</label>
+              <input type="number" name="PreviousStock" class="stock-input" value="<?= $prevS ?>" min="0" style="width:80px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:.65rem;font-weight:700;color:#0891b2;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;">Additional</label>
+              <input type="number" name="AdditionalStock" class="stock-input" value="<?= $addS ?>" min="0" style="width:80px;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.04);">
+            </div>
+            <div>
+              <label style="display:block;font-size:.65rem;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;">Less</label>
+              <input type="number" name="LessStock" class="stock-input" value="<?= $lessS ?>" min="0" style="width:80px;border-color:rgba(220,38,38,.25);background:rgba(220,38,38,.04);">
+            </div>
+            <div>
+              <label style="display:block;font-size:.65rem;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;">Stocked <i class="bi bi-lock-fill" style="font-size:.6rem;" title="Only changes via Add to Stock on the Returns tab"></i></label>
+              <div style="width:80px;text-align:center;padding:.4rem 0;background:rgba(124,58,237,.06);border:1px solid rgba(124,58,237,.2);border-radius:8px;font-family:'DM Mono',monospace;font-weight:700;color:#7c3aed;"><?= $stockedS ?></div>
+            </div>
+            <button type="submit" style="background:var(--primary);color:#fff;border:none;cursor:pointer;font-size:.75rem;font-weight:700;padding:.5rem .8rem;border-radius:8px;font-family:'DM Sans',sans-serif;display:inline-flex;align-items:center;gap:.3rem;white-space:nowrap;" onmouseover="this.style.background='#1d3fa3'" onmouseout="this.style.background='var(--primary)'">
+              <i class="bi bi-floppy-fill"></i> Save
+            </button>
+          </div>
+          <div style="margin-top:.55rem;font-size:.72rem;color:var(--text-muted);font-family:'DM Mono',monospace;">
+            <?= $cur ?> available = <?= $prevS ?> previous + <?= $addS ?> additional + <?= $stockedS ?> stocked − <?= $lessS ?> less
+          </div>
+        </form>
+      </details>
+      <?php endif; ?>
+    </div>
+  </div>
+  <?php endforeach; ?>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:.6rem 1.1rem;background:<?= $meta['light'] ?>;border-top:1.5px solid <?= $meta['border'] ?>;">
+    <span style="font-size:.75rem;font-weight:700;color:<?= $meta['accent'] ?>;display:flex;align-items:center;gap:.35rem;"><i class="bi bi-calculator-fill"></i> Total <?= $meta['label'] ?> Available</span>
+    <span style="font-family:'DM Mono',monospace;font-size:1rem;font-weight:800;color:<?= $meta['accent'] ?>;"><?= number_format($typeTotal) ?> <span style="font-size:.72rem;font-weight:600;">pcs</span></span>
+  </div>
+</div>
+<?php endforeach; ?>
+</div>
+<?php endif; /* canManageStock */ ?>
+
+<?php
+// ═══ TAB: STOCK OVERVIEW (read-only, everyone with module access) ═
+elseif($tab==='stockview'):
+$typeTotalsRO=[];
+foreach(['TSHIRT','POLOSHIRT'] as $t){
+    $sum=0;
+    foreach($sizes as $sz) $sum+=max(0,intval(($stockMap[$t][$sz]??['CurrentStock'=>0])['CurrentStock']));
+    $typeTotalsRO[$t]=$sum;
+}
+?>
+<div style="display:flex;align-items:center;gap:.55rem;background:rgba(59,130,246,.06);border:1.5px solid rgba(59,130,246,.2);border-radius:10px;padding:.55rem 1rem;margin-bottom:1rem;font-size:.78rem;color:var(--primary);font-weight:600;">
+  <i class="bi bi-eye-fill" style="font-size:.95rem;"></i>
+  <span>Read-only view. Your account has view-only access to Uniform Inventory — editing stock numbers and inspecting returns requires full access.</span>
+</div>
+
+<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:1.25rem;">
+  <div style="font-size:.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.65rem;">How a returned uniform becomes Available again</div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;font-size:.78rem;">
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(234,179,8,.08);border:1px solid #fde047;color:#854d0e;border-radius:20px;padding:.3rem .7rem;font-weight:700;">⏳ Pending Inspection</span>
+    <i class="bi bi-arrow-right" style="color:var(--text-muted);"></i>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(67,56,202,.08);border:1px solid #a5b4fc;color:#4338ca;border-radius:20px;padding:.3rem .7rem;font-weight:700;">📦 Returned <span style="font-weight:400;opacity:.8;">(held)</span></span>
+    <i class="bi bi-arrow-right" style="color:var(--text-muted);"></i>
+    <span style="display:flex;align-items:center;gap:.4rem;background:rgba(16,185,129,.08);border:1px solid #6ee7b7;color:#059669;border-radius:20px;padding:.3rem .7rem;font-weight:700;">✅ Stocked <span style="font-weight:400;opacity:.8;">→ counts as Available</span></span>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;" class="stock-side-grid">
+<?php foreach([
+    'TSHIRT'   =>['label'=>'T-Shirt',   'emoji'=>'👕','accent'=>'#1e40af','light'=>'rgba(59,130,246,.08)','border'=>'rgba(59,130,246,.25)','role'=>'Logistics employees'],
+    'POLOSHIRT'=>['label'=>'Polo Shirt','emoji'=>'👔','accent'=>'#0891b2','light'=>'rgba(8,145,178,.08)', 'border'=>'rgba(8,145,178,.25)', 'role'=>'Office / Sales employees'],
+] as $type=>$meta):
+    $typeTotal=$typeTotalsRO[$type];
+?>
+<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:var(--shadow-sm);">
+  <div style="background:<?= $meta['light'] ?>;border-bottom:1.5px solid <?= $meta['border'] ?>;padding:.85rem 1.1rem;">
+    <div style="display:flex;align-items:center;gap:.55rem;">
+      <span style="font-size:1.4rem;line-height:1;"><?= $meta['emoji'] ?></span>
+      <div>
+        <div style="font-family:'Sora',sans-serif;font-size:.95rem;font-weight:800;color:<?= $meta['accent'] ?>;line-height:1.2;"><?= $meta['label'] ?></div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:.1rem;"><?= $meta['role'] ?></div>
+      </div>
+    </div>
   </div>
   <div>
   <?php foreach($sizes as $sz):
-    $row=$stockMap[$type][$sz]??['PreviousStock'=>0,'AdditionalStock'=>0,'LessStock'=>0,'CurrentStock'=>0];
+    $row=$stockMap[$type][$sz]??['ReturnedStock'=>0,'CleaningStock'=>0,'DisposedStock'=>0,'CurrentStock'=>0];
     $cur=max(0,intval($row['CurrentStock']??0));
-    if($cur===0){$dot='#dc2626';$tip='Out of stock';}
-    elseif($cur<=5){$dot='#ca8a04';$tip='Low stock';}
-    else{$dot='#10b981';$tip='In stock';}
+    if($cur===0){$dot='#dc2626';$statusLbl='Out of stock';}
+    elseif($cur<=5){$dot='#ca8a04';$statusLbl='Low stock';}
+    else{$dot='#10b981';$statusLbl='available';}
+    $returnedQ=intval($row['ReturnedStock']??0);
+    $cleaningQ=intval($row['CleaningStock']??0);
+    $disposedQ=intval($row['DisposedStock']??0);
+    $hasPipeline = ($returnedQ>0 || $cleaningQ>0 || $disposedQ>0);
   ?>
-  <form method="POST" style="display:grid;grid-template-columns:44px 1fr 1fr 1fr 1fr 90px 70px;padding:0 .85rem;border-bottom:1px solid var(--border);align-items:center;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background=''">
-    <input type="hidden" name="save_stock" value="1">
-    <input type="hidden" name="UniformType" value="<?= $type ?>">
-    <input type="hidden" name="Size" value="<?= $sz ?>">
-    <div style="padding:.55rem 0;"><span style="background:<?= $meta['light'] ?>;color:<?= $meta['accent'] ?>;border:1px solid <?= $meta['border'] ?>;border-radius:6px;padding:.15rem .45rem;font-family:'DM Mono',monospace;font-size:.78rem;font-weight:800;"><?= $sz ?></span></div>
-    <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="PreviousStock"   class="stock-input" value="<?= intval($row['PreviousStock']??0) ?>"   min="0"></div>
-    <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="AdditionalStock" class="stock-input" value="<?= intval($row['AdditionalStock']??0) ?>" min="0" style="border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.04);"></div>
-    <div style="padding:.45rem .3rem;text-align:center;"><input type="number" name="LessStock"       class="stock-input" value="<?= intval($row['LessStock']??0) ?>"       min="0" style="border-color:rgba(220,38,38,.25);background:rgba(220,38,38,.04);"></div>
-    <div style="padding:.45rem .3rem;text-align:center;">
-      <span style="font-family:'DM Mono',monospace;font-size:.82rem;font-weight:700;color:#7c3aed;background:rgba(124,58,237,.07);border:1px solid rgba(124,58,237,.2);border-radius:6px;padding:.2rem .45rem;display:inline-block;"><?= intval($row['ReturnStock']??0) ?></span>
-    </div>
-    <div style="padding:.45rem .3rem;text-align:center;">
-      <div style="display:flex;align-items:center;justify-content:center;gap:.3rem;">
-        <span style="width:7px;height:7px;border-radius:50%;background:<?= $dot ?>;display:inline-block;" title="<?= $tip ?>"></span>
-        <span style="font-family:'DM Mono',monospace;font-weight:800;font-size:.88rem;color:<?= $dot ?>;"><?= $cur ?></span>
+  <div style="padding:.75rem 1.1rem;border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:.85rem;flex-wrap:wrap;">
+      <span style="background:<?= $meta['light'] ?>;color:<?= $meta['accent'] ?>;border:1px solid <?= $meta['border'] ?>;border-radius:6px;padding:.25rem .55rem;font-family:'DM Mono',monospace;font-size:.8rem;font-weight:800;min-width:40px;text-align:center;"><?= $sz ?></span>
+      <div style="display:flex;align-items:baseline;gap:.4rem;min-width:110px;">
+        <span style="font-family:'DM Mono',monospace;font-weight:800;font-size:1.35rem;color:<?= $dot ?>;line-height:1;"><?= $cur ?></span>
+        <span style="font-size:.72rem;color:var(--text-muted);font-weight:600;"><?= $statusLbl ?></span>
+      </div>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;flex:1;">
+        <?php if($returnedQ>0): ?><span style="background:rgba(67,56,202,.08);color:#4338ca;border:1px solid rgba(67,56,202,.2);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Confirmed good, waiting to be added to stock">📦 <?= $returnedQ ?> returned</span><?php endif; ?>
+        <?php if($cleaningQ>0): ?><span style="background:rgba(13,148,136,.08);color:#0d9488;border:1px solid rgba(13,148,136,.2);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Out for cleaning/repair">💧 <?= $cleaningQ ?> cleaning</span><?php endif; ?>
+        <?php if($disposedQ>0): ?><span style="background:rgba(153,27,27,.06);color:#991b1b;border:1px solid rgba(153,27,27,.15);border-radius:20px;padding:.15rem .55rem;font-size:.7rem;font-weight:700;white-space:nowrap;" title="Lifetime written off">🗑️ <?= $disposedQ ?> disposed (lifetime)</span><?php endif; ?>
+        <?php if(!$hasPipeline): ?><span style="color:var(--text-muted);font-size:.72rem;font-style:italic;">✓ nothing pending</span><?php endif; ?>
       </div>
     </div>
-    <div style="padding:.45rem 0;text-align:center;">
-      <button type="submit" style="background:var(--primary);color:#fff;border:none;cursor:pointer;font-size:.72rem;font-weight:700;padding:.3rem .55rem;border-radius:7px;font-family:'DM Sans',sans-serif;display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap;" onmouseover="this.style.background='#1d3fa3'" onmouseout="this.style.background='var(--primary)'">
-        <i class="bi bi-floppy-fill"></i> Save
-      </button>
-    </div>
-  </form>
+  </div>
   <?php endforeach; ?>
   </div>
   <div style="display:flex;align-items:center;justify-content:space-between;padding:.6rem 1.1rem;background:<?= $meta['light'] ?>;border-top:1.5px solid <?= $meta['border'] ?>;">
@@ -1158,7 +1469,9 @@ elseif($tab==='released'): ?>
     <div class="panel-title"><i class="bi bi-send-fill" style="color:var(--primary-light)"></i> Uniforms Released / Sent</div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
       <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Given: <?= number_format($totalGivenCount) ?> pcs<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div>
+      <?php if($canManageStock): ?>
       <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal"><i class="bi bi-plus-lg"></i> Add</button>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -1214,6 +1527,7 @@ elseif($tab==='released'): ?>
       <td style="font-size:.78rem;"><?= safe($r['RequestedBy']??'—') ?></td>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Remarks']??'—') ?></td>
       <td style="text-align:center;white-space:nowrap;">
+        <?php if($canManageStock): ?>
         <a href="?tab=released&editid=<?= $r['ReleasedID'] ?>&relpage=<?= $relPage ?>" class="btn-sm-action btn-edit">
           <i class="bi bi-pencil-fill"></i> Edit
         </a>
@@ -1222,6 +1536,9 @@ elseif($tab==='released'): ?>
           <input type="hidden" name="ReleasedID" value="<?= $r['ReleasedID'] ?>">
           <button type="submit" class="btn-sm-action btn-del" title="Delete & revert to pending"><i class="bi bi-arrow-return-left"></i></button>
         </form>
+        <?php else: ?>
+        <span style="color:var(--text-muted);font-size:.72rem;">—</span>
+        <?php endif; ?>
       </td>
     </tr>
     <?php endforeach; ?>
@@ -1352,6 +1669,7 @@ if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
       <?php endif; ?>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Remarks']??'—') ?></td>
       <td style="text-align:center;white-space:nowrap;">
+        <?php if($canManageStock): ?>
         <?php if(!$r['IsGiven']): ?>
         <form method="POST" style="display:inline;">
           <input type="hidden" name="mark_given" value="1">
@@ -1373,6 +1691,9 @@ if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
           <input type="hidden" name="RequestID"      value="<?= $r['RequestID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
+        <?php else: ?>
+        <span style="color:var(--text-muted);font-size:.72rem;"><?= $r['IsGiven'] ? 'Given' : 'Pending' ?></span>
+        <?php endif; ?>
       </td>
     </tr>
     <?php endforeach; ?>
@@ -1412,11 +1733,13 @@ elseif($tab==='po'): ?>
         <button class="btn-sm-action" onclick="printPO(<?= $po['POID'] ?>,'<?= addslashes($po['PONumber']??'') ?>')" style="color:#0891b2;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.05);">
           <i class="bi bi-printer-fill"></i> Print
         </button>
+        <?php if($canManageStock): ?>
         <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete PO?','This will delete the PO and all its items. Continue?','#dc2626')">
           <input type="hidden" name="delete_po" value="1">
           <input type="hidden" name="POID" value="<?= $po['POID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
+        <?php endif; ?>
       </td>
     </tr>
     <?php endforeach; ?>
@@ -1427,6 +1750,7 @@ elseif($tab==='po'): ?>
 </div>
 <?php endif; ?>
 
+<?php if($canManageStock): ?>
 <div class="panel">
   <div class="panel-hdr" style="cursor:pointer;" onclick="togglePanel('poFormBody','poFormChevron')">
     <div class="panel-title"><i class="bi bi-file-earmark-plus-fill" style="color:var(--primary-light)"></i> Create Purchase Order</div>
@@ -1500,6 +1824,7 @@ elseif($tab==='po'): ?>
   </div>
   </div><!-- /poFormBody -->
 </div>
+<?php endif; ?>
 
 <?php
 // ═══ TAB: RECEIVING ════════════════════════════════════════════
@@ -1567,6 +1892,7 @@ foreach($poItemsAll as $pi) {
         <button class="btn-sm-action btn-edit" onclick="viewRecItems(<?= $rec['RFID'] ?>,'<?= addslashes($rec['PONumber']??'') ?>','<?= addslashes($rec['UniformType']??'') ?>')">
           <i class="bi bi-eye-fill"></i> View
         </button>
+        <?php if($canManageStock): ?>
         <?php if(!$isPosted): ?>
         <a href="?tab=receiving&editrecid=<?= $rec['RFID'] ?>&recpage=<?= $recPage ?>" class="btn-sm-action btn-edit">
           <i class="bi bi-pencil-fill"></i> Edit
@@ -1597,6 +1923,7 @@ foreach($poItemsAll as $pi) {
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
         <?php endif; ?>
+        <?php endif; ?>
         <!-- FIX: was $rec['ReceivingID'] — correct PK is RFID -->
         <button class="btn-sm-action" onclick="printReceiving(<?= $rec['RFID'] ?>)" style="color:#0891b2;border-color:rgba(8,145,178,.3);background:rgba(8,145,178,.05);">
           <i class="bi bi-printer-fill"></i> Print
@@ -1612,6 +1939,7 @@ foreach($poItemsAll as $pi) {
 <?php endif; ?>
 
 <!-- ── Receiving Form ──────────────────────────────────────────── -->
+<?php if($canManageStock): ?>
 <div class="panel">
   <div class="panel-hdr" <?php if($editRecId<=0): ?>style="cursor:pointer;" onclick="togglePanel('recFormBody','recFormChevron')"<?php endif; ?>>
     <div class="panel-title">
@@ -1825,6 +2153,7 @@ foreach($poItemsAll as $pi) {
   </div><!-- /padding -->
   </div><!-- /recFormBody -->
 </div>
+<?php endif; ?>
 
 <script>
 const recPOItems = <?= json_encode($poItemsMap) ?>;
@@ -1943,6 +2272,8 @@ elseif($tab==='returns'):
   $erDate = $er['DateReturned'] instanceof DateTime
     ? $er['DateReturned']->format('Y-m-d')
     : (is_string($er['DateReturned']) ? date('Y-m-d',strtotime($er['DateReturned'])) : date('Y-m-d'));
+  $erPending = ($er['InspectionStatus'] ?? 'Pending Inspection') === 'Pending Inspection';
+  $condOptionsEdit = ['Good'=>'✅ Good','Faded'=>'🎨 Faded','Stained'=>'💧 Stained','Torn'=>'✂️ Torn','Other'=>'❓ Other'];
 ?>
 <div class="panel" style="border:2px solid var(--primary-light);">
   <div class="panel-hdr" style="background:var(--primary-glow);">
@@ -1950,6 +2281,11 @@ elseif($tab==='returns'):
     <a href="?tab=returns" class="btn-sm-action btn-del"><i class="bi bi-x-lg"></i> Cancel</a>
   </div>
   <div style="padding:1.25rem;">
+    <?php if(!$erPending): ?>
+    <div style="display:flex;align-items:center;gap:.5rem;background:rgba(234,179,8,.08);border:1px solid #fde047;border-radius:8px;padding:.5rem .75rem;margin-bottom:1rem;font-size:.78rem;color:#854d0e;">
+      <i class="bi bi-lock-fill"></i> Already inspected (<?= safe($er['InspectionStatus']) ?>) — type, size and quantity are locked. Delete and re-add the return if those need to change.
+    </div>
+    <?php endif; ?>
     <form method="POST">
       <input type="hidden" name="edit_return" value="1">
       <input type="hidden" name="ReturnID"    value="<?= $er['ReturnID'] ?>">
@@ -1957,23 +2293,22 @@ elseif($tab==='returns'):
         <div class="col-md-4"><label class="form-label">Employee Name <span style="color:#dc2626">*</span></label><input type="text" name="ReturnEmployeeName" class="form-control" value="<?= safe($er['EmployeeName']) ?>" required></div>
         <div class="col-md-3">
           <label class="form-label">Uniform Type <span style="color:#dc2626">*</span></label>
-          <select name="ReturnUniformType" class="form-select" required>
+          <select name="ReturnUniformType" class="form-select" required <?= $erPending?'':'disabled' ?>>
             <option value="TSHIRT"    <?= $er['UniformType']==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt (Logistics)</option>
             <option value="POLOSHIRT" <?= $er['UniformType']==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt (Office/Sales)</option>
           </select>
         </div>
         <div class="col-md-2">
           <label class="form-label">Size <span style="color:#dc2626">*</span></label>
-          <select name="ReturnUniformSize" class="form-select" required>
+          <select name="ReturnUniformSize" class="form-select" required <?= $erPending?'':'disabled' ?>>
             <?php foreach($sizes as $sz): ?><option value="<?= $sz ?>" <?= $er['UniformSize']===$sz?'selected':'' ?>><?= $sz ?></option><?php endforeach; ?>
           </select>
         </div>
-        <div class="col-md-1"><label class="form-label">Qty</label><input type="number" name="ReturnQuantity" class="form-control" value="<?= intval($er['Quantity']) ?>" min="1"></div>
+        <div class="col-md-1"><label class="form-label">Qty</label><input type="number" name="ReturnQuantity" class="form-control" value="<?= intval($er['Quantity']) ?>" min="1" <?= $erPending?'':'disabled' ?>></div>
         <div class="col-md-2">
-          <label class="form-label">Condition</label>
+          <label class="form-label">Condition (reported)</label>
           <select name="Condition" class="form-select">
-            <option value="Good"    <?= ($er['Condition']??'')==='Good'   ?'selected':'' ?>>✅ Good</option>
-            <option value="Damaged" <?= ($er['Condition']??'')==='Damaged'?'selected':'' ?>>⚠️ Damaged</option>
+            <?php foreach($condOptionsEdit as $val=>$lbl): ?><option value="<?= $val ?>" <?= ($er['Condition']??'')===$val?'selected':'' ?>><?= $lbl ?></option><?php endforeach; ?>
           </select>
         </div>
         <div class="col-md-3">
@@ -1993,12 +2328,120 @@ elseif($tab==='returns'):
 </div>
 <?php endif; ?>
 
+<?php if(!empty($pendingInspectionList)): ?>
+<div class="panel" style="border:1.5px solid #fde047;">
+  <div class="panel-hdr" style="background:rgba(234,179,8,.08);">
+    <div class="panel-title" style="color:#854d0e;"><i class="bi bi-hourglass-split"></i> Pending Inspection (<?= count($pendingInspectionList) ?>)</div>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Reported</th><th>Date</th><?php if($canManageStock): ?><th style="text-align:center;">Inspect</th><?php endif; ?></tr></thead>
+    <tbody>
+    <?php foreach($pendingInspectionList as $p): ?>
+    <tr>
+      <td style="font-weight:700;"><?= safe($p['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $p['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $p['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($p['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($p['Quantity']) ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($p['Condition']??'—') ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($p['DateReturned']) ?></td>
+      <?php if($canManageStock): ?>
+      <td style="text-align:center;white-space:nowrap;">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Confirm this item is Returned?','It will be HELD as confirmed-good, but not yet counted as Available. Use Add to Stock afterward to make it available.','#4338ca')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Returned">
+          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Returned</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Send for cleaning/repair?','It will be held out of available stock until marked repaired.','#0d9488')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Cleaning/Repair">
+          <button type="submit" class="btn-sm-action" style="background:rgba(13,148,136,.1);color:#0d9488;border:1px solid #5eead4;"><i class="bi bi-droplet-fill"></i> Cleaning</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Dispose this item?','It will be permanently removed from stock.','#dc2626')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Disposed">
+          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i> Dispose</button>
+        </form>
+      </td>
+      <?php endif; ?>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php if(!empty($cleaningList)): ?>
+<div class="panel" style="border:1.5px solid #5eead4;">
+  <div class="panel-hdr" style="background:rgba(13,148,136,.08);">
+    <div class="panel-title" style="color:#0d9488;"><i class="bi bi-droplet-fill"></i> In Cleaning / Repair (<?= count($cleaningList) ?>)</div>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Sent</th><?php if($canManageStock): ?><th style="text-align:center;">Action</th><?php endif; ?></tr></thead>
+    <tbody>
+    <?php foreach($cleaningList as $c): ?>
+    <tr>
+      <td style="font-weight:700;"><?= safe($c['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $c['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $c['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($c['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($c['Quantity']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($c['InspectedAt'] ?? $c['DateReturned']) ?></td>
+      <?php if($canManageStock): ?>
+      <td style="text-align:center;">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Mark as repaired?','It will move to the Returned holding bucket. Use Add to Stock afterward to make it available.','#4338ca')">
+          <input type="hidden" name="complete_cleaning" value="1"><input type="hidden" name="ReturnID" value="<?= $c['ReturnID'] ?>">
+          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Repaired</button>
+        </form>
+      </td>
+      <?php endif; ?>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php if(!empty($returnedReadyList)): ?>
+<div class="panel" style="border:1.5px solid #a5b4fc;">
+  <div class="panel-hdr" style="background:rgba(67,56,202,.08);">
+    <div class="panel-title" style="color:#4338ca;"><i class="bi bi-box-seam-fill"></i> Returned — Ready to Stock In (<?= count($returnedReadyList) ?>)</div>
+  </div>
+  <div style="padding:.5rem 1rem;font-size:.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);">Confirmed good and physically back, but not yet counted as Available. Click <strong>Add to Stock</strong> once it's actually placed back in inventory.</div>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Confirmed</th><?php if($canManageStock): ?><th style="text-align:center;">Action</th><?php endif; ?></tr></thead>
+    <tbody>
+    <?php foreach($returnedReadyList as $rr): ?>
+    <tr>
+      <td style="font-weight:700;"><?= safe($rr['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $rr['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $rr['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($rr['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($rr['Quantity']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($rr['InspectedAt'] ?? $rr['DateReturned']) ?></td>
+      <?php if($canManageStock): ?>
+      <td style="text-align:center;">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Add to Stock?','This will finally count it toward Available stock.','#059669')">
+          <input type="hidden" name="add_to_stock" value="1"><input type="hidden" name="ReturnID" value="<?= $rr['ReturnID'] ?>">
+          <button type="submit" class="btn-sm-action" style="background:rgba(16,185,129,.1);color:#059669;border:1px solid #6ee7b7;"><i class="bi bi-box-arrow-in-down"></i> Add to Stock</button>
+        </form>
+      </td>
+      <?php endif; ?>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
 <div class="panel">
   <div class="panel-hdr">
-    <div class="panel-title"><i class="bi bi-arrow-return-left" style="color:var(--primary-light)"></i> Uniform Returns</div>
+    <div class="panel-title"><i class="bi bi-arrow-return-left" style="color:var(--primary-light)"></i> Uniform Returns — Full History</div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
       <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Returned: <?= number_format($totalReturnCount) ?> pcs<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div>
+      <?php if($canManageStock): ?>
       <button class="btn-add" data-bs-toggle="modal" data-bs-target="#returnModal"><i class="bi bi-plus-lg"></i> Add Return</button>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -2046,7 +2489,8 @@ elseif($tab==='returns'):
         <th>Uniform Type</th>
         <th>Size</th>
         <th>Qty</th>
-        <th>Condition</th>
+        <th>Reported Condition</th>
+        <th>Status</th>
         <th>Department</th>
         <th>Date Returned</th>
         <th>Returned To</th>
@@ -2055,14 +2499,18 @@ elseif($tab==='returns'):
       </tr>
     </thead>
     <tbody>
-    <?php foreach($retList as $i=>$r):
-      $rowNum   = ($retPage-1)*20 + $i + 1;
-      $isGood   = ($r['Condition'] ?? 'Good') === 'Good';
-      $condBg   = $isGood ? 'rgba(16,185,129,.1)' : 'rgba(234,179,8,.1)';
-      $condClr  = $isGood ? '#059669' : '#ca8a04';
-      $condBdr  = $isGood ? '#6ee7b7' : '#fde047';
-      $condIcon = $isGood ? '✅' : '⚠️';
-      $condTxt  = $isGood ? 'Good' : 'Damaged';
+    <?php
+    $statusStyles = [
+      'Pending Inspection' => ['bg'=>'rgba(234,179,8,.1)', 'clr'=>'#ca8a04','bdr'=>'#fde047','icon'=>'⏳'],
+      'Returned'           => ['bg'=>'rgba(67,56,202,.1)', 'clr'=>'#4338ca','bdr'=>'#a5b4fc','icon'=>'📦'],
+      'Cleaning/Repair'    => ['bg'=>'rgba(13,148,136,.1)','clr'=>'#0d9488','bdr'=>'#5eead4','icon'=>'💧'],
+      'Disposed'           => ['bg'=>'rgba(220,38,38,.1)', 'clr'=>'#dc2626','bdr'=>'#fca5a5','icon'=>'🗑️'],
+      'Stocked'            => ['bg'=>'rgba(16,185,129,.1)','clr'=>'#059669','bdr'=>'#6ee7b7','icon'=>'✅'],
+    ];
+    foreach($retList as $i=>$r):
+      $rowNum = ($retPage-1)*20 + $i + 1;
+      $status = $r['InspectionStatus'] ?? 'Pending Inspection';
+      $ss     = $statusStyles[$status] ?? $statusStyles['Pending Inspection'];
     ?>
     <tr>
       <td style="color:var(--text-muted);font-family:'DM Mono',monospace;"><?= $rowNum ?></td>
@@ -2070,9 +2518,10 @@ elseif($tab==='returns'):
       <td><span class="bdg <?= $r['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $r['UniformType'] ?></span></td>
       <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($r['UniformSize']) ?></td>
       <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($r['Quantity']) ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Condition']??'—') ?></td>
       <td>
-        <span style="background:<?= $condBg ?>;color:<?= $condClr ?>;border:1px solid <?= $condBdr ?>;border-radius:20px;padding:.18rem .55rem;font-size:.68rem;font-weight:700;white-space:nowrap;">
-          <?= $condIcon ?> <?= $condTxt ?>
+        <span style="background:<?= $ss['bg'] ?>;color:<?= $ss['clr'] ?>;border:1px solid <?= $ss['bdr'] ?>;border-radius:20px;padding:.18rem .55rem;font-size:.68rem;font-weight:700;white-space:nowrap;">
+          <?= $ss['icon'] ?> <?= safe($status) ?>
         </span>
       </td>
       <td><?php if($r['Department']): ?><span class="bdg dept-<?= $r['Department'] ?>"><?= safe($r['Department']) ?></span><?php else: ?>—<?php endif; ?></td>
@@ -2080,14 +2529,18 @@ elseif($tab==='returns'):
       <td style="font-size:.78rem;"><?= safe($r['ReturnedTo']??'—') ?></td>
       <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($r['Remarks']??'—') ?></td>
       <td style="text-align:center;white-space:nowrap;">
+        <?php if($canManageStock): ?>
         <a href="?tab=returns&editretid=<?= $r['ReturnID'] ?>&retpage=<?= $retPage ?>" class="btn-sm-action btn-edit">
           <i class="bi bi-pencil-fill"></i> Edit
         </a>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Return?','This will delete the return record and reverse the stock. Continue?','#dc2626')">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Return?','This will delete the return record and reverse any stock it had moved into. Continue?','#dc2626')">
           <input type="hidden" name="delete_return" value="1">
           <input type="hidden" name="ReturnID"      value="<?= $r['ReturnID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
+        <?php else: ?>
+        <span style="color:var(--text-muted);font-size:.72rem;">—</span>
+        <?php endif; ?>
       </td>
     </tr>
     <?php endforeach; ?>
@@ -2226,7 +2679,10 @@ elseif($tab==='report'):
           <th style="text-align:center;">Prev</th>
           <th style="text-align:center;">Added</th>
           <th style="text-align:center;">Less</th>
-          <th style="text-align:center;">Returns</th>
+          <th style="text-align:center;">Returned</th>
+          <th style="text-align:center;">Stocked</th>
+          <th style="text-align:center;">Cleaning</th>
+          <th style="text-align:center;">Disposed</th>
           <th style="text-align:center;color:var(--primary);">Current</th>
         </tr>
       </thead>
@@ -2246,14 +2702,17 @@ elseif($tab==='report'):
         <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;"><?= intval($sr['PreviousStock']) ?></td>
         <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#0891b2;"><?= intval($sr['AdditionalStock']) ?></td>
         <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#dc2626;"><?= intval($sr['LessStock']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#4338ca;"><?= intval($sr['ReturnedStock']??0) ?></td>
         <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#7c3aed;"><?= intval($sr['ReturnStock']) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#0d9488;"><?= intval($sr['CleaningStock']??0) ?></td>
+        <td style="text-align:center;font-family:'DM Mono',monospace;font-size:.76rem;color:#991b1b;"><?= intval($sr['DisposedStock']??0) ?></td>
         <td style="text-align:center;">
           <span style="font-family:'DM Mono',monospace;font-weight:800;color:<?= $dot ?>;font-size:.85rem;"><?= $cur ?></span>
         </td>
       </tr>
       <?php endforeach; ?>
       <tr style="background:var(--surface-2);">
-        <td colspan="6" style="font-weight:700;color:<?= $ut==='TSHIRT'?'#1e40af':'#0891b2' ?>;font-size:.75rem;">
+        <td colspan="9" style="font-weight:700;color:<?= $ut==='TSHIRT'?'#1e40af':'#0891b2' ?>;font-size:.75rem;">
           <?= $ut==='TSHIRT'?'T-Shirt':'Polo Shirt' ?> Subtotal
         </td>
         <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:800;color:<?= $ut==='TSHIRT'?'#1e40af':'#0891b2' ?>;"><?= number_format($typeTotal) ?></td>
@@ -2412,13 +2871,24 @@ elseif($tab==='report'):
       </tbody>
     </table>
     <?php if(!empty($rptRetCond)): ?>
-    <div style="padding:.6rem .85rem;border-top:1px solid var(--border);font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">By Condition</div>
+    <div style="padding:.6rem .85rem;border-top:1px solid var(--border);font-size:.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">By Status</div>
     <table class="utbl">
-      <thead><tr><th>Condition</th><th style="text-align:center;">Records</th><th style="text-align:center;">Qty</th></tr></thead>
+      <thead><tr><th>Status</th><th style="text-align:center;">Records</th><th style="text-align:center;">Qty</th></tr></thead>
       <tbody>
-      <?php foreach($rptRetCond as $rc): $isGood=($rc['Condition']??'Good')==='Good'; ?>
+      <?php
+      $rcStyles = [
+        'Pending Inspection' => ['clr'=>'#ca8a04','icon'=>'⏳'],
+        'Returned'           => ['clr'=>'#4338ca','icon'=>'📦'],
+        'Cleaning/Repair'    => ['clr'=>'#0d9488','icon'=>'💧'],
+        'Disposed'           => ['clr'=>'#dc2626','icon'=>'🗑️'],
+        'Stocked'            => ['clr'=>'#059669','icon'=>'✅'],
+      ];
+      foreach($rptRetCond as $rc):
+        $st = $rc['InspectionStatus'] ?? 'Pending Inspection';
+        $rs = $rcStyles[$st] ?? $rcStyles['Pending Inspection'];
+      ?>
       <tr>
-        <td><?= $isGood?'<span style="color:#059669;font-weight:700;">✅ Good</span>':'<span style="color:#ca8a04;font-weight:700;">⚠️ Damaged</span>' ?></td>
+        <td><span style="color:<?= $rs['clr'] ?>;font-weight:700;"><?= $rs['icon'] ?> <?= safe($st) ?></span></td>
         <td style="text-align:center;font-family:'DM Mono',monospace;"><?= intval($rc['Records']) ?></td>
         <td style="text-align:center;font-family:'DM Mono',monospace;font-weight:700;"><?= number_format(intval($rc['TotalQty'])) ?></td>
       </tr>
@@ -2713,6 +3183,9 @@ elseif($tab==='report'):
       <form method="POST">
         <input type="hidden" name="save_return" value="1">
         <div class="modal-body" style="padding:1.25rem;">
+          <div style="display:flex;align-items:center;gap:.5rem;background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.2);border-radius:8px;padding:.5rem .75rem;margin-bottom:1rem;font-size:.78rem;color:var(--primary);">
+            <i class="bi bi-info-circle-fill"></i> This goes to <strong>Pending Inspection</strong> — stock is only updated once it's inspected on the Returns tab.
+          </div>
           <div class="row g-3">
             <div class="col-md-4">
               <label class="form-label">Employee Name <span style="color:#dc2626">*</span></label>
@@ -2738,10 +3211,13 @@ elseif($tab==='report'):
               <input type="number" name="ReturnQuantity" class="form-control" value="1" min="1">
             </div>
             <div class="col-md-2">
-              <label class="form-label">Condition</label>
+              <label class="form-label">Reported Condition</label>
               <select name="Condition" class="form-select">
                 <option value="Good">✅ Good</option>
-                <option value="Damaged">⚠️ Damaged</option>
+                <option value="Faded">🎨 Faded</option>
+                <option value="Stained">💧 Stained</option>
+                <option value="Torn">✂️ Torn</option>
+                <option value="Other">❓ Other</option>
               </select>
             </div>
             <div class="col-md-3">

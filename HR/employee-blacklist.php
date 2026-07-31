@@ -420,11 +420,20 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             $isBlack   = (int)($emp['Blacklisted'] ?? 0) === 1;
             $isAwol    = stripos($emp['Employee_Status'] ?? '', 'AWOL') !== false
                       || stripos($emp['Notes'] ?? '', 'AWOL') !== false;
-            $picPath   = trim($emp['Picture'] ?? '');
-            if ($picPath && !str_starts_with($picPath, '/')) {
-                $picPath = '/TWM/tradewellportal/' . $picPath;
+            // Resolve picture path — TWM stores forward-slash paths under employee_pics/,
+            // legacy portal stores backslash paths directly under uploads\
+            $rawPic    = trim($emp['Picture'] ?? '');
+            $normPic   = str_replace('\\', '/', $rawPic);
+            $picFile   = $normPic ? basename($normPic) : '';
+            $twmPic    = '';
+            $legacyPic = '';
+            if ($picFile) {
+                $twmPic    = strpos($normPic,'employee_pics') !== false
+                    ? (str_starts_with($normPic,'/') ? $normPic : '/TWM/'.$normPic)
+                    : '/TWM/uploads/employee_pics/'.$picFile;
+                $legacyPic = '/tradewellportal/uploads/'.$picFile;
             }
-            $hasPic = !empty($picPath) && file_exists($_SERVER['DOCUMENT_ROOT'] . $picPath);
+            $hasPic    = !empty($twmPic);
         ?>
           <tr class="emp-row"
               data-emp="<?= htmlspecialchars(json_encode($emp, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)) ?>"
@@ -432,7 +441,29 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             <td>
               <div class="emp-name-wrap">
                 <?php if ($hasPic): ?>
-                  <img src="<?= htmlspecialchars($picPath) ?>" class="emp-avatar" alt="<?= htmlspecialchars($fullName) ?>">
+                  <img src="<?= htmlspecialchars($twmPic) ?>"
+                       class="emp-avatar"
+                       alt="<?= htmlspecialchars($fullName) ?>"
+                       data-legacy="<?= htmlspecialchars($legacyPic) ?>"
+                       data-initials="<?= htmlspecialchars($initials) ?>"
+                       data-color="<?= htmlspecialchars($bgColor) ?>"
+                       onload="this.removeAttribute('data-legacy-tried')"
+                       onerror="(function(img){
+                         var leg=img.getAttribute('data-legacy');
+                         if(leg&&!img.getAttribute('data-legacy-tried')){
+                           img.setAttribute('data-legacy-tried','1');
+                           img.src=leg;
+                         } else {
+                           var d=document.createElement('div');
+                           d.className='emp-avatar';
+                           d.style.background=img.getAttribute('data-color');
+                           d.style.display='inline-flex';
+                           d.style.alignItems='center';
+                           d.style.justifyContent='center';
+                           d.textContent=img.getAttribute('data-initials');
+                           img.parentNode.replaceChild(d,img);
+                         }
+                       })(this)">
                 <?php else: ?>
                   <div class="emp-avatar" style="background:<?= $bgColor ?>;"><?= htmlspecialchars($initials) ?></div>
                 <?php endif; ?>
@@ -684,15 +715,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const isBlack   = parseInt(emp.Blacklisted || 0) === 1;
     const isAwol    = /awol/i.test(emp.Employee_Status || '') || /awol/i.test(emp.Notes || '');
 
-    // Avatar
+    // Avatar — resolve picture path from either TWM or legacy portal format
+    // TWM stores:    uploads/employee_pics/filename.jpg  (forward slash, subdirectory)
+    // Legacy stores: uploads\filename.jpg                (backslash, no subdirectory)
     const avatarEl = document.getElementById('modalAvatarEl');
-    let picSrc = (emp.Picture || '').trim();
-    if (picSrc && !picSrc.startsWith('/')) {
-      picSrc = '/TWM/tradewellportal/' + picSrc;
+    const rawPic = (emp.Picture || '').trim();
+    let twmPicSrc = '', legacyPicSrc = '';
+    if (rawPic) {
+      const normalized = rawPic.replace(/\\/g, '/'); // normalize backslashes
+      const filename   = normalized.split('/').pop();
+      twmPicSrc    = normalized.includes('employee_pics')
+        ? (normalized.startsWith('/') ? normalized : '/TWM/' + normalized)
+        : '/TWM/uploads/employee_pics/' + filename;
+      legacyPicSrc = '/tradewellportal/uploads/' + filename;
     }
-    if (picSrc) {
-      avatarEl.innerHTML = `<img src="${picSrc}" class="modal-avatar" alt="${fullName}"
-        onerror="this.outerHTML='<div class=modal-avatar-initials style=background:${color};>${initials.toUpperCase()}</div>'">`;
+    if (twmPicSrc || legacyPicSrc) {
+      const img = document.createElement('img');
+      img.src = twmPicSrc || legacyPicSrc;
+      img.className = 'modal-avatar';
+      img.alt = fullName;
+      img.dataset.legacy = legacyPicSrc;
+      img.onerror = function() {
+        const legacy = this.dataset.legacy;
+        if (legacy && !this.dataset.legacyTried) {
+          this.dataset.legacyTried = '1';
+          this.src = legacy; // try legacy portal path
+        } else {
+          this.parentElement.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials.toUpperCase()}</div>`;
+        }
+      };
+      avatarEl.innerHTML = '';
+      avatarEl.appendChild(img);
     } else {
       avatarEl.innerHTML = `<div class="modal-avatar-initials" style="background:${color};">${initials.toUpperCase()}</div>`;
     }

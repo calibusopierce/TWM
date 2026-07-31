@@ -6,7 +6,7 @@ auth_check(['Admin', 'Administrator', 'HR']);
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 global $pdo;
 if ($pdo) rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
-if (!rbac_can('careers_admin') && !rbac_can('view_applications') && !rbac_can('uniform_inventory') && !rbac_can('employee_list')) {
+if (!rbac_can('careers_admin') && !rbac_can('view_applications') && !rbac_can('uniform_inventory') && !rbac_can('employee_list') && !rbac_can('attendance')) {
     header('Location: ' . base_url('help-manual.php')); exit();
 }
 $topbar_page = 'help';
@@ -128,18 +128,32 @@ body{font-size:15px}
         <a href="#emp-blacklisted" class="hn-link"><i class="bi bi-person-x"></i> Blacklisted Employees</a>
       </div>
     </div>
+
+    <div class="hn-group" data-group="attendance">
+      <button class="hn-group-toggle" onclick="toggleGroup('attendance')"><span>🕐 Attendance</span><i class="bi bi-chevron-down toggle-caret"></i></button>
+      <div class="hn-group-body" id="grp-attendance">
+        <a href="#att-overview"  class="hn-link"><i class="bi bi-info-circle"></i> Overview &amp; Filters</a>
+        <a href="#att-timeinout" class="hn-link"><i class="bi bi-clock-history"></i> Time In / Out</a>
+        <a href="#att-log"       class="hn-link"><i class="bi bi-layers"></i> Integrated Log</a>
+        <a href="#att-lates"     class="hn-link"><i class="bi bi-alarm"></i> Top Employee Lates</a>
+        <a href="#att-absents"   class="hn-link"><i class="bi bi-person-x"></i> Absents</a>
+        <a href="#att-my"        class="hn-link"><i class="bi bi-person-badge"></i> My Attendance</a>
+        <a href="#att-visual"    class="hn-link"><i class="bi bi-camera"></i> Visual Attendance</a>
+      </div>
+    </div>
   </nav>
 
   <main class="help-main">
     <div class="help-hero">
       <div class="help-hero-title">HR <span>Help Manual</span></div>
-      <div class="help-hero-sub">A guide to managing job postings, reviewing applicants, tracking uniform inventory, and maintaining the employee directory — all from one place.</div>
+      <div class="help-hero-sub">A guide to managing job postings, reviewing applicants, tracking uniform inventory, monitoring attendance, and maintaining the employee directory — all from one place.</div>
       <div class="help-hero-chips">
         <span class="help-chip"><i class="bi bi-briefcase"></i> Careers Admin</span>
         <span class="help-chip"><i class="bi bi-people"></i> Applications</span>
         <span class="help-chip"><i class="bi bi-bag-fill"></i> Uniform Inventory</span>
         <span class="help-chip"><i class="bi bi-file-earmark-text"></i> Purchase Orders</span>
         <span class="help-chip"><i class="bi bi-person-badge"></i> Employee Directory</span>
+        <span class="help-chip"><i class="bi bi-clock-history"></i> Attendance</span>
       </div>
     </div>
 
@@ -511,6 +525,108 @@ body{font-size:15px}
       <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span><strong>Blacklisted employees cannot be reactivated</strong> through the normal process. Removal requires Admin-level authorization. If a blacklisted name appears in the Careers applicant list, HR will be alerted automatically.</span></div>
       <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Always document a clear and accurate <strong>reason</strong> when blacklisting. This record may be referenced for future screening, legal compliance, or internal audits.</span></div>
     </div>
+    <hr class="help-divider">
+
+    <!-- ── ATTENDANCE ─────────────────────────────────── -->
+    <div class="help-section" id="att-overview">
+      <div class="help-section-header"><span class="help-section-icon">🕐</span><div class="help-section-title">Attendance — Overview &amp; Filters</div></div>
+      <div class="help-intro">The <strong>Attendance</strong> module pulls together punch data from every source the company uses — biometric/RFID devices, the mobile app, and site check-ins — into one place. It's organized into five tabs, plus a separate <strong>Visual Attendance</strong> page for photo-verified check-ins.</div>
+      <table class="col-table">
+        <thead><tr><th>Tab</th><th>What it shows</th></tr></thead>
+        <tbody>
+          <tr><td>Time In / Out</td><td>Daily AM/PM in-and-out summary per employee, with computed hour totals</td></tr>
+          <tr><td>Integrated Log</td><td>Every individual punch record, merged from all sources, newest first</td></tr>
+          <tr><td>Top Employee Lates</td><td>Every late arrival in the selected date range, worst lates first</td></tr>
+          <tr><td>Absents</td><td>Employees with no attendance record on a given day, across the date range</td></tr>
+          <tr><td>My Attendance</td><td>Your own personal attendance record only</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-funnel-fill"></i><span>Every tab (except <strong>My Attendance</strong>) can be filtered by <strong>Date From / Date To</strong>. Each tab also has a live <strong>Search</strong> box, plus <strong>CSV</strong> and <strong>Print</strong> buttons that export exactly what's currently on screen.</span></div>
+      <div class="tip-box success"><i class="bi bi-lock-fill"></i><span><strong>Department scope is automatic.</strong> Your account is tied to one department, and every tab is silently locked to it — you'll see a small 🔒 label instead of a filter. Only accounts marked <strong>Admin</strong>, <strong>HR</strong>, or set to <strong>"All Departments"</strong> get a Department dropdown, letting them switch between departments or view everything at once.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-timeinout">
+      <div class="help-section-header"><span class="help-section-icon">⏱️</span><div class="help-section-title">Time In / Out</div></div>
+      <div class="help-intro">The default landing tab. One row per employee per day, summarizing their morning and afternoon punches into hour totals.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>AM In / AM Out</td><td>Morning time in and time out</td></tr>
+          <tr><td>AM Total</td><td>Hours worked in the morning session</td></tr>
+          <tr><td>PM In / PM Out</td><td>Afternoon time in and time out</td></tr>
+          <tr><td>PM Total</td><td>Hours worked in the afternoon session</td></tr>
+          <tr><td>Daily Total</td><td>Total hours worked that day</td></tr>
+          <tr><td>Grand Total</td><td>Running total across the selected date range</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-dash-circle"></i><span>A dash (—) in any time or hours column means there's no punch recorded for that slot — not necessarily an absence. Check the <strong>Absents</strong> tab for confirmed no-shows.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-log">
+      <div class="help-section-header"><span class="help-section-icon">🔗</span><div class="help-section-title">Integrated Log</div></div>
+      <div class="help-intro">The most granular view — every raw punch, one row each, from all three attendance sources combined. Use this when you need to see exactly what was scanned, when, and from where.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Check In / Time</td><td>The recorded check-in time and the exact punch time</td></tr>
+          <tr><td>Category</td><td>Internal punch classification code from the source system</td></tr>
+          <tr><td>Direction</td><td><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-weight:700;font-size:.78rem;">In</span> = time in (blue) &nbsp;·&nbsp; <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fee2e2;color:#dc2626;font-weight:700;font-size:.78rem;">Out</span> = time out (red)</td></tr>
+          <tr><td>Source</td><td><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#ede9fe;color:#7c3aed;font-weight:700;font-size:.78rem;">Device</span> biometric/RFID (purple, default) &nbsp;·&nbsp; <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fee2e2;color:#dc2626;font-weight:700;font-size:.78rem;">Site</span> on-site check-in (red) &nbsp;·&nbsp; <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fef3c7;color:#ca8a04;font-weight:700;font-size:.78rem;">App</span> mobile app (yellow)</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Seeing the same employee twice for the same minute? That's normal — it means two sources (e.g. Device and App) both logged the same punch. Nothing is broken.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-lates">
+      <div class="help-section-header"><span class="help-section-icon">⏰</span><div class="help-section-title">Top Employee Lates</div></div>
+      <div class="help-intro">Lists every late-arrival record in the selected date range, sorted from most minutes late to least. This is a record-level list, not a per-employee summary — an employee who was late multiple days will appear multiple times.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Rank</td><td>Position in the sorted list for this date range (#1 = latest arrival)</td></tr>
+          <tr><td>Late (mins)</td><td>How many minutes late the employee clocked in that day</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Rows are color-coded by severity: <strong style="color:#a16207">yellow</strong> for 60 minutes late or under, <strong style="color:#dc2626">red</strong> for over 60 minutes — with a bigger badge on the late-minutes value so the worst offenders stand out at a glance.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-absents">
+      <div class="help-section-header"><span class="help-section-icon">🚫</span><div class="help-section-title">Absents</div></div>
+      <div class="help-intro">Shows active employees with <strong>no attendance record at all</strong> for a given day — one row per employee per absent day across your selected date range.</div>
+      <table class="col-table">
+        <thead><tr><th>Column</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Position</td><td>The employee's job title</td></tr>
+          <tr><td>Date</td><td>The specific day the employee had no attendance record</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-info-circle-fill"></i><span>This checks every calendar day in the range, including weekends and holidays — so an empty roster day (no scheduled shifts) can show up as "absent" for everyone. Cross-check with the work schedule before following up.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-my">
+      <div class="help-section-header"><span class="help-section-icon">🙋</span><div class="help-section-title">My Attendance</div></div>
+      <div class="help-intro">A personal view of your own Time In / Out history only — same columns as the Time In / Out tab, but always scoped to your own Employee ID. There's no department filter here since it's always just you.</div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="att-visual">
+      <div class="help-section-header"><span class="help-section-icon">📸</span><div class="help-section-title">Visual Attendance</div></div>
+      <div class="help-intro">A separate page (reachable via <strong>Back to Attendance</strong> / <strong>Visual Attendance</strong>) that shows photo-verified check-ins — the selfie or camera capture taken at the moment of punching in or out. It's split into two tables:</div>
+      <table class="col-table">
+        <thead><tr><th>Table</th><th>What it shows</th></tr></thead>
+        <tbody>
+          <tr><td>Portal Check-in (online)</td><td>Selfie check-ins submitted through the mobile app, with photo, area, remarks, and in/out action</td></tr>
+          <tr><td>Device Check-in (offline)</td><td>Camera captures from on-site devices, same details plus a <strong>Map</strong> link if GPS coordinates were recorded</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-image"></i><span>Click any <strong>photo thumbnail</strong> to open it full-size in a lightbox viewer. Employees with no photo on file show a placeholder icon instead.</span></div>
+      <div class="tip-box success"><i class="bi bi-geo-alt-fill"></i><span>The <strong>Map</strong> button on Device Check-in rows opens the recorded GPS location in Google Maps — useful for confirming an employee actually checked in from a valid site.</span></div>
+    </div>
 
   </main>
 </div>
@@ -522,6 +638,8 @@ const sectionGroup={
   'uni-overview':'uniform','uni-items':'uniform','uni-issue':'uniform','uni-return':'uniform',
   'uni-history':'uniform','uni-po':'uniform','uni-receiving':'uniform','uni-print':'uniform',
   'emp-list':'employees','emp-inactive':'employees','emp-blacklisted':'employees',
+  'att-overview':'attendance','att-timeinout':'attendance','att-log':'attendance',
+  'att-lates':'attendance','att-absents':'attendance','att-my':'attendance','att-visual':'attendance',
 };
 function toggleGroup(id){const body=document.getElementById('grp-'+id),toggle=body?.previousElementSibling;if(!body)return;const isOpen=body.classList.contains('open');body.classList.toggle('open',!isOpen);if(toggle)toggle.classList.toggle('open',!isOpen);}
 function openGroup(id){const body=document.getElementById('grp-'+id),toggle=body?.previousElementSibling;if(!body)return;body.classList.add('open');if(toggle)toggle.classList.add('open');}

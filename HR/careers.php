@@ -80,7 +80,7 @@ sqlsrv_free_stmt($stmt);
       We're Hiring
     </div>
     <h1 class="hero-title">
-      Build Your Career<br>with <span>Urban Tradewell</span>
+      Build Your Career<br>with <span>Urban Tradewell Corp.</span>
     </h1>
     <p class="hero-desc">
       Join a growing team dedicated to excellence in distribution and trade.
@@ -92,6 +92,12 @@ sqlsrv_free_stmt($stmt);
 <!-- ══ MAIN ═════════════════════════════════════════ -->
 <section class="careers-section">
   <div class="careers-main">
+
+  <!-- Back to Home -->
+  <a href="https://122.52.195.3/" class="count-badge" style="margin-bottom:1rem; text-decoration:none; cursor:pointer;">
+    <i class="bi bi-arrow-left" style="font-size:.8rem; color:#4f46e5;"></i>
+    Back to Home
+  </a>
 
   <!-- Success Alert -->
   <?php if (!empty($successMessage)): ?>

@@ -1,4 +1,5 @@
 <?php
+ob_start();
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
 require_once __DIR__ . '/../auth_check.php';
 require_once __DIR__ . '/../RBAC/rbac_helper.php';
@@ -87,6 +88,10 @@ $currentUserBranch = $_SESSION['Branch']     ?? ($_SESSION['branch']     ?? '');
 // ── Valid tabs ───────────────────────────────────────────────
 $validTabs = ['total_credit', 'ar_created', 'ar_collection', 'remitted', 'received', 'uncollected'];
 $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] : 'total_credit';
+
+// Tab-switch AJAX requests only need the active tab's own data —
+// stat cards and dropdown options don't change when just switching tabs.
+$isTabAjax = isset($_GET['ajax']) && $_GET['ajax'] === 'tab_table';
 
 // ── Date filters ─────────────────────────────────────────────
 $today     = date('Y-m-d');
@@ -269,23 +274,29 @@ if ($tabSrc['salesman'] && $_effectiveDeptSafe !== '' && strtolower($_effectiveD
     $_dropDeptWhere = " AND RTRIM(Department) = '$_effectiveDeptSafe'";
 }
 
-if ($tabSrc['salesman']) {
-    $salesmanList = lookupList($conn,
-        "SELECT DISTINCT {$tabSrc['salesman']} FROM {$tabSrc['view']}
-         WHERE {$tabSrc['salesman']} IS NOT NULL AND {$tabSrc['salesman']} <> ''
-           {$_dropDateWhere} {$_dropBranchWhere} {$_dropDeptWhere}
-         ORDER BY {$tabSrc['salesman']}"
-    );
+if ($isTabAjax) {
+    // Tab-switch requests don't render the filter panel, so skip these queries.
+    $salesmanList = [];
+    $areaList = [];
 } else {
-    $salesmanList = []; // received tab has no Salesman column
-}
+    if ($tabSrc['salesman']) {
+        $salesmanList = lookupList($conn,
+            "SELECT DISTINCT {$tabSrc['salesman']} FROM {$tabSrc['view']}
+             WHERE {$tabSrc['salesman']} IS NOT NULL AND {$tabSrc['salesman']} <> ''
+               {$_dropDateWhere} {$_dropBranchWhere} {$_dropDeptWhere}
+             ORDER BY {$tabSrc['salesman']}"
+        );
+    } else {
+        $salesmanList = []; // received tab has no Salesman column
+    }
 
-$areaList = lookupList($conn,
-    "SELECT DISTINCT {$tabSrc['area']} FROM {$tabSrc['view']}
-     WHERE {$tabSrc['area']} IS NOT NULL AND {$tabSrc['area']} <> ''
-       {$_dropDateWhere} {$_dropBranchWhere} {$_dropDeptWhere}
-     ORDER BY {$tabSrc['area']}"
-);
+    $areaList = lookupList($conn,
+        "SELECT DISTINCT {$tabSrc['area']} FROM {$tabSrc['view']}
+         WHERE {$tabSrc['area']} IS NOT NULL AND {$tabSrc['area']} <> ''
+           {$_dropDateWhere} {$_dropBranchWhere} {$_dropDeptWhere}
+         ORDER BY {$tabSrc['area']}"
+    );
+}
 
 // ── Single combined stat query (CTE — one round trip) ────────
 // Uses $baseFrom/$baseTo so stats stay in sync with active filters & date range
@@ -342,20 +353,31 @@ FROM (
 ) combined
 ";
 
-$statRow = runQuery($conn, $statSql)[0] ?? [];
+if ($isTabAjax) {
+    // Tab-switch requests reuse the same filters/date range as the initial
+    // load, so the stat cards haven't changed — skip the expensive query.
+    $totalCreditCount = $totalCreditAmount = 0;
+    $arCreatedCount = $arCreatedAmount = 0;
+    $arCollectionCount = $arCollectionAmount = 0;
+    $remittedCount = $remittedAmount = 0;
+    $receivedCount = $receivedAmount = 0;
+    $uncollectedCount = $uncollectedAmount = 0;
+} else {
+    $statRow = runQuery($conn, $statSql)[0] ?? [];
 
-$totalCreditCount  = (int)($statRow['TotalCreditCount']   ?? 0);
-$totalCreditAmount = (float)($statRow['TotalCreditAmount'] ?? 0);
-$arCreatedCount    = (int)($statRow['ARCreatedCount']     ?? 0);
-$arCreatedAmount   = (float)($statRow['ARCreatedAmount']  ?? 0);
-$arCollectionCount = (int)($statRow['ARCollectionCount']  ?? 0);
-$arCollectionAmount= (float)($statRow['ARCollectionAmount']?? 0);
-$remittedCount     = (int)($statRow['RemittedCount']      ?? 0);
-$remittedAmount    = (float)($statRow['RemittedAmount']   ?? 0);
-$receivedCount     = (int)($statRow['ReceivedCount']      ?? 0);
-$receivedAmount    = (float)($statRow['ReceivedAmount']   ?? 0);
-$uncollectedCount  = (int)($statRow['UncollectedCount']   ?? 0);
-$uncollectedAmount = (float)($statRow['UncollectedAmount'] ?? 0);
+    $totalCreditCount  = (int)($statRow['TotalCreditCount']   ?? 0);
+    $totalCreditAmount = (float)($statRow['TotalCreditAmount'] ?? 0);
+    $arCreatedCount    = (int)($statRow['ARCreatedCount']     ?? 0);
+    $arCreatedAmount   = (float)($statRow['ARCreatedAmount']  ?? 0);
+    $arCollectionCount = (int)($statRow['ARCollectionCount']  ?? 0);
+    $arCollectionAmount= (float)($statRow['ARCollectionAmount']?? 0);
+    $remittedCount     = (int)($statRow['RemittedCount']      ?? 0);
+    $remittedAmount    = (float)($statRow['RemittedAmount']   ?? 0);
+    $receivedCount     = (int)($statRow['ReceivedCount']      ?? 0);
+    $receivedAmount    = (float)($statRow['ReceivedAmount']   ?? 0);
+    $uncollectedCount  = (int)($statRow['UncollectedCount']   ?? 0);
+    $uncollectedAmount = (float)($statRow['UncollectedAmount'] ?? 0);
+}
 
 // ── Active tab query only ────────────────────────────────────
 $queryMap = [
@@ -451,7 +473,7 @@ $queryMap = [
             r.Branch, r.Department, r.Area,
             r.RemittedByname, r.ReceivingDate,
             r.TotalCash, r.TotalCheck
-        ORDER BY DaysOld DESC, r.RRDID
+        ORDER BY r.ReceivingDate DESC, r.RRDID
     ",
     'uncollected' => "
         SELECT
@@ -944,27 +966,27 @@ function daysBadgeClass(int $days): string {
 
   <!-- ── Tab Navigation ───────────────────────────────────── -->
   <div class="tab-nav">
-    <a href="<?= tabUrl('total_credit') ?>" class="<?= $tab === 'total_credit' ? 'active' : '' ?>">
+    <a href="<?= tabUrl('total_credit') ?>" data-tab="total_credit" class="<?= $tab === 'total_credit' ? 'active' : '' ?>">
       <i class="bi bi-credit-card"></i> Total Credit
       <span class="tab-badge"><?= number_format($totalCreditCount) ?></span>
     </a>
-    <a href="<?= tabUrl('ar_created') ?>" class="<?= $tab === 'ar_created' ? 'active' : '' ?>">
+    <a href="<?= tabUrl('ar_created') ?>" data-tab="ar_created" class="<?= $tab === 'ar_created' ? 'active' : '' ?>">
       <i class="bi bi-file-earmark-plus"></i> AR Created
       <span class="tab-badge"><?= number_format($arCreatedCount) ?></span>
     </a>
-    <a href="<?= tabUrl('ar_collection') ?>" class="<?= $tab === 'ar_collection' ? 'active' : '' ?>">
+    <a href="<?= tabUrl('ar_collection') ?>" data-tab="ar_collection" class="<?= $tab === 'ar_collection' ? 'active' : '' ?>">
       <i class="bi bi-folder2-open"></i> For Collection
       <span class="tab-badge"><?= number_format($arCollectionCount) ?></span>
     </a>
-    <a href="<?= tabUrl('remitted') ?>" class="<?= $tab === 'remitted' ? 'active' : '' ?>">
+    <a href="<?= tabUrl('remitted') ?>" data-tab="remitted" class="<?= $tab === 'remitted' ? 'active' : '' ?>">
       <i class="bi bi-send"></i> Remitted
       <span class="tab-badge"><?= number_format($remittedCount) ?></span>
     </a>
-    <a href="<?= tabUrl('received') ?>" class="<?= $tab === 'received' ? 'active' : '' ?>">
+    <a href="<?= tabUrl('received') ?>" data-tab="received" class="<?= $tab === 'received' ? 'active' : '' ?>">
       <i class="bi bi-bank"></i> Received
       <span class="tab-badge"><?= number_format($receivedCount) ?></span>
     </a>
-    <a href="<?= tabUrl('uncollected') ?>" class="<?= $tab === 'uncollected' ? 'active' : '' ?>" style="<?= $tab === 'uncollected' ? '' : 'color:var(--ar-red);border-color:#fca5a5;' ?>">
+    <a href="<?= tabUrl('uncollected') ?>" data-tab="uncollected" class="<?= $tab === 'uncollected' ? 'active' : '' ?>" style="<?= $tab === 'uncollected' ? '' : 'color:var(--ar-red);border-color:#fca5a5;' ?>">
       <i class="bi bi-exclamation-triangle"></i> Uncollected
       <span class="tab-badge"><?= number_format($uncollectedCount) ?></span>
     </a>
@@ -972,6 +994,8 @@ function daysBadgeClass(int $days): string {
 
   <!-- ── Table Card ───────────────────────────────────────── -->
   <div class="table-card">
+    <div id="tableCardBody">
+    <?php ob_start(); ?>
     <div class="table-toolbar">
       <div class="table-title">
         <?php
@@ -1137,25 +1161,80 @@ function daysBadgeClass(int $days): string {
       </div>
       <?php endif; ?>
     <?php endif; ?>
+    <?php
+    $tableCardBodyHtml = ob_get_clean();
+    if ($isTabAjax) {
+        while (ob_get_level() > 0) { ob_end_clean(); }
+        header('Content-Type: application/json');
+        echo json_encode([
+            'html'       => $tableCardBodyHtml,
+            'totalRows'  => $totalRows,
+            'exportData' => array_values($exportData),
+            'tab'        => $tab,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo $tableCardBodyHtml;
+    ?>
+    </div><!-- /tableCardBody -->
   </div>
 
 </div>
 
 <script>
 // ── Full dataset for export/print (not paginated) ────────────
-const ALL_DATA = <?= json_encode(array_values($exportData), JSON_UNESCAPED_UNICODE) ?>;
-const TAB      = '<?= $tab ?>';
+let ALL_DATA = <?= json_encode(array_values($exportData), JSON_UNESCAPED_UNICODE) ?>;
+let TAB      = '<?= $tab ?>';
 
 // Sort ALL_DATA by DaysOld descending so print/export matches the table order
 ALL_DATA.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
-const TAB_TITLE = {
+const TAB_TITLES = {
     total_credit:  '💳 Total Credit',
     ar_created:    '📋 AR Created',
     ar_collection: '🗂️ AR For Collection',
     remitted:      '📤 Remitted',
     received:      '🏦 Received',
     uncollected:   '⚠️ Uncollected',
-}[TAB] || 'AR Remittance';
+};
+let TAB_TITLE = TAB_TITLES[TAB] || 'AR Remittance';
+
+// ── AJAX tab switching (no full page reload) ──────────────────
+function loadTab(url, pushState = true) {
+    const sep = url.includes('?') ? '&' : '?';
+    fetch(url + sep + 'ajax=tab_table')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('tableCardBody').innerHTML = data.html;
+
+            ALL_DATA  = data.exportData;
+            TAB       = data.tab;
+            TAB_TITLE = TAB_TITLES[TAB] || 'AR Remittance';
+            ALL_DATA.sort(function(a, b) { return parseInt(b.DaysOld||0) - parseInt(a.DaysOld||0); });
+
+            document.querySelectorAll('.tab-nav a').forEach(a => a.classList.remove('active'));
+            document.querySelector(`.tab-nav a[data-tab="${TAB}"]`)?.classList.add('active');
+
+            const activeBadge = document.querySelector(`.tab-nav a[data-tab="${TAB}"] .tab-badge`);
+            if (activeBadge) activeBadge.textContent = Number(data.totalRows).toLocaleString();
+
+            if (pushState) history.pushState({}, '', url);
+        })
+        .catch(err => console.error('Tab load failed:', err));
+}
+
+document.querySelectorAll('.tab-nav a').forEach(link => {
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+        loadTab(link.getAttribute('href'));
+    });
+});
+
+document.getElementById('tableCardBody').addEventListener('click', function(e) {
+    const a = e.target.closest('a.btn-page');
+    if (a) { e.preventDefault(); loadTab(a.getAttribute('href')); }
+});
+
+window.addEventListener('popstate', () => loadTab(location.href, false));
 
 // ── Filter panel toggle ───────────────────────────────────────
 function toggleFilter() {

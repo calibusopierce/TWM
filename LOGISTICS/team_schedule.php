@@ -5,7 +5,35 @@ require_once __DIR__ . '/../RBAC/rbac_helper.php';
 require_once __DIR__ . '/../test_sqlsrv.php';
 auth_check();
 
-// ── AJAX: Short Stock Items ───────────────────────────────
+// ── AJAX: Payment History ─────────────────────────────────
+if (isset($_GET['action']) && $_GET['action'] === 'payhist' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+    $empid   = str_replace("'", "''", trim($_GET['empid'] ?? ''));
+    $sdidVal = str_replace("'", "''", trim($_GET['sdid']  ?? ''));
+    $rows = [];
+    if ($empid !== '' && $sdidVal !== '') {
+        $rows = runQuery($conn, "
+            SELECT [SPPID],[AmountDue],[PaidAmount],[Balance],[DatePaid],[DateGenerate],[RefNo],[StatusofShort],[Remarks]
+            FROM [dbo].[View_ShortPaymentPaidDetails]
+            WHERE EmployeeID = '$empid' AND SDID = '$sdidVal'
+            ORDER BY DateGenerate ASC
+        ");
+        // Format DateTime objects
+        foreach ($rows as &$r) {
+            foreach (['DatePaid','DateGenerate'] as $col) {
+                if (isset($r[$col]) && $r[$col] instanceof DateTime) {
+                    $r[$col] = $r[$col]->format('Y-m-d');
+                }
+            }
+        }
+        unset($r);
+    }
+    sqlsrv_close($conn);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($rows ?: []);
+    exit;
+}
+
+
 if (isset($_GET['action']) && $_GET['action'] === 'ssitems' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
     $seid    = (int)($_GET['seid']  ?? 0);
     $empid   = trim($_GET['empid'] ?? '');
@@ -111,7 +139,12 @@ $commonWhere = $sessionDeptWhere . $areaWhere . $plateWhere . $statusWhere;
 // ── Helpers ───────────────────────────────────────────────
 function runQuery($conn, string $sql): array {
     $stmt = sqlsrv_query($conn, $sql);
-    if (!$stmt) return [];
+    if (!$stmt) {
+        // Was silently swallowing driver errors — log them so failures are
+        // visible instead of just showing up as "0 records" in the UI.
+        error_log('[TWM runQuery] SQL failed: ' . print_r(sqlsrv_errors(), true) . "\nQuery: " . $sql);
+        return [];
+    }
     $rows = [];
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         foreach ($row as $k => $v) {
@@ -133,9 +166,15 @@ function lookupList($conn, string $sql): array {
 }
 
 // ── Lookup dropdowns ──────────────────────────────────────
-$areaList   = lookupList($conn, "SELECT DISTINCT Area FROM [dbo].[teamschedule] WHERE Area IS NOT NULL AND Area <> '' ORDER BY Area");
-$plateList  = lookupList($conn, "SELECT DISTINCT PlateNumber FROM [dbo].[teamschedule] WHERE PlateNumber IS NOT NULL AND PlateNumber <> '' ORDER BY PlateNumber");
-$statusList = lookupList($conn, "SELECT DISTINCT RTRIM(Status) FROM [dbo].[teamschedule] WHERE Status IS NOT NULL AND Status <> '' ORDER BY RTRIM(Status)");
+$deptListWhere = $sessionDept !== '' ? " AND UPPER(RTRIM(LTRIM(Department))) IN ($deptInStr)" : '';
+$areaList   = lookupList($conn, "SELECT DISTINCT Area FROM [dbo].[teamschedule] WHERE Area IS NOT NULL AND Area <> '' $deptListWhere ORDER BY Area");
+$plateList  = lookupList($conn, "SELECT DISTINCT PlateNumber FROM [dbo].[teamschedule] WHERE PlateNumber IS NOT NULL AND PlateNumber <> '' $deptListWhere ORDER BY PlateNumber");
+$statusList = lookupList($conn, "SELECT DISTINCT RTRIM(Status) FROM [dbo].[teamschedule] WHERE Status IS NOT NULL AND Status <> '' $deptListWhere ORDER BY RTRIM(Status)");
+// Short stocks dropdowns (scoped to dept)
+$ssDeptWhere   = $sessionDept !== '' ? " AND UPPER(RTRIM(LTRIM(Department))) IN ($deptInStr)" : '';
+$ssAreaList   = lookupList($conn, "SELECT DISTINCT Area FROM [dbo].[View_ShortPaymentPaidDetails] WHERE Area IS NOT NULL AND Area <> '' $ssDeptWhere ORDER BY Area");
+$ssPlateList  = lookupList($conn, "SELECT DISTINCT PlateNumber FROM [dbo].[View_ShortPaymentPaidDetails] WHERE PlateNumber IS NOT NULL AND PlateNumber <> '' $ssDeptWhere ORDER BY PlateNumber");
+$ssShortStatusList = lookupList($conn, "SELECT DISTINCT RTRIM(StatusofShort) FROM [dbo].[View_ShortPaymentPaidDetails] WHERE StatusofShort IS NOT NULL AND StatusofShort <> '' $ssDeptWhere ORDER BY RTRIM(StatusofShort)");
 
 // ── Stat query ────────────────────────────────────────────
 $statSql = "
@@ -248,6 +287,20 @@ $truckRows = runQuery($conn, $truckSql);
 
 // ── Short Stocks (Short Payment — Balance > 0) ────────────
 $shortStocksDeptWhere = $sessionDept !== '' ? ' AND UPPER(RTRIM(LTRIM(Department))) IN (' . $deptInStr . ')' : '';
+// Short stocks always filters by date — default to last 30 days when no date is set
+$ssFrom        = $dateActive ? $baseFrom : $monthFrom;
+$ssTo          = $dateActive ? $baseTo   : $today;
+// Filter by DateSchedule (always populated for every accountable employee),
+// not DateGenerate — DateGenerate is only set once a payment/installment row
+// exists, so employees who still owe and haven't paid anything have a NULL
+// DateGenerate and were being silently excluded by the BETWEEN clause.
+$ssDateWhere   = " AND DateSchedule BETWEEN '$ssFrom' AND '$ssTo'";
+$ssAreaWhere   = $areaActive   ? " AND Area = '$_areaSafe'"                            : '';
+$ssPlateWhere  = $plateActive  ? " AND PlateNumber = '$_plateSafe'"                    : '';
+$ssStatusWhere = $statusActive ? " AND RTRIM(StatusofShort) = '$_statusSafe'"          : '';
+// Status sub-toggle (Confirmed / Created / Void / All)
+$ssStatusFilter = isset($_GET['ss_status']) ? strtolower(trim($_GET['ss_status'])) : 'all';
+if (!in_array($ssStatusFilter, ['all','paid','unpaid'])) $ssStatusFilter = 'all';
 $shortStocksSql = '
 SELECT
      [SEID],[Position],[Status],[Amount],[SPPID]
@@ -260,40 +313,174 @@ SELECT
     ,[TypeShort],[Category],[Employee_Status]
     ,[Job_tittle],[Position_held]
 FROM [dbo].[View_ShortPaymentPaidDetails]
-WHERE Balance > 0
-' . $shortStocksDeptWhere . '
+WHERE 1=1
+' . $shortStocksDeptWhere . $ssDateWhere . $ssAreaWhere . $ssPlateWhere . $ssStatusWhere . '
 ORDER BY Balance DESC, DateGenerate DESC
 ';
-$shortStocksRows = runQuery($conn, $shortStocksSql);
+$shortStocksRawRows = runQuery($conn, $shortStocksSql);
 
-// ── Short Stocks: SDID grouped (reuse Individual data — same source, correct fields) ──
+// ── Deduplicate Individual rows: keep only latest (min Balance) per EmployeeID ──
+// Then exclude employees whose latest balance is fully settled (= 0)
+$_empLatest = [];
+foreach ($shortStocksRawRows as $r) {
+    $eid = $r['EmployeeID'] ?? '';
+    if (!isset($_empLatest[$eid]) || (float)($r['Balance'] ?? 0) < (float)($_empLatest[$eid]['Balance'] ?? 0)) {
+        $_empLatest[$eid] = $r;
+    }
+}
+// Keep all employees regardless of balance — toggle handles filtering in the view
+// Only remove fully settled when 'unpaid' filter is active
+if ($ssStatusFilter === 'unpaid') {
+    $_empLatest = array_filter($_empLatest, fn($r) => (float)($r['Balance'] ?? 0) > 0);
+}
+$_unsettledEids = array_keys($_empLatest);
+$shortStocksRawRows = array_values(array_filter($shortStocksRawRows, fn($r) => in_array($r['EmployeeID'] ?? '', $_unsettledEids)));
+$shortStocksRows = array_values($_empLatest);
+// Sort by balance desc (same order as raw query)
+usort($shortStocksRows, fn($a, $b) => (float)($b['Balance'] ?? 0) <=> (float)($a['Balance'] ?? 0));
+
+// Remove the employee-level balance filter for "all" — raw rows already scoped by dept/date
+// (old code excluded balance=0 employees; we now keep them for the Settled toggle)
+
+// ── Short Stocks: SDID grouped (uses raw rows for correct paid totals) ──
 $sdidGrouped = [];
-foreach ($shortStocksRows as $r) {
+foreach ($shortStocksRawRows as $r) {
     $sdid = (string)($r['SDID'] ?? 'Unknown');
     $sdidGrouped[$sdid][] = $r;
 }
+// NOTE: SDID-level totals now come straight from View_ShortPaymentWithBalance
+// (SQL Server computes Balance1/Paid1/TotalAmount/NumAccountable for us) instead
+// of being re-derived in PHP from the raw employee rows above. The old PHP-side
+// "max AmountDue per employee, then sum" logic was fragile and dropped/mis-summed
+// newly added short payment records in some edge cases (e.g. an employee with no
+// prior installment row yet). $sdidGrouped (raw rows) is still used below purely
+// to render the expandable per-employee detail under each SDID group.
+$sdidBalanceWhereParts = [];
+if ($sessionDept !== '') $sdidBalanceWhereParts[] = "UPPER(RTRIM(LTRIM(Department))) IN ($deptInStr)";
+$sdidBalanceWhereParts[] = "DateSchedule BETWEEN '$ssFrom' AND '$ssTo'";
+if ($areaActive)   $sdidBalanceWhereParts[] = "Area = '$_areaSafe'";
+if ($plateActive)  $sdidBalanceWhereParts[] = "PlateNumber = '$_plateSafe'";
+if ($statusActive) $sdidBalanceWhereParts[] = "RTRIM(Status) = '$_statusSafe'";
+$sdidBalanceWhereSql = $sdidBalanceWhereParts ? ('WHERE ' . implode(' AND ', $sdidBalanceWhereParts)) : '';
+
+// NOTE: View_ShortPaymentWithBalance returns ONE ROW PER EMPLOYEE per SDID
+// (its GROUP BY includes EmployeeName), with Balance1/Paid1 already correctly
+// summed per employee at the DB level. So to get the SDID-level group totals
+// we sum Balance1/Paid1 across all employee rows sharing the same SDID here in
+// PHP — TotalAmount/NumAccountable/Department/etc. are repeated identically on
+// every row for a given SDID, so we just take them from the first row seen.
+$sdidBalanceSql = "
+SELECT [SDID],[DID],[Department],[DateSchedule],[PlateNumber],[Area],[Outlet]
+      ,[TypeShort],[RefNo],[Remarks],[Status],[TotalAmount],[NumAccountable]
+      ,[Balance1],[Paid1],[EmployeeName]
+FROM [dbo].[View_ShortPaymentWithBalance]
+$sdidBalanceWhereSql
+ORDER BY SDID, Balance1 DESC
+";
+$sdidBalanceRows = runQuery($conn, $sdidBalanceSql);
+
 $sdidSummaries = [];
-foreach ($sdidGrouped as $sdid => $rows) {
-    $totalBal  = array_sum(array_map(fn($r) => (float)($r['Balance']    ?? 0), $rows));
-    $totalAmt  = array_sum(array_map(fn($r) => (float)($r['AmountDue']  ?? 0), $rows)); // per-employee share of the short
-    $totalPaid = array_sum(array_map(fn($r) => (float)($r['PaidAmount'] ?? 0), $rows));
-    $depts     = array_unique(array_filter(array_map(fn($r) => trim($r['Department'] ?? ''), $rows)));
-    $areas     = array_unique(array_filter(array_map(fn($r) => trim($r['Area']       ?? ''), $rows)));
-    $dates     = array_filter(array_map(fn($r) => $r['DateSchedule'] ?? '', $rows));
-    $sdidSummaries[$sdid] = [
-        'SDID'        => $sdid,
-        'RowCount'    => count($rows),
-        'TotalBalance'=> $totalBal,
-        'TotalAmount' => $totalAmt,
-        'TotalPaid'   => $totalPaid,
-        'Departments' => implode(', ', $depts),
-        'Areas'       => implode(', ', $areas),
-        'LatestDate'  => !empty($dates) ? max($dates) : '',
-        'PlateNumber' => $rows[0]['PlateNumber'] ?? '',
-        'Status1'     => $rows[0]['StatusofShort'] ?? '',
+foreach ($sdidBalanceRows as $r) {
+    $sdid = (string)($r['SDID'] ?? 'Unknown');
+    if (!isset($sdidSummaries[$sdid])) {
+        $sdidSummaries[$sdid] = [
+            'SDID'        => $sdid,
+            'RowCount'    => 0,
+            'TotalBalance'=> 0.0,
+            'TotalAmount' => (float)($r['TotalAmount'] ?? 0),
+            'TotalPaid'   => 0.0,
+            'Departments' => trim($r['Department'] ?? ''),
+            'Areas'       => trim($r['Area'] ?? ''),
+            'LatestDate'  => $r['DateSchedule'] ?? '',
+            'PlateNumber' => $r['PlateNumber'] ?? '',
+            'Status1'     => $r['Status'] ?? '',
+            'RefNo'       => $r['RefNo'] ?? '',
+            'TypeShort'   => $r['TypeShort'] ?? '',
+            'Outlet'      => $r['Outlet'] ?? '',
+            // Per-employee name + balance/paid, straight from the view —
+            // includes every accountable employee, paid or not.
+            'Employees'   => [],
+        ];
+    }
+    $sdidSummaries[$sdid]['RowCount']++;
+    $sdidSummaries[$sdid]['TotalBalance'] += (float)($r['Balance1'] ?? 0);
+    $sdidSummaries[$sdid]['TotalPaid']    += (float)($r['Paid1']    ?? 0);
+    $sdidSummaries[$sdid]['Employees'][] = [
+        'EmployeeName' => trim($r['EmployeeName'] ?? ''),
+        'Balance'      => (float)($r['Balance1'] ?? 0),
+        'Paid'         => (float)($r['Paid1']    ?? 0),
     ];
 }
+$sdidSummaries = array_values($sdidSummaries);
 usort($sdidSummaries, fn($a, $b) => $b['TotalBalance'] <=> $a['TotalBalance']);
+
+// Apply status sub-toggle filter
+if ($ssStatusFilter === 'paid') {
+    $sdidSummaries = array_values(array_filter($sdidSummaries, fn($s) => (float)($s['TotalBalance'] ?? 0) <= 0));
+} elseif ($ssStatusFilter === 'unpaid') {
+    $sdidSummaries = array_values(array_filter($sdidSummaries, fn($s) => (float)($s['TotalBalance'] ?? 0) > 0));
+}
+
+// ── Merge: build the COMPLETE per-employee list per SDID ──────────────────
+// View_ShortPaymentPaidDetails ($sdidGrouped) only has a row for employees who
+// already have a payment/installment record — someone accountable for the short
+// who hasn't paid anything yet has no row there at all. View_ShortPaymentWithBalance
+// (captured above as each summary's 'Employees') has the FULL accountable list per
+// SDID, just without EmployeeID/SEID/Position/etc. We merge the two here by SDID +
+// normalized employee name: use the richer paid-details row when a match exists
+// (keeps EmployeeID-dependent buttons working), otherwise synthesize a row from
+// the balance-view data so the employee still shows up with correct balance/paid.
+foreach ($sdidSummaries as $summary) {
+    $sdid = $summary['SDID'];
+    $existingRows = $sdidGrouped[$sdid] ?? [];
+
+    $byName = [];
+    foreach ($existingRows as $r) {
+        $key = strtoupper(trim($r['EmployeeName'] ?? ''));
+        if ($key === '') continue;
+        if (!isset($byName[$key]) || (float)($r['Balance'] ?? 0) < (float)($byName[$key]['Balance'] ?? 0)) {
+            $byName[$key] = $r;
+        }
+    }
+
+    $mergedRows = [];
+    $matchedKeys = [];
+    foreach ($summary['Employees'] as $emp) {
+        $key = strtoupper(trim($emp['EmployeeName'] ?? ''));
+        if (isset($byName[$key])) {
+            $mergedRows[] = $byName[$key];
+            $matchedKeys[$key] = true;
+        } else {
+            // No payment record yet for this employee — fall back to the
+            // balance-view data. EmployeeID-dependent buttons (Items, Pay
+            // History) won't work for this row until a payment record exists.
+            $mergedRows[] = [
+                'EmployeeID'   => '',
+                'EmployeeName' => $emp['EmployeeName'],
+                'Position'     => '',
+                'TypeShort'    => $summary['TypeShort'] ?? '',
+                'Outlet'       => $summary['Outlet'] ?? '',
+                'Area'         => $summary['Areas'] ?? '',
+                'AmountDue'    => $emp['Balance'] + $emp['Paid'],
+                'PaidAmount'   => $emp['Paid'],
+                'Balance'      => $emp['Balance'],
+                'DatePaid'     => '',
+                'RefNo'        => $summary['RefNo'] ?? '',
+                'SEID'         => 0,
+                'SDID'         => $sdid,
+            ];
+        }
+    }
+    // Keep any paid-details rows that didn't match a name in the balance view,
+    // so nothing that was already showing correctly silently disappears.
+    foreach ($byName as $key => $r) {
+        if (!isset($matchedKeys[$key])) {
+            $mergedRows[] = $r;
+        }
+    }
+
+    $sdidGrouped[$sdid] = $mergedRows;
+}
 
 
 // ── Individual Employee Short stats ───────────────────────
@@ -805,7 +992,7 @@ function deptColor(string $d): string {
 /* ── Short Items Modal ──────────────────────────────────── */
 #ssItemsModal { display: none; position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.45); align-items: center; justify-content: center; }
 #ssItemsModal.open { display: flex; }
-.ss-modal-box { background: var(--c-surface); border-radius: 14px; width: 92%; max-width: 780px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.2); overflow: hidden; }
+.ss-modal-box { background: var(--c-surface); border-radius: 14px; width: 96%; max-width: 1100px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.2); overflow: hidden; }
 .ss-modal-header { display: flex; align-items: center; justify-content: space-between; padding: .85rem 1.1rem; border-bottom: 1px solid var(--c-border); background: #fff5f5; }
 .ss-modal-title { font-weight: 800; font-size: .92rem; color: var(--c-ink); }
 .ss-modal-close { font-size: 1.3rem; line-height: 1; cursor: pointer; color: var(--c-dim); background: none; border: none; padding: 0 .2rem; }
@@ -866,8 +1053,8 @@ function deptColor(string $d): string {
 .crew-modal-overlay.open { display: flex; }
 .crew-modal-box {
   background: var(--c-surface); border: 1px solid var(--c-border);
-  border-radius: 14px; width: 100%; max-width: 780px;
-  max-height: 88vh; display: flex; flex-direction: column;
+  border-radius: 14px; width: 96%; max-width: 1100px;
+  max-height: 90vh; display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.18);
   overflow: hidden;
 }
@@ -992,28 +1179,49 @@ function deptColor(string $d): string {
         </span>
         <div class="filter-sep"></div>
       <?php endif; ?>
+
+      <?php
+        $isTruck = $selTab === 'truck';
+        $isSS    = in_array($selTab, ['shortstocks_sdid','shortstocks_emp']);
+        $curAreaList  = $isSS ? $ssAreaList  : $areaList;
+        $curPlateList = $isSS ? $ssPlateList : $plateList;
+      ?>
+
       <span class="filter-label"><i class="bi bi-calendar3"></i></span>
       <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" title="Date From">
       <input type="date" name="date_to"   value="<?= htmlspecialchars($dateTo) ?>"   title="Date To">
       <div class="filter-sep"></div>
+
       <select name="area" title="Area">
         <option value="">All Areas</option>
-        <?php foreach ($areaList as $a): ?>
+        <?php foreach ($curAreaList as $a): ?>
           <option value="<?= htmlspecialchars($a) ?>" <?= $selArea === $a ? 'selected' : '' ?>><?= htmlspecialchars($a) ?></option>
         <?php endforeach; ?>
       </select>
+
       <select name="plate" title="Plate Number">
         <option value="">All Plates</option>
-        <?php foreach ($plateList as $pl): ?>
+        <?php foreach ($curPlateList as $pl): ?>
           <option value="<?= htmlspecialchars($pl) ?>" <?= $selPlate === $pl ? 'selected' : '' ?>><?= htmlspecialchars($pl) ?></option>
         <?php endforeach; ?>
       </select>
-      <select name="status" title="Employment Status">
-        <option value="">All Statuses</option>
-        <?php foreach ($statusList as $st): ?>
-          <option value="<?= htmlspecialchars($st) ?>" <?= $selStatus === $st ? 'selected' : '' ?>><?= htmlspecialchars($st) ?></option>
-        <?php endforeach; ?>
-      </select>
+
+      <?php if ($isTruck): ?>
+        <select name="status" title="Employment Status">
+          <option value="">All Statuses</option>
+          <?php foreach ($statusList as $st): ?>
+            <option value="<?= htmlspecialchars($st) ?>" <?= $selStatus === $st ? 'selected' : '' ?>><?= htmlspecialchars($st) ?></option>
+          <?php endforeach; ?>
+        </select>
+      <?php elseif ($isSS): ?>
+        <select name="status" title="Short Status">
+          <option value="">All Short Statuses</option>
+          <?php foreach ($ssShortStatusList as $st): ?>
+            <option value="<?= htmlspecialchars($st) ?>" <?= $selStatus === $st ? 'selected' : '' ?>><?= htmlspecialchars($st) ?></option>
+          <?php endforeach; ?>
+        </select>
+      <?php endif; ?>
+
       <div class="filter-sep"></div>
       <button type="submit" class="btn-filter apply"><i class="bi bi-funnel"></i> Apply</button>
       <a href="?tab=<?= htmlspecialchars($selTab) ?>" class="btn-filter reset"><i class="bi bi-x"></i> Reset</a>
@@ -1148,11 +1356,15 @@ function deptColor(string $d): string {
   .sdid-svt-all       { color:#1e40af !important;background:#dbeafe !important; }
   </style>
 
-  <?php
+<?php
     function ssStatusUrl(string $v): string {
         $p = $_GET; $p['ss_status'] = $v; unset($p['page']);
         return '?' . http_build_query($p);
     }
+    // Remap: 'paid' = fully settled (balance=0), 'unpaid' = has balance, 'all' = all
+    // ss_status values: all | paid | unpaid
+    $ssStatusFilter = isset($_GET['ss_status']) ? strtolower(trim($_GET['ss_status'])) : 'all';
+    if (!in_array($ssStatusFilter, ['all','paid','unpaid'])) $ssStatusFilter = 'all';
   ?>
 
   <div class="section-toolbar">
@@ -1164,16 +1376,15 @@ function deptColor(string $d): string {
         <b style="color:var(--c-red);"><?= peso($totalSdidBalance) ?></b>
       </span>
     </div>
-    <!-- Status sub-toggle -->
+    <!-- Balance toggle -->
     <div class="sdid-status-toggle">
-      <a href="<?= ssStatusUrl('confirmed') ?>" class="sdid-svt-btn <?= $ssStatusFilter === 'confirmed' ? 'sdid-svt-active sdid-svt-confirmed' : '' ?>">✓ Confirmed</a>
-      <a href="<?= ssStatusUrl('created') ?>"   class="sdid-svt-btn <?= $ssStatusFilter === 'created'   ? 'sdid-svt-active sdid-svt-created'   : '' ?>">🕐 Created</a>
-      <a href="<?= ssStatusUrl('void') ?>"      class="sdid-svt-btn <?= $ssStatusFilter === 'void'      ? 'sdid-svt-active sdid-svt-void'      : '' ?>">✕ Void</a>
-      <a href="<?= ssStatusUrl('all') ?>"       class="sdid-svt-btn <?= $ssStatusFilter === 'all'       ? 'sdid-svt-active sdid-svt-all'       : '' ?>">📋 All</a>
+      <a href="<?= ssStatusUrl('unpaid') ?>" class="sdid-svt-btn <?= $ssStatusFilter === 'unpaid' ? 'sdid-svt-active sdid-svt-void'    : '' ?>">⚠ With Balance</a>
+      <a href="<?= ssStatusUrl('paid') ?>"   class="sdid-svt-btn <?= $ssStatusFilter === 'paid'   ? 'sdid-svt-active sdid-svt-confirmed' : '' ?>">✓ Settled</a>
+      <a href="<?= ssStatusUrl('all') ?>"    class="sdid-svt-btn <?= $ssStatusFilter === 'all'    ? 'sdid-svt-active sdid-svt-all'       : '' ?>">📋 All</a>
     </div>
     <div class="search-input">
       <i class="bi bi-search"></i>
-      <input type="text" id="sdidSearch" placeholder="Search SDID, dept, area, plate…" oninput="searchSdid(this.value)">
+      <input type="text" id="sdidSearch" placeholder="Search SDID, invoice no., dept, area, plate…" oninput="searchSdid(this.value)">
     </div>
     <button class="btn-sm green" onclick="exportSdidCSV()"><i class="bi bi-download"></i> CSV</button>
     <button class="btn-sm blue"  onclick="exportSdidExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
@@ -1198,6 +1409,7 @@ function deptColor(string $d): string {
       <th class="r" onclick="sortSdidTable(7)">Amount Paid ⇅</th>
       <th class="r" onclick="sortSdidTable(8)">Balance Due ⇅</th>
       <th>Status</th>
+      <th onclick="sortSdidTable(10)">Invoice No. ⇅</th>
     </tr></thead>
     <tbody id="sdidTableBody">
     <?php foreach ($sdidSummaries as $s):
@@ -1211,7 +1423,7 @@ function deptColor(string $d): string {
           'VOID'      => ['#fee2e2','#991b1b','#f87171','✕'],
           default     => ['#f3f4f6','#374151','#d1d5db','•'],
       };
-      $searchStr = strtolower(($s['SDID']??'').' '.($s['Departments']??'').' '.($s['Areas']??'').' '.($s['PlateNumber']??''));
+      $searchStr = strtolower(($s['SDID']??'').' '.($s['Departments']??'').' '.($s['Areas']??'').' '.($s['PlateNumber']??'').' '.($s['RefNo']??''));
     ?>
       <tr style="<?= $rowBg ?>cursor:pointer;" data-search="<?= htmlspecialchars($searchStr) ?>"
           class="sdid-summary-row" data-sdid="<?= htmlspecialchars((string)$s['SDID']) ?>"
@@ -1228,16 +1440,19 @@ function deptColor(string $d): string {
         <td class="mono dim" style="font-size:.8rem"><?= htmlspecialchars($s['LatestDate'] ?: '—') ?></td>
         <td class="r mono bold" style="color:var(--c-green)"><?= peso($s['TotalAmount']) ?></td>
         <td class="r mono" style="color:var(--c-green)"><?= peso($s['TotalPaid']) ?></td>
-        <td class="r mono bold" style="color:var(--c-red);font-size:.95rem">▼ <?= peso($sBal) ?></td>
+        <td class="r mono bold" style="color:<?= $sBal > 0 ? 'var(--c-red)' : 'var(--c-dim)' ?>;font-size:.95rem">
+          <?= $sBal > 0 ? '▼ ' . peso($sBal) : '—' ?>
+        </td>
         <td>
           <span style="background:<?= $s1bg ?>;color:<?= $s1color ?>;border:1px solid <?= $s1border ?>;border-radius:999px;padding:2px 9px;font-size:.73rem;font-weight:700;white-space:nowrap;">
             <?= $s1icon ?> <?= htmlspecialchars($s['Status1'] ?: '—') ?>
           </span>
         </td>
+        <td class="mono" style="font-size:.78rem;color:var(--c-purple);font-weight:700"><?= htmlspecialchars($s['RefNo'] ?: '—') ?></td>
       </tr>
       <?php $thisEmpRows = $sdidGrouped[$s['SDID']] ?? []; ?>
       <tr id="sdid-detail-<?= htmlspecialchars((string)$s['SDID']) ?>" class="sdid-detail-row" style="display:none;">
-        <td colspan="10" style="padding:0;background:#f9f5ff;">
+        <td colspan="12" style="padding:0;background:#f9f5ff;">
           <div style="padding:.5rem .75rem .75rem;">
             <table style="width:100%;border-collapse:collapse;font-size:.78rem;border:1px solid #ddd6fe;border-radius:8px;overflow:hidden;">
               <thead>
@@ -1252,6 +1467,7 @@ function deptColor(string $d): string {
                   <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Balance</th>
                   <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Items</th>
                   <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Date Paid</th>
+                  <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Settled</th>
                 </tr>
               </thead>
               <tbody>
@@ -1286,10 +1502,21 @@ function deptColor(string $d): string {
                     <button onclick="event.stopPropagation();openSsItems(<?= (int)($emp['SEID'] ?? 0) ?>, <?= htmlspecialchars(json_encode($emp['EmployeeName'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['RefNo'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['EmployeeID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($sdid)) ?>)" style="font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:6px;border:1.5px solid #fca5a5;background:#fee2e2;color:#991b1b;cursor:pointer;white-space:nowrap;"><i class="bi bi-list-ul"></i> Items</button>
                   </td>
                   <td style="padding:.32rem .6rem;font-size:.77rem;font-family:monospace;">
-                    <?php if (!empty($datePaid)): ?>
+                    <?php if (!empty($datePaid) && $empBal <= 0): ?>
                       <span style="color:var(--c-green);font-weight:600;"><i class="bi bi-calendar-check" style="font-size:.7rem"></i> <?= htmlspecialchars($datePaid) ?></span>
+                    <?php elseif ($hasPaid): ?>
+                      <span style="color:#f59e0b;font-weight:600;"><i class="bi bi-clock-history" style="font-size:.7rem"></i> Partially paid</span>
                     <?php else: ?>
                       <span style="color:#d1d5db">Not yet paid</span>
+                    <?php endif; ?>
+                  </td>
+                  <td style="padding:.32rem .6rem;text-align:center;">
+                    <?php if ($empBal <= 0): ?>
+                      <button onclick="event.stopPropagation();openPayHistory(<?= htmlspecialchars(json_encode($emp['EmployeeID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['SDID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['EmployeeName'] ?? '')) ?>)" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;cursor:pointer;"><i class="bi bi-check-circle-fill"></i> Settled</button>
+                    <?php elseif ($hasPaid): ?>
+                      <button onclick="event.stopPropagation();openPayHistory(<?= htmlspecialchars(json_encode($emp['EmployeeID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['SDID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($emp['EmployeeName'] ?? '')) ?>)" style="background:#fef3c7;color:#b45309;border:1px solid #fcd34d;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;cursor:pointer;"><i class="bi bi-hourglass-split"></i> Partial</button>
+                    <?php else: ?>
+                      <span style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;"><i class="bi bi-x-circle-fill"></i> Unpaid</span>
                     <?php endif; ?>
                   </td>
                 </tr>
@@ -1315,7 +1542,9 @@ function deptColor(string $d): string {
         <td colspan="6" style="padding:.5rem .75rem;font-weight:700;font-size:.8rem;">TOTAL — <?= count($sdidSummaries) ?> SDID groups</td>
         <td class="r mono bold" style="color:var(--c-green);padding:.5rem .75rem"><?= peso(array_sum(array_column($sdidSummaries,'TotalAmount'))) ?></td>
         <td class="r mono" style="padding:.5rem .75rem"><?= peso(array_sum(array_column($sdidSummaries,'TotalPaid'))) ?></td>
-        <td class="r mono bold" style="color:var(--c-red);padding:.5rem .75rem">▼ <?= peso($totalSdidBalance) ?></td>
+        <td class="r mono bold" style="color:<?= $totalSdidBalance > 0 ? 'var(--c-red)' : 'var(--c-dim)' ?>;padding:.5rem .75rem">
+          <?= $totalSdidBalance > 0 ? '▼ ' . peso($totalSdidBalance) : '—' ?>
+        </td>
         <td style="padding:.5rem .75rem"></td>
       </tr>
     </tfoot>
@@ -1331,86 +1560,29 @@ function deptColor(string $d): string {
   ════════════════════════════════════════════════════ -->
   <?php if ($selTab === 'shortstocks_emp'): ?>
 
-  <style>
-  .sspay-list { display: flex; flex-direction: column; gap: .55rem; }
-  .sspay-row {
-    background: var(--c-surface);
-    border: 1.5px solid #fecdd3;
-    border-radius: 12px;
-    overflow: hidden;
-    transition: box-shadow .15s;
-  }
-  .sspay-row:hover { box-shadow: 0 3px 14px rgba(220,38,38,.1); }
-  .sspay-head {
-    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
-    padding: .6rem .85rem;
-    cursor: pointer;
-    background: #fff;
-    justify-content: space-between;
-  }
-  .sspay-head:hover { background: #fff5f5; }
-  .sspay-head-left  { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; flex: 1; }
-  .sspay-head-right { display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
-  .sspay-balance {
-    font-size: 1rem; font-weight: 800; color: var(--c-red);
-    font-family: 'JetBrains Mono', monospace;
-    background: #fee2e2; border-radius: 8px; padding: 2px 10px;
-  }
-  .sspay-body {
-    display: none;
-    border-top: 1.5px solid #fecdd3;
-    background: #fffafa;
-  }
-  .sspay-body.open { display: block; }
-  .sspay-info-bar {
-    display: flex; flex-wrap: wrap; gap: .85rem;
-    padding: .5rem .85rem;
-    font-size: .76rem;
-    background: #fff5f5;
-    border-bottom: 1px solid #fecdd3;
-  }
-  .sspay-info-bar span { color: var(--c-dim); }
-  .sspay-info-bar b   { color: var(--c-ink); }
-  .sspay-items-btn {
-    display: inline-flex; align-items: center; gap: .3rem;
-    padding: .28rem .75rem; border-radius: 7px; font-size: .76rem;
-    font-weight: 700; cursor: pointer; border: 1.5px solid #fca5a5;
-    background: #fee2e2; color: #991b1b; transition: all .12s;
-    margin: .5rem .85rem .5rem;
-  }
-  .sspay-items-btn:hover { background: #fecaca; }
-
-  </style>
-
 <?php
-    // Summary totals for the emp tab header
     $empTotalBalance = array_sum(array_column($shortStocksRows, 'Balance'));
     $empTotalAmt     = array_sum(array_column($shortStocksRows, 'TotalAmount'));
     $empTotalPaid    = array_sum(array_column($shortStocksRows, 'PaidAmount'));
-  ?>
+?>
 
   <div class="section-toolbar">
     <div class="section-toolbar-left">
       <i class="bi bi-person-exclamation" style="color:var(--c-red);font-size:.9rem"></i>
-      <span style="font-weight:700;font-size:.82rem">Short Stocks — By Employee</span>
+      <span style="font-weight:700;font-size:.82rem">Individual Short Stocks</span>
       <span class="section-count" style="background:#fee2e2;color:#991b1b;border-color:#f87171"><?= count($shortStocksRows) ?> records</span>
       <span style="font-size:.75rem;color:var(--c-dim)">Balance:
         <b style="color:var(--c-red)"><?= peso($empTotalBalance) ?></b>
         &nbsp;·&nbsp; Paid: <b style="color:var(--c-green)"><?= peso($empTotalPaid) ?></b>
-        &nbsp;·&nbsp; Total Amt: <b><?= peso($empTotalAmt) ?></b>
       </span>
     </div>
     <div class="search-input">
       <i class="bi bi-search"></i>
-      <input type="text" id="ssSearch" placeholder="Search employee, plate, area, ref…" oninput="searchSS(this.value)">
+      <input type="text" id="ssSearch" placeholder="Search employee, plate, area, ref…" oninput="searchSSTable(this.value)">
     </div>
-    <button class="btn-sm green" onclick="exportSSCSV()"><i class="bi bi-download"></i> CSV</button>
-    <button class="btn-sm blue"  onclick="exportSSExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
-  </div>
-
-  <div style="font-size:.74rem;color:var(--c-dim);margin-bottom:.6rem;padding:.5rem .85rem;background:var(--c-muted);border:1px solid var(--c-border);border-radius:8px;display:flex;align-items:center;gap:.4rem;">
-    <i class="bi bi-info-circle" style="color:var(--c-blue)"></i>
-    Records from Short Payment with an outstanding balance. Click a row to expand details, or <b>View Items</b> to see individual item breakdown.
+    <button class="btn-sm green"  onclick="exportSSCSV()"><i class="bi bi-download"></i> CSV</button>
+    <button class="btn-sm blue"   onclick="exportSSExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
+    <button class="btn-sm violet" onclick="printSSTable()"><i class="bi bi-printer"></i> Print</button>
   </div>
 
   <?php if (empty($shortStocksRows)): ?>
@@ -1419,84 +1591,138 @@ function deptColor(string $d): string {
       No outstanding short stock balances found. 🎉
     </div>
   <?php else: ?>
-  <div class="sspay-list" id="ssPayList">
-  <?php foreach ($shortStocksRows as $i => $r):
-    $uid      = 'sspay-' . $i;
-    $searchStr = strtolower(($r['EmployeeName']??'').' '.($r['PlateNumber']??'').' '.($r['Area']??'').' '.($r['RefNo']??'').' '.($r['EmployeeID']??'').' '.($r['Department']??''));
-    $stLow    = strtolower(trim($r['StatusofShort'] ?? ''));
-    $stClass  = match(true) {
-      str_contains($stLow, 'close') || str_contains($stLow, 'paid') => 'bss-closed',
-      str_contains($stLow, 'partial') => 'bss-partial',
-      default => 'bss-open',
-    };
-    $ini = initials($r['EmployeeName'] ?? '');
-    $dc  = deptColor($r['Department'] ?? '');
-  ?>
-  <div class="sspay-row" data-search="<?= htmlspecialchars($searchStr) ?>">
-    <div class="sspay-head" onclick="toggleSS('<?= $uid ?>', 'ssc-<?= $uid ?>')">
-      <div class="sspay-head-left">
-        <span class="emp-init"><?= htmlspecialchars($ini) ?></span>
-        <span class="emp-name-bold" style="font-weight:800;font-size:.85rem"><?= htmlspecialchars($r['EmployeeName'] ?? '—') ?></span>
-        <span class="meta-pill mp-purple mono" style="font-size:.72rem"><?= htmlspecialchars($r['EmployeeID'] ?? '') ?></span>
-        <?php if (!empty($r['PlateNumber'])): ?>
-          <span class="plate-tag" style="font-size:.75rem"><?= htmlspecialchars($r['PlateNumber']) ?></span>
-        <?php endif; ?>
-        <?php if (!empty($r['Area'])): ?>
-          <span class="area-text"><?= htmlspecialchars($r['Area']) ?></span>
-        <?php endif; ?>
-        <?php if (!empty($r['Department'])): ?>
-          <span style="display:inline-flex;align-items:center;gap:.2rem;font-size:.72rem;color:var(--c-dim)">
-            <span class="dept-dot" style="background:<?= $dc ?>"></span><?= htmlspecialchars($r['Department']) ?>
+
+  <div class="table-scroll">
+  <table class="data-table" id="ssEmpTable">
+    <thead>
+      <tr>
+        <th></th>
+        <th onclick="sortSSTable(1)">Name ⇅</th>
+        <th onclick="sortSSTable(2)">Department ⇅</th>
+        <th onclick="sortSSTable(3)">Schedule ⇅</th>
+        <th onclick="sortSSTable(4)">Plate# ⇅</th>
+        <th onclick="sortSSTable(5)">Area ⇅</th>
+        <th onclick="sortSSTable(6)">Outlet ⇅</th>
+        <th class="r" onclick="sortSSTable(7)">Total ⇅</th>
+        <th class="r" onclick="sortSSTable(8)">Amount ⇅</th>
+        <th class="r" onclick="sortSSTable(9)">Paid ⇅</th>
+        <th class="r" onclick="sortSSTable(10)">Count ⇅</th>
+        <th class="r" onclick="sortSSTable(11)">Amt Due ⇅</th>
+        <th class="r" onclick="sortSSTable(12)">Balance ⇅</th>
+        <th onclick="sortSSTable(13)">Status ⇅</th>
+        <th onclick="sortSSTable(14)">Ref No ⇅</th>
+        <th onclick="sortSSTable(15)">Type ⇅</th>
+      </tr>
+    </thead>
+    <tbody id="ssEmpTableBody">
+    <?php foreach ($shortStocksRows as $r):
+      $balance  = (float)($r['Balance']        ?? 0);
+      $totalAmt = (float)($r['TotalAmount']    ?? 0);
+      $amtDue   = (float)($r['AmountDue']      ?? 0);
+      $paid     = (float)($r['PaidAmount']     ?? 0);
+      $amtL     = (float)($r['AmountL']        ?? $amtDue);
+      $count    = (int)  ($r['NumAccountable'] ?? 0);
+      $stLow    = strtolower(trim($r['StatusofShort'] ?? ''));
+      [$stBg, $stColor, $stBorder] = match(true) {
+          str_contains($stLow, 'confirmed') => ['#dcfce7','#166534','#86efac'],
+          str_contains($stLow, 'created')   => ['#fef9c3','#713f12','#fde047'],
+          str_contains($stLow, 'void')      => ['#fee2e2','#991b1b','#fca5a5'],
+          default                            => ['#f3f4f6','#374151','#d1d5db'],
+      };
+      $searchStr = strtolower(
+          ($r['EmployeeName']  ?? '') . ' ' .
+          ($r['Department']    ?? '') . ' ' .
+          ($r['PlateNumber']   ?? '') . ' ' .
+          ($r['Area']          ?? '') . ' ' .
+          ($r['Outlet']        ?? '') . ' ' .
+          ($r['RefNo']         ?? '') . ' ' .
+          ($r['TypeShort']     ?? '') . ' ' .
+          ($r['StatusofShort'] ?? '') . ' ' .
+          ($r['EmployeeID']    ?? '')
+      );
+      $ini = initials($r['EmployeeName'] ?? '');
+      $dc  = deptColor($r['Department'] ?? '');
+    ?>
+    <?php
+      $fullRow = null;
+      foreach ($shortStocksRawRows as $_rr) {
+          if (($_rr['EmployeeID'] ?? '') === ($r['EmployeeID'] ?? '')) {
+              $fullRow = $_rr; break;
+          }
+      }
+      $fullRow = $fullRow ?? $r;
+    ?>
+    <tr data-search="<?= htmlspecialchars($searchStr) ?>">
+      <td style="white-space:nowrap">
+        <button
+          onclick="openSsItems(
+            <?= (int)($fullRow['SEID'] ?? 0) ?>,
+            <?= htmlspecialchars(json_encode($fullRow['EmployeeName'] ?? '—')) ?>,
+            <?= htmlspecialchars(json_encode($fullRow['RefNo'] ?? '—')) ?>,
+            <?= htmlspecialchars(json_encode($fullRow['EmployeeID'] ?? '')) ?>,
+            <?= htmlspecialchars(json_encode($fullRow['SDID'] ?? '')) ?>
+          )"
+          style="padding:2px 10px;border-radius:6px;font-size:.75rem;font-weight:700;
+                 background:#fef9c3;color:#713f12;border:1.5px solid #fde047;
+                 cursor:pointer;white-space:nowrap;transition:all .12s;"
+          onmouseover="this.style.background='#fde047'"
+          onmouseout="this.style.background='#fef9c3'">
+          Details
+        </button>
+      </td>
+      <td style="white-space:nowrap">
+        <span style="display:inline-flex;align-items:center;gap:.3rem;">
+          <span style="width:24px;height:24px;border-radius:50%;background:rgba(124,58,237,.12);
+                       color:#7c3aed;font-size:.62rem;font-weight:800;
+                       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <?= htmlspecialchars($ini) ?>
           </span>
-        <?php endif; ?>
-        <span class="date-chip"><i class="bi bi-calendar3"></i> <?= htmlspecialchars($r['DateSchedule'] ?? $r['DateGenerate'] ?? '') ?></span>
-        <span class="badge-short-status <?= $stClass ?>"><?= htmlspecialchars($r['StatusofShort'] ?? 'Open') ?></span>
-      </div>
-      <div class="sspay-head-right">
-        <span class="sspay-balance">▼ <?= peso((float)($r['Balance'] ?? 0)) ?></span>
-        <i class="bi bi-chevron-down caret" id="ssc-<?= $uid ?>"></i>
-      </div>
-    </div>
-    <div class="sspay-body" id="<?= $uid ?>">
-      <div class="sspay-info-bar">
-        <span><span>SDID:</span> <b class="mono" style="color:var(--c-purple)"><?= htmlspecialchars($r['SDID'] ?? '—') ?></b></span>
-        <span><span>Ref No:</span> <b class="mono"><?= htmlspecialchars($r['RefNo'] ?? '—') ?></b></span>
-        <span><span>Type:</span> <b><?= htmlspecialchars($r['TypeShort'] ?? '—') ?></b></span>
-        <span><span>Category:</span> <b><?= htmlspecialchars($r['Category'] ?? '—') ?></b></span>
-        <span><span>Total Amt:</span> <b style="color:var(--c-ink)"><?= peso((float)($r['TotalAmount'] ?? 0)) ?></b></span>
-        <span><span>Amt Due:</span> <b style="color:var(--c-yellow)"><?= peso((float)($r['AmountDue'] ?? 0)) ?></b></span>
-        <span><span>Paid:</span> <b style="color:var(--c-green)"><?= peso((float)($r['PaidAmount'] ?? 0)) ?></b></span>
-        <span><span>Balance:</span> <b style="color:var(--c-red)"><?= peso((float)($r['Balance'] ?? 0)) ?></b></span>
-        <?php if (!empty($r['DatePaid'])): ?>
-          <span><span>Last Paid:</span> <b class="mono"><?= htmlspecialchars($r['DatePaid']) ?></b></span>
-        <?php endif; ?>
-        <?php if ((int)($r['NumAccountable'] ?? 0) > 0): ?>
-          <span><span>Accountable:</span> <b><?= (int)$r['NumAccountable'] ?> pax</b></span>
-        <?php endif; ?>
-        <?php if (!empty($r['Remarks'])): ?>
-          <span><span>Remarks:</span> <?= htmlspecialchars($r['Remarks']) ?></span>
-        <?php endif; ?>
-        <?php if (!empty($r['Outlet'])): ?>
-          <span><span>Outlet:</span> <b><?= htmlspecialchars($r['Outlet']) ?></b></span>
-        <?php endif; ?>
-        <?php if (!empty($r['Job_tittle'])): ?>
-          <span><span>Job Title:</span> <b><?= htmlspecialchars($r['Job_tittle']) ?></b></span>
-        <?php endif; ?>
-      </div>
-      <button class="sspay-items-btn"
-        onclick="openSsItems(
-          <?= (int)($r['SEID'] ?? 0) ?>,
-          <?= htmlspecialchars(json_encode($r['EmployeeName'] ?? '—')) ?>,
-          <?= htmlspecialchars(json_encode($r['RefNo'] ?? '—')) ?>,
-          <?= htmlspecialchars(json_encode($r['EmployeeID'] ?? '')) ?>,
-          <?= htmlspecialchars(json_encode($r['SDID'] ?? '')) ?>
-        )">
-        <i class="bi bi-list-ul"></i> View Items
-      </button>
-    </div>
+          <span style="font-weight:700;font-size:.83rem"><?= htmlspecialchars($fullRow['EmployeeName'] ?? '—') ?></span>
+        </span>
+      </td>
+      <td style="font-size:.8rem">
+        <span style="display:inline-flex;align-items:center;gap:.25rem;">
+          <span style="width:7px;height:7px;border-radius:50%;background:<?= $dc ?>;flex-shrink:0;"></span>
+          <?= htmlspecialchars($fullRow['Department'] ?? '—') ?>
+        </span>
+      </td>
+      <td class="mono dim" style="font-size:.8rem;white-space:nowrap"><?= htmlspecialchars($fullRow['DateSchedule'] ?? $fullRow['DateGenerate'] ?? '—') ?></td>
+      <td><span class="plate-tag" style="font-size:.78rem"><?= htmlspecialchars($fullRow['PlateNumber'] ?? '—') ?></span></td>
+      <td class="dim" style="font-size:.8rem"><?= htmlspecialchars($fullRow['Area'] ?? '—') ?></td>
+      <td style="font-size:.8rem;max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+          title="<?= htmlspecialchars($fullRow['Outlet'] ?? '') ?>"><?= htmlspecialchars($fullRow['Outlet'] ?? '—') ?></td>
+      <td class="r mono" style="font-weight:600"><?= number_format((float)($fullRow['TotalAmount'] ?? 0), 2) ?></td>
+      <td class="r mono" style="color:var(--c-yellow);font-weight:600"><?= number_format((float)($fullRow['AmountL'] ?? $fullRow['AmountDue'] ?? 0), 2) ?></td>
+      <td class="r mono" style="color:<?= (float)($fullRow['PaidAmount'] ?? 0) > 0 ? 'var(--c-green)' : 'var(--c-dim)' ?>;font-weight:<?= (float)($fullRow['PaidAmount'] ?? 0) > 0 ? '700' : '400' ?>"><?= number_format((float)($fullRow['PaidAmount'] ?? 0), 2) ?></td>
+      <td class="r mono dim"><?= (int)($fullRow['NumAccountable'] ?? 0) ?></td>
+      <td class="r mono" style="color:var(--c-yellow);font-weight:600"><?= number_format((float)($fullRow['AmountDue'] ?? 0), 2) ?></td>
+      <td class="r mono bold" style="color:<?= (float)($fullRow['Balance'] ?? 0) > 0 ? 'var(--c-red)' : 'var(--c-green)' ?>;font-size:.88rem"><?= number_format((float)($fullRow['Balance'] ?? 0), 2) ?></td>
+      <td>
+        <span style="background:<?= $stBg ?>;color:<?= $stColor ?>;border:1px solid <?= $stBorder ?>;
+                     border-radius:999px;padding:2px 9px;font-size:.72rem;font-weight:700;white-space:nowrap;">
+          <?= htmlspecialchars($fullRow['StatusofShort'] ?? '—') ?>
+        </span>
+      </td>
+      <td class="mono" style="font-size:.78rem;color:var(--c-purple);font-weight:700"><?= htmlspecialchars($fullRow['RefNo'] ?? '—') ?></td>
+      <td class="dim" style="font-size:.79rem"><?= htmlspecialchars($fullRow['TypeShort'] ?? '—') ?></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="7" style="padding:.5rem .75rem;font-weight:700;font-size:.8rem;">TOTAL — <?= count($shortStocksRows) ?> employees</td>
+        <td class="r mono bold" style="padding:.5rem .75rem"><?= number_format($empTotalAmt, 2) ?></td>
+        <td class="r mono" style="padding:.5rem .75rem"></td>
+        <td class="r mono bold" style="padding:.5rem .75rem;color:var(--c-green)"><?= number_format($empTotalPaid, 2) ?></td>
+        <td class="r mono" style="padding:.5rem .75rem"></td>
+        <td class="r mono" style="padding:.5rem .75rem"></td>
+        <td class="r mono bold" style="padding:.5rem .75rem;color:var(--c-red)"><?= number_format($empTotalBalance, 2) ?></td>
+        <td colspan="3" style="padding:.5rem .75rem"></td>
+      </tr>
+    </tfoot>
+  </table>
   </div>
-  <?php endforeach; ?>
-  </div>
+
   <?php endif; ?>
 
   <?php endif; /* end shortstocks_emp tab */ ?>
@@ -1545,6 +1771,20 @@ function deptColor(string $d): string {
       <div class="ss-loading"><i class="bi bi-hourglass-split"></i> Loading…</div>
     </div>
     <div class="ss-modal-footer" id="ssModalFooter">—</div>
+  </div>
+</div>
+
+<!-- Payment History Modal -->
+<div id="payHistModal" onclick="closePayHistModal(event)" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);align-items:center;justify-content:center;">
+  <div class="ss-modal-box" style="max-width:1100px;">
+    <div class="ss-modal-header" style="background:#fffbeb;">
+      <span class="ss-modal-title" id="payHistTitle" style="color:#92400e;"><i class="bi bi-hourglass-split" style="color:#f59e0b;margin-right:.35rem;"></i> Payment History</span>
+      <button class="ss-modal-close" onclick="document.getElementById('payHistModal').style.display='none'">&#x2715;</button>
+    </div>
+    <div class="ss-modal-body" id="payHistBody">
+      <div class="ss-loading"><i class="bi bi-hourglass-split"></i> Loading…</div>
+    </div>
+    <div class="ss-modal-footer" id="payHistFooter">—</div>
   </div>
 </div>
 
@@ -1798,8 +2038,8 @@ function toggleSdidDetail(detailId, caretId) {
 const SDID_SUMMARIES = <?= json_encode(array_values($sdidSummaries)) ?>;
 function exportSdidCSV() {
     if (!SDID_SUMMARIES.length) return alert('No data to export.');
-    const keys = ['SDID','RowCount','Departments','Areas','PlateNumber','LatestDate','TotalAmount','TotalPaid','TotalBalance','Status1'];
-    const labels = ['SDID','# Employees','Departments','Areas','Plate No.','Latest Schedule','Total Amount','Amount Paid','Balance Due','Status'];
+    const keys = ['SDID','RowCount','Departments','Areas','PlateNumber','LatestDate','TotalAmount','TotalPaid','TotalBalance','Status1','RefNo'];
+    const labels = ['SDID','# Employees','Departments','Areas','Plate No.','Latest Schedule','Total Amount','Amount Paid','Balance Due','Status','Invoice No.'];
     const rows = [labels, ...SDID_SUMMARIES.map(r => keys.map(k => r[k] ?? ''))];
     const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
     const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
@@ -1816,20 +2056,48 @@ function exportSdidExcel() {
 /* ── Short Stocks tab JS ───────────────────────────────── */
 const SS_ROWS = <?= json_encode($shortStocksRows ?? []) ?>;
 
-function toggleSS(id, caretId) {
-    const el    = document.getElementById(id);
-    const caret = document.getElementById(caretId);
-    if (!el) return;
-    el.classList.toggle('open');
-    if (caret) caret.classList.toggle('open');
+function searchSSTable(q) {
+    const term = q.trim().toLowerCase();
+    document.querySelectorAll('#ssEmpTableBody tr').forEach(tr => {
+        tr.style.display = (!term || (tr.dataset.search || '').includes(term)) ? '' : 'none';
+    });
 }
 
-function searchSS(q) {
-    const term  = q.trim().toLowerCase();
-    const cards = document.querySelectorAll('#ssPayList .sspay-row');
-    cards.forEach(el => {
-        el.style.display = (!term || el.dataset.search.includes(term)) ? '' : 'none';
+let _ssSortDir = {};
+function sortSSTable(col) {
+    const tbody = document.querySelector('#ssEmpTableBody');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    _ssSortDir[col] = !_ssSortDir[col];
+    rows.sort((a, b) => {
+        const va = (a.cells[col]?.innerText || '').replace(/[₱,▼✓ ]/g, '').trim();
+        const vb = (b.cells[col]?.innerText || '').replace(/[₱,▼✓ ]/g, '').trim();
+        const na = parseFloat(va), nb = parseFloat(vb);
+        const res = isNaN(na) || isNaN(nb) ? va.localeCompare(vb) : na - nb;
+        return _ssSortDir[col] ? res : -res;
     });
+    rows.forEach(r => tbody.appendChild(r));
+}
+
+function printSSTable() {
+    const tbl = document.getElementById('ssEmpTable');
+    if (!tbl) return;
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    win.document.write(`<!DOCTYPE html><html><head><title>Individual Short Stocks</title>
+    <style>
+      body{font-family:Arial,sans-serif;font-size:10px;margin:14px;color:#111}
+      h3{margin:0 0 4px;font-size:13px}p{margin:0 0 8px;color:#666;font-size:10px}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:3px 6px;border:1px solid #ddd;white-space:nowrap}
+      thead th{background:#f3f4f6;font-weight:700}
+      tbody tr:nth-child(even) td{background:#fafafa}
+      @media print{body{margin:0}}
+    </style></head><body>
+    <h3>Individual Short Stocks</h3>
+    <p>Exported: ${new Date().toLocaleString()} · ${SS_ROWS.length} records</p>
+    ${tbl.outerHTML}
+    </body></html>`);
+    win.document.close(); win.focus(); win.print(); win.close();
 }
 
 function openSsItems(seid, empName, refNo, empId, sdid) {
@@ -1857,24 +2125,21 @@ function openSsItems(seid, empName, refNo, empId, sdid) {
             return;
         }
         let totalAmt = 0;
-        const cols = ['Item','UOM','QTY','UnitPrice','ItemAmount','DateSchedule','PlateNumber','Area','Outlet','TypeShort','RefNo','AmountDue'];
-        const colLabels = { Item:'Item', UOM:'UOM', QTY:'Qty', UnitPrice:'Unit Price', ItemAmount:'Amount',
+        const cols = ['Item','UOM','QTY','DateSchedule','PlateNumber','Area','Outlet','TypeShort'];
+        const colLabels = { Item:'Item', UOM:'UOM', QTY:'Qty',
                             DateSchedule:'Date', PlateNumber:'Plate', Area:'Area', Outlet:'Outlet',
-                            TypeShort:'Type', RefNo:'Ref No', AmountDue:'Amt Due' };
+                            TypeShort:'Type' };
         const ths = cols.map(c => `<th>${colLabels[c]||c}</th>`).join('');
         const trs = data.map(r => {
             totalAmt += parseFloat(r.ItemAmount ?? 0);
             const tds = cols.map(c => {
                 let v = r[c] ?? '—';
-                if (c === 'ItemAmount' || c === 'UnitPrice' || c === 'AmountDue') {
-                    v = '₱' + parseFloat(v||0).toLocaleString('en-PH', {minimumFractionDigits:2,maximumFractionDigits:2});
-                }
                 return `<td>${String(v).replace(/</g,'&lt;')}</td>`;
             }).join('');
             return `<tr>${tds}</tr>`;
         }).join('');
         body.innerHTML = `<div style="overflow-x:auto"><table class="ss-items-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
-        footer.textContent = `${data.length} items · Total: ₱${totalAmt.toLocaleString('en-PH', {minimumFractionDigits:2})}`;
+        footer.textContent = `${data.length} item${data.length !== 1 ? 's' : ''}`;
     })
     .catch(() => {
         body.innerHTML = '<div class="ss-loading" style="color:var(--c-red)"><i class="bi bi-exclamation-triangle"></i> Failed to load items.</div>';
@@ -1907,6 +2172,75 @@ function exportSSExcel() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Short Stocks');
     XLSX.writeFile(wb, `short_stocks_<?= date('Ymd') ?>.xlsx`);
+}
+
+/* ── Payment History Modal ─────────────────────────────── */
+function openPayHistory(empId, sdid, empName) {
+    const modal  = document.getElementById('payHistModal');
+    const title  = document.getElementById('payHistTitle');
+    const body   = document.getElementById('payHistBody');
+    const footer = document.getElementById('payHistFooter');
+
+    title.innerHTML  = `<i class="bi bi-hourglass-split" style="color:#f59e0b;margin-right:.35rem;"></i> Payment History — <b>${escHtml(empName)}</b>`;
+    body.innerHTML   = `<div class="ss-loading"><i class="bi bi-hourglass-split"></i> Loading…</div>`;
+    footer.textContent = '—';
+    modal.style.display = 'flex';
+
+    fetch(`?action=payhist&empid=${encodeURIComponent(empId)}&sdid=${encodeURIComponent(sdid)}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.length) {
+            body.innerHTML = `<div class="ss-loading" style="color:var(--c-dim)"><i class="bi bi-inbox"></i> No payment records found.</div>`;
+            footer.textContent = '0 records';
+            return;
+        }
+        let totalPaid = 0;
+        const rows = data.map((r, i) => {
+            const paid    = parseFloat(r.PaidAmount ?? 0);
+            const bal     = parseFloat(r.Balance    ?? 0);
+            const due     = parseFloat(r.AmountDue  ?? 0);
+            totalPaid += paid;
+            const isLast  = i === data.length - 1;
+            const rowBg   = isLast ? 'background:#f0fdf4;' : (i % 2 === 0 ? '' : 'background:#fafafa;');
+            return `<tr style="${rowBg}">
+               <td class="mono" style="font-size:.75rem;color:${r.DateGenerate ? 'var(--c-green)' : 'var(--c-dim)'};font-weight:${r.DateGenerate ? '700' : '400'}">${escHtml(r.DateGenerate ?? '—')}</td>
+                <td class="mono r" style="font-weight:600;">₱${due.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
+                <td class="mono r" style="color:var(--c-green);font-weight:700;">₱${paid.toLocaleString('en-PH',{minimumFractionDigits:2})} <i class="bi bi-check-circle-fill" style="font-size:.65rem"></i></td>
+                <td class="mono r" style="color:${bal > 0 ? 'var(--c-red)' : 'var(--c-green)'};font-weight:800;">${bal > 0 ? '▼ ' : '✓ '}₱${bal.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
+                <td style="font-size:.72rem;">${escHtml(r.RefNo ?? '—')}</td>
+                <td style="font-size:.72rem;color:var(--c-dim);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(r.Remarks??'')}">${escHtml(r.Remarks || '—')}</td>
+            </tr>`;
+        }).join('');
+
+        body.innerHTML = `
+        <div style="overflow-x:auto">
+        <table class="ss-items-table">
+            <thead>
+                <tr>
+                    <th>Date Generated</th>
+                    <th style="text-align:left">Amt Due</th>
+                    <th style="text-align:left">Paid</th>
+                    <th style="text-align:left">Balance</th>
+                    <th>Ref No</th>
+                    <th>Remarks</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+        </div>`;
+        footer.textContent = `${data.length} installment${data.length !== 1 ? 's' : ''} · Total paid: ₱${totalPaid.toLocaleString('en-PH',{minimumFractionDigits:2})}`;
+    })
+    .catch(() => {
+        body.innerHTML = `<div class="ss-loading" style="color:var(--c-red)"><i class="bi bi-exclamation-triangle"></i> Failed to load payment history.</div>`;
+    });
+}
+
+function closePayHistModal(e) {
+    if (e.target === document.getElementById('payHistModal')) {
+        document.getElementById('payHistModal').style.display = 'none';
+    }
 }
 </script>
 

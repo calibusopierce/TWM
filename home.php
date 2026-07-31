@@ -58,8 +58,14 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
       --cat-hr:      #34d399;
       --cat-fleet:   #fbbf24;
       --cat-finance: #a78bfa;
+      --cat-sales: #00fff2;
+      --cat-sales-bg: rgba(71, 156, 167, 0.1);
+      --cat-sales-bdr: rgba(71, 167, 151, 0.28);
       --cat-customers: #f87171;
       --cat-general: #60a5fa;
+      --cat-accounting-bg:  rgba(251,146,60,0.10);
+      --cat-accounting-bdr: rgba(251,146,60,0.28);
+      --cat-accounting:     #fb923c;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -180,8 +186,10 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
     .hub-section.cat-hr      { border-top: 2px solid var(--cat-hr); }
     .hub-section.cat-fleet   { border-top: 2px solid var(--cat-fleet); }
     .hub-section.cat-finance { border-top: 2px solid var(--cat-finance); }
+    .hub-section.cat-sales   { border-top: 2px solid var(--cat-sales); }
     .hub-section.cat-customers { border-top: 2px solid var(--cat-customers); }
-    .hub-section.cat-general { border-top: 2px solid var(--cat-general); }
+     .hub-section.cat-general { border-top: 2px solid var(--cat-general); }
+    .hub-section.cat-accounting { border-top: 2px solid var(--cat-accounting); }
 
     /* ── Clickable section header (collapse/expand) ── */
     .section-header {
@@ -200,8 +208,10 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
     .cat-hr      .section-icon { background: var(--cat-hr-bg);      color: var(--cat-hr);      border: 1px solid var(--cat-hr-bdr); }
     .cat-fleet   .section-icon { background: var(--cat-fleet-bg);   color: var(--cat-fleet);   border: 1px solid var(--cat-fleet-bdr); }
     .cat-finance .section-icon { background: var(--cat-finance-bg); color: var(--cat-finance); border: 1px solid var(--cat-finance-bdr); }
+    .cat-sales   .section-icon { background: var(--cat-sales-bg);   color: var(--cat-sales);   border: 1px solid var(--cat-sales-bdr); }
     .cat-customers .section-icon { background: var(--cat-customers-bg); color: var(--cat-customers); border: 1px solid var(--cat-customers-bdr); }
     .cat-general .section-icon { background: var(--cat-general-bg); color: var(--cat-general); border: 1px solid var(--cat-general-bdr); }
+    .cat-accounting .section-icon { background: var(--cat-accounting-bg); color: var(--cat-accounting); border: 1px solid var(--cat-accounting-bdr); }
 
     .section-label {
       font-family: 'Sora', sans-serif;
@@ -211,8 +221,10 @@ $totalCards = array_sum(array_map(fn($s) => count($s['cards']), $sections));
     .cat-hr      .section-label { color: var(--cat-hr); }
     .cat-fleet   .section-label { color: var(--cat-fleet); }
     .cat-finance .section-label { color: var(--cat-finance); }
+    .cat-sales   .section-label { color: var(--cat-sales); }
     .cat-customers .section-label { color: var(--cat-customers); }
     .cat-general .section-label { color: var(--cat-general); }
+    .cat-accounting .section-label { color: var(--cat-accounting); }
 
     .section-count {
       font-size: .67rem; font-weight: 600;

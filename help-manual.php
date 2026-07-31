@@ -36,13 +36,13 @@ $guide_registry = [
         'color' => '#8b5cf6',
     ],
     [
-        'keys'  => ['careers_admin', 'view_applications', 'uniform_inventory', 'employee_list'],
+        'keys'  => ['careers_admin', 'view_applications', 'uniform_inventory', 'employee_list', 'attendance'],
         'href'  => base_url('HR/help-manual.php'),
         'emoji' => '👥',
         'cat'   => 'Human Resources',
         'title' => 'HR',
-        'desc'  => 'Careers Admin, Applications, Uniform Inventory, and Employee Directory — manage hiring, uniforms, and staff records.',
-        'chips' => ['Careers', 'Applications', 'Uniforms', 'Employees'],
+        'desc'  => 'Careers Admin, Applications, Uniform Inventory, Attendance, and Employee Directory — manage hiring, uniforms, time tracking, and staff records.',
+        'chips' => ['Careers', 'Applications', 'Uniforms', 'Attendance', 'Employees'],
         'color' => '#10b981',
     ],
     [
@@ -54,6 +54,36 @@ $guide_registry = [
         'desc'  => 'Create, review, approve, and print Purchase Orders across all departments. Manage PO categories and track order statuses.',
         'chips' => ['Create PO', 'Approve', 'Print', 'Categories'],
         'color' => '#3b82f6',
+    ],
+    [
+        'keys'  => ['sales_order_report'],
+        'href'  => base_url('SALES/help-manual.php'),
+        'emoji' => '🧾',
+        'cat'   => 'Sales',
+        'title' => 'Sales Order Report',
+        'desc'  => 'Filter, review, export, and print sales order line items — with live stat cards for customers, suppliers, salesmen, quantity, and sales value.',
+        'chips' => ['Filters', 'Stat Cards', 'CSV Export', 'Print'],
+        'color' => '#14b8a6',
+    ],
+    [
+    'keys'  => ['employee_loans', 'my_loans'],
+    'href'  => base_url('EMPLOYEE/help-manual.php'),
+    'emoji' => '💰',
+    'cat'   => 'Human Resources',
+    'title' => 'Employee Loans',
+    'desc'  => 'Create and manage employee salary loans — from proposal through approval, payment collection, and full settlement.',
+    'chips' => ['Create Loan', 'Approve', 'Payments', 'My Loans'],
+    'color' => '#0ea5e9',
+    ],
+    [
+        'keys'  => ['short_stocks_paid'],
+        'href'  => base_url('ACCOUNTING/help-manual.php'),
+        'emoji' => '💸',
+        'cat'   => 'Accounting',
+        'title' => 'Short Stocks Paid',
+        'desc'  => 'Track, filter, export, and print paid short-stock records — with stat cards, full record detail views, and sync\'d Excel/print reports.',
+        'chips' => ['Filters', 'Stat Cards', 'Excel Export', 'Print'],
+        'color' => '#0891b2',
     ],
     [
         'keys'  => ['RBAC'],
@@ -117,7 +147,7 @@ $topbar_page = 'help';
     background: #fff;
     border: 1.5px solid #e2e8f0;
     border-radius: 20px;
-    margin-bottom: 2.5rem;
+    margin-bottom: 2rem;
     box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 24px rgba(0,0,0,.04);
     position: relative;
     overflow: hidden;
@@ -214,6 +244,54 @@ $topbar_page = 'help';
     text-transform: uppercase;
     letter-spacing: .06em;
   }
+
+  /* ── Search bar ── */
+  .hub-search-wrap { margin-bottom: 2rem; }
+
+  .hub-search-box {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    background: #fff;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 14px;
+    padding: .8rem 1.1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    transition: border-color .15s, box-shadow .15s;
+  }
+
+  .hub-search-box:focus-within {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+  }
+
+  .hub-search-box i.bi-search { color: #94a3b8; font-size: .95rem; flex-shrink: 0; }
+
+  .hub-search-box input {
+    border: none;
+    outline: none;
+    background: none;
+    font-family: inherit;
+    font-size: .9rem;
+    color: #0f172a;
+    width: 100%;
+  }
+
+  .hub-search-box input::placeholder { color: #94a3b8; }
+
+  .hub-search-clear {
+    display: none;
+    border: none;
+    background: none;
+    padding: 0;
+    color: #94a3b8;
+    font-size: 1rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .hub-search-clear:hover { color: #64748b; }
+  .hub-search-box.has-query .hub-search-clear { display: flex; }
 
   /* ── Section label ── */
   .hub-section-label {
@@ -412,6 +490,7 @@ $topbar_page = 'help';
   }
 
   .hub-hero  { animation: fadeUp .4s ease both; }
+  .hub-search-wrap { animation: fadeUp .4s .06s ease both; }
   .hub-grid  { animation: fadeUp .4s .1s ease both; }
 
   .hub-card {
@@ -465,6 +544,15 @@ $topbar_page = 'help';
     </div>
   </div>
 
+  <!-- ── Search ── -->
+  <div class="hub-search-wrap">
+    <div class="hub-search-box" id="searchBox">
+      <i class="bi bi-search"></i>
+      <input type="text" id="guideSearch" placeholder="Search guides by name, category, or feature..." oninput="filterGuides(this.value)" autocomplete="off">
+      <button type="button" class="hub-search-clear" onclick="clearSearch()"><i class="bi bi-x-circle-fill"></i></button>
+    </div>
+  </div>
+
   <!-- ── Guide cards ── -->
   <div class="hub-section-label">Available Help Guides</div>
 
@@ -475,10 +563,14 @@ $topbar_page = 'help';
     You don't have access to any modules with a help guide yet. Contact your administrator.
   </div>
   <?php else: ?>
-  <div class="hub-grid">
+  <div class="hub-grid" id="guideGrid">
     <?php foreach ($accessible as $guide): ?>
     <a href="<?= $guide['href'] ?>" class="hub-card"
-       style="--card-color: <?= $guide['color'] ?>">
+       style="--card-color: <?= $guide['color'] ?>"
+       data-title="<?= htmlspecialchars($guide['title']) ?>"
+       data-cat="<?= htmlspecialchars($guide['cat']) ?>"
+       data-desc="<?= htmlspecialchars($guide['desc']) ?>"
+       data-extra="<?= htmlspecialchars(implode(' ', $guide['chips'])) ?>">
       <div class="hub-card-bar"></div>
       <div class="hub-card-body">
         <div class="hub-card-header">
@@ -506,6 +598,11 @@ $topbar_page = 'help';
     </a>
     <?php endforeach; ?>
   </div>
+  <div class="hub-empty" id="guideEmpty" style="display:none">
+    <i class="bi bi-search"></i>
+    <strong>No guides match your search</strong>
+    Try a different keyword.
+  </div>
   <?php endif; ?>
 
 </div>
@@ -513,6 +610,39 @@ $topbar_page = 'help';
 <div class="hub-footer">
   Help Manual &middot; Urban Tradewell Corporation &middot; <?= date('Y') ?>
 </div>
+
+<script>
+function clearSearch() {
+  const input = document.getElementById('guideSearch');
+  input.value = '';
+  filterGuides('');
+  input.focus();
+}
+
+function filterGuides(query) {
+  const q = query.trim().toLowerCase();
+  const searchBox = document.getElementById('searchBox');
+  if (searchBox) searchBox.classList.toggle('has-query', q !== '');
+
+  const cards = document.querySelectorAll('#guideGrid .hub-card');
+  let anyVisible = false;
+
+  cards.forEach(card => {
+    const haystack = (
+      (card.dataset.title || '') + ' ' +
+      (card.dataset.cat || '') + ' ' +
+      (card.dataset.desc || '') + ' ' +
+      (card.dataset.extra || '')
+    ).toLowerCase();
+    const match = q === '' || haystack.includes(q);
+    card.style.display = match ? '' : 'none';
+    if (match) anyVisible = true;
+  });
+
+  const emptyEl = document.getElementById('guideEmpty');
+  if (emptyEl) emptyEl.style.display = (q !== '' && !anyVisible) ? '' : 'none';
+}
+</script>
 
 </body>
 </html>

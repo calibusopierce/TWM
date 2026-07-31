@@ -51,10 +51,19 @@ $_position  = _ep($_ep, 'Job_tittle') ?: _ep($_ep, 'Position_held') ?: $_topbar_
 $_dept      = _ep($_ep, 'Department') ?: $_topbar_dept;
 $_status    = _ep($_ep, 'Employee_Status');
 
-// Profile photo — same path logic as employee-list.php
-$_pic_raw   = trim(_ep($_ep, 'Picture'));
-if ($_pic_raw && !str_starts_with($_pic_raw, '/')) $_pic_raw = '/TWM/' . $_pic_raw;
-$_photo     = $_pic_raw ?: null;
+// Profile photo — same dual-path resolution as employee-list.php
+// TWM uploads go to /TWM/uploads/employee_pics/, legacy go to /tradewellportal/uploads/
+$_pic_raw      = trim(_ep($_ep, 'Picture'));
+$_pic_norm     = str_replace('\\', '/', $_pic_raw);
+$_pic_file     = $_pic_norm ? basename($_pic_norm) : '';
+$_photo        = null;
+$_photo_legacy = null;
+if ($_pic_file) {
+    $_photo = strpos($_pic_norm, 'employee_pics') !== false
+        ? (str_starts_with($_pic_norm, '/') ? $_pic_norm : '/TWM/' . $_pic_norm)
+        : '/TWM/uploads/employee_pics/' . $_pic_file;
+    $_photo_legacy = '/tradewellportal/uploads/' . $_pic_file;
+}
 
 // FIX 3: _ep() always returns a string, so === 1 (int) can never match.
 //         Simplified to a single strict string check.
@@ -84,6 +93,12 @@ $_hired_raw  = fmt_date(_ep($_ep, 'Hired_date'),          'Y-m-d');
 $_birth_disp = fmt_date(_ep($_ep, 'Birth_date'),          'M d, Y');
 $_sep_disp   = fmt_date(_ep($_ep, 'Date_Of_Seperation'),  'M d, Y');
 $_service    = years_of_service(_ep($_ep, 'Hired_date'));
+
+// ── HR sidebar toggle (HR pages only) ──────────────────────────
+// A page can opt in explicitly with `$hr_sidebar_toggle = true;` before
+// including this file; otherwise we infer it from the script path so
+// non-HR pages never render the hamburger or reference hr_nav.php's JS.
+$_is_hr_page = $hr_sidebar_toggle ?? (stripos($_SERVER['SCRIPT_NAME'] ?? '', '/HR/') !== false);
 ?>
 <!-- ══ STYLES (placed before any HTML to prevent flash-of-unstyled-content) ══ -->
 <style>
@@ -227,12 +242,65 @@ $_service    = years_of_service(_ep($_ep, 'Hired_date'));
   .pm-body{padding:.9rem 1rem;}
   .pm-tabs{padding:0 .75rem;}
 }
+
+/* ── HR sidebar hamburger (only rendered on HR pages) ──────────── */
+/* Scoped entirely to this one button — does not touch .topbar,
+   .topbar-brand, or any other existing topbar styling/markup. */
+.hr-sidebar-toggle-btn{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:38px;
+  height:38px;
+  flex-shrink:0;
+  margin-right:.65rem;
+  border:none;
+  background:transparent;
+  border-radius:9px;
+  color:#4b5563;
+  font-size:1.15rem;
+  cursor:pointer;
+  transition:background .15s ease,color .15s ease;
+}
+.hr-sidebar-toggle-btn:hover{background:rgba(99,102,241,.08);color:#6366f1;}
+.hr-sidebar-toggle-btn:focus-visible{outline:2px solid #6366f1;outline-offset:2px;}
+.hr-sidebar-toggle-btn i{pointer-events:none;transition:transform .2s ease;}
+.hr-sidebar-toggle-btn[aria-expanded="true"] i{transform:rotate(90deg);}
 </style>
 
 <script>const APP_URL = "<?= base_url() ?>";</script>
 
 <!-- ══ TOPBAR ═════════════════════════════════════════════════ -->
 <header class="topbar">
+
+  <?php if ($_is_hr_page): ?>
+  <button type="button"
+          id="hrSidebarToggleBtn"
+          class="hr-sidebar-toggle-btn"
+          aria-label="Toggle HR navigation menu"
+          aria-controls="hrSidebar"
+          aria-expanded="false"
+          onclick="if (typeof toggleHRSidebar === 'function') toggleHRSidebar();">
+    <i class="bi bi-list" aria-hidden="true"></i>
+  </button>
+  <script>
+  // Defensive check: this button only works on HR pages that also
+  // include hr_nav.php (which creates #hrSidebar and defines
+  // toggleHRSidebar()). We detect HR pages purely by URL path here in
+  // topbar.php, so on an HR page that hasn't wired up hr_nav.php yet
+  // the button would otherwise render but silently do nothing when
+  // clicked. Instead, once the full page has loaded, hide it if the
+  // sidebar it's supposed to control was never actually included.
+  document.addEventListener('DOMContentLoaded', function () {
+    var btn = document.getElementById('hrSidebarToggleBtn');
+    if (btn && !document.getElementById('hrSidebar')) {
+      btn.style.display = 'none';
+      btn.setAttribute('aria-hidden', 'true');
+      btn.tabIndex = -1;
+    }
+  });
+  </script>
+  <?php endif; ?>
 
   <a href="<?= route('home') ?>" class="topbar-brand">
     <img src="<?= base_url('assets/img/logo.png') ?>" alt="Logo" class="topbar-brand-logo"
@@ -269,7 +337,9 @@ $_service    = years_of_service(_ep($_ep, 'Hired_date'));
   <div class="tb-avatar-wrap" id="tbAvatarWrap">
     <button class="tb-avatar-btn" id="tbAvatarBtn" title="Account" aria-haspopup="true" aria-expanded="false">
       <?php if ($_photo): ?>
-        <img src="<?= htmlspecialchars($_photo) ?>" class="tb-avatar-photo" alt="<?= htmlspecialchars($_initials) ?>" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <img src="<?= htmlspecialchars($_photo) ?>" class="tb-avatar-photo" alt="<?= htmlspecialchars($_initials) ?>"
+             data-legacy="<?= htmlspecialchars($_photo_legacy) ?>"
+             onerror="(function(img){var leg=img.getAttribute('data-legacy');if(leg&&!img.getAttribute('data-legacy-tried')){img.setAttribute('data-legacy-tried','1');img.src=leg;}else{img.style.display='none';img.nextElementSibling.style.display='flex';}})(this)">
         <span class="tb-avatar-initials" style="display:none;"><?= $_initials ?></span>
       <?php else: ?>
         <span class="tb-avatar-initials"><?= $_initials ?></span>
@@ -282,7 +352,9 @@ $_service    = years_of_service(_ep($_ep, 'Hired_date'));
       <div class="tb-drop-header">
         <div class="tb-drop-avatar-wrap">
           <?php if ($_photo): ?>
-            <img src="<?= htmlspecialchars($_photo) ?>" class="tb-drop-avatar-lg tb-drop-avatar-img" alt="<?= htmlspecialchars($_initials) ?>" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+            <img src="<?= htmlspecialchars($_photo) ?>" class="tb-drop-avatar-lg tb-drop-avatar-img" alt="<?= htmlspecialchars($_initials) ?>"
+                 data-legacy="<?= htmlspecialchars($_photo_legacy) ?>"
+                 onerror="(function(img){var leg=img.getAttribute('data-legacy');if(leg&&!img.getAttribute('data-legacy-tried')){img.setAttribute('data-legacy-tried','1');img.src=leg;}else{img.style.display='none';img.nextElementSibling.style.display='flex';}})(this)">
             <div class="tb-drop-avatar-lg" style="display:none;"><?= $_initials ?></div>
           <?php else: ?>
             <div class="tb-drop-avatar-lg"><?= $_initials ?></div>
@@ -372,7 +444,9 @@ $_service    = years_of_service(_ep($_ep, 'Hired_date'));
   <div class="pm-header">
     <div class="pm-avatar-wrap" <?= $_photo ? 'onclick="tbOpenPhotoPreview()" style="cursor:pointer;" title="View photo"' : '' ?>>
       <?php if ($_photo): ?>
-        <img src="<?= htmlspecialchars($_photo) ?>" class="pm-avatar pm-avatar-img" alt="<?= htmlspecialchars($_initials) ?>" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <img src="<?= htmlspecialchars($_photo) ?>" class="pm-avatar pm-avatar-img" alt="<?= htmlspecialchars($_initials) ?>"
+             data-legacy="<?= htmlspecialchars($_photo_legacy) ?>"
+             onerror="(function(img){var leg=img.getAttribute('data-legacy');if(leg&&!img.getAttribute('data-legacy-tried')){img.setAttribute('data-legacy-tried','1');img.src=leg;}else{img.style.display='none';img.nextElementSibling.style.display='flex';}})(this)">
         <div class="pm-avatar" style="display:none;"><?= $_initials ?></div>
       <?php else: ?>
         <div class="pm-avatar"><?= $_initials ?></div>
@@ -794,7 +868,9 @@ $_service    = years_of_service(_ep($_ep, 'Hired_date'));
   <div style="display:flex;flex-direction:column;align-items:center;gap:1rem;animation:pvFadeIn .22s ease;" onclick="event.stopPropagation()">
     <div style="position:relative;">
       <img src="<?= htmlspecialchars($_photo) ?>" alt="<?= htmlspecialchars($_display_name) ?>"
-        style="width:240px;height:240px;border-radius:16px;object-fit:cover;border:3px solid rgba(255,255,255,.15);box-shadow:0 24px 64px rgba(0,0,0,.55);display:block;">
+        data-legacy="<?= htmlspecialchars($_photo_legacy) ?>"
+        style="width:min(70vw,480px);height:min(70vw,480px);border-radius:16px;object-fit:cover;border:3px solid rgba(255,255,255,.15);box-shadow:0 24px 64px rgba(0,0,0,.55);display:block;"
+        onerror="(function(img){var leg=img.getAttribute('data-legacy');if(leg&&!img.getAttribute('data-legacy-tried')){img.setAttribute('data-legacy-tried','1');img.src=leg;}else{img.style.display='none';}})(this)">
       <div style="position:absolute;inset:0;border-radius:16px;border:1px solid rgba(255,255,255,.08);pointer-events:none;"></div>
     </div>
     <div style="text-align:center;">

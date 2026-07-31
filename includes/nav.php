@@ -21,47 +21,71 @@ function base_url(string $path = ''): string {
 define('ROUTES', [
 
     // ── Core / Root
-    'home'              => 'home.php',
-    'login'             => 'login.php',
-    'logout'            => 'logout.php',
-    'orgchart'          => 'orgchart.php',
-    'help'              => 'help-manual.php',
-    'set_department'    => 'set_department.php',
+    'home'                 => 'home.php',
+    'login'                => 'login.php',
+    'logout'               => 'logout.php',
+    'orgchart'             => 'orgchart.php',
+    'help'                 => 'help-manual.php',
+    'set_department'       => 'set_department.php',
 
     // ── HR Module
-    'careers'           => 'HR/careers.php',
-    'careers_admin'     => 'HR/careers-admin.php',
-    'careers_details'   => 'HR/careers-details.php',
-    'job_application'   => 'HR/job-application.php',
-    'view_applications' => 'HR/view-applications.php',
-    'update_status'     => 'HR/update-status.php',
-    'save_interview'    => 'HR/save-interview.php',
-    'download_resume'   => 'HR/download-resume.php',
-    'uniform_inventory' => 'HR/uniform-inventory.php',
-    'uniform_po_items'  => 'HR/uniform-po-items.php',
-    'employee_list'     => 'HR/employee-list.php',
+    'payroll_dashboard'    => 'HR/payroll_dashboard.php',
+    'careers'              => 'HR/careers.php',
+    'careers_admin'        => 'HR/careers-admin.php',
+    'careers_details'      => 'HR/careers-details.php',
+    'job_application'      => 'HR/job-application.php',
+    'view_applications'    => 'HR/view-applications.php',
+    'update_status'        => 'HR/update-status.php',
+    'save_interview'       => 'HR/save-interview.php',
+    'download_resume'      => 'HR/download-resume.php',
+    'uniform_inventory'    => 'HR/uniform-inventory.php',
+    'uniform_po_items'     => 'HR/uniform-po-items.php',
+    'employee_list'        => 'HR/employee-list.php',
+    'attendance'           => 'HR/attendance.php',
+    'my_attendance'        => 'HR/my_attendance.php',
+    'employee_loans'       => 'EMPLOYEE/index.php',
+    'my_loans'             => 'EMPLOYEE/my_loans.php',
+    'cash_advance'         => 'VALE/create.php',
+    'cash_advance_record'  => 'VALE/cash-advance-record.php',
+    'leave_application'      => 'LEAVE/leave-application.php',
+    'leave_management'      => 'LEAVE/leave-info-management.php',
+    'leave_approval'        => 'LEAVE/leave-application-list.php',
+
 
     // ── Logistics Module
-    'fuel_dashboard'    => 'LOGISTICS/fuel_dashboard.php',
-    'graphs'            => 'LOGISTICS/graphs.php',
-    'team_schedule'     => 'LOGISTICS/team_schedule.php',
+    'fuel_dashboard'       => 'LOGISTICS/fuel_dashboard.php',
+    'graphs'               => 'LOGISTICS/graphs.php',
+    'team_schedule'        => 'LOGISTICS/team_schedule.php',
+    'fuel'                 => 'fuel/index.php',
 
     // ── PO Module
-    'po_index'          => 'PO/index.php',
+    'po_index'             => 'PO/index.php',
+
+    // ── Accounting Module
+    'short_stocks_paid' => 'ACCOUNTING/short_stocks_paid.php',
+    
+    // ── Customer Module
+    'customer_list'        => 'CUSTOMERS/customer-list.php',
+    'customer_detail'      => 'CUSTOMERS/customer-detail.php',
 
     // ── FINANCE Module
     'delivery_remittance'  => 'FINANCE/delivery_remittance.php',
     'ar_remittance'        => 'FINANCE/ar_remittance.php',
     'invoice_monitoring'   => 'FINANCE/invoice_monitoring.php',
+    'check_information'    => 'FINANCE/check_information.php',
+    'deduction_records'    => 'FINANCE/deduction_records.php',
+
+    // ── SALES Module
+    'sales_order_report'   => 'SALES/sales_order_report.php',
 
     // ── TEST Module
-    'message_user'      => 'TEST/messages.php',
+    'message_user'         => 'TEST/messages.php',
 
     // ── Forms
-    'awards'            => 'forms/awards.php',
-    'awards_details'    => 'forms/awards-details.php',
-    'contact'           => 'forms/contact.php',
-    'newsletter'        => 'forms/newsletter.php',
+    'awards'               => 'forms/awards.php',
+    'awards_details'       => 'forms/awards-details.php',
+    'contact'              => 'forms/contact.php',
+    'newsletter'           => 'forms/newsletter.php',
 
 ]);
 
@@ -105,16 +129,9 @@ function get_employee_profile(mixed $conn): ?array {
 
     if (!$conn || (!$employeeId && !$username)) return null;
 
-    // TTL-based cache — 5 minutes
-    $cacheKey = 'employee_profile_cache';
-    $cacheTs  = $_SESSION['employee_profile_cache_ts'] ?? 0;
-    if (
-        !empty($_SESSION[$cacheKey]) &&
-        is_array($_SESSION[$cacheKey]) &&
-        (time() - $cacheTs) < 300
-    ) {
-        return $_SESSION[$cacheKey];
-    }
+    // Cache removed — was causing Picture and other columns to return
+    // stale null values when the SELECT was updated after initial login.
+    // Query is lightweight so no cache needed.
 
     // Use CONVERT() on all date columns so they come back as plain
     // strings (no DateTime objects). Use [System] alias to guarantee
@@ -199,8 +216,6 @@ function get_employee_profile(mixed $conn): ?array {
         }
     }
 
-    $_SESSION[$cacheKey]                   = $row;
-    $_SESSION['employee_profile_cache_ts'] = time();
     return $row;
 }
 

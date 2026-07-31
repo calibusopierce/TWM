@@ -1,0 +1,690 @@
+/*=============================================================
+  responsive-patch.css
+  Drop this AFTER all other stylesheets.
+  Adds mobile-responsive fixes without touching any JS/PHP logic.
+  Covers: main.css, styles.css (careers), admin.css,
+          fuel.css, hr.css, topbar.css
+=============================================================*/
+
+/* ============================================================
+   1. VIEWPORT & BASE
+   ============================================================ */
+/* Ensure viewport meta is respected (add to <head> if missing:
+   <meta name="viewport" content="width=device-width, initial-scale=1"> ) */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+img, video, iframe {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ============================================================
+   2. MAIN.CSS — Public website (hero, sections, services, etc.)
+   ============================================================ */
+
+/* --- Hero --- */
+@media (max-width: 768px) {
+  .hero {
+    min-height: auto;
+    padding: 40px 0 30px;
+    text-align: center;
+  }
+
+  .hero h1 {
+    font-size: 28px;
+    line-height: 36px;
+  }
+
+  .hero p {
+    font-size: 16px;
+    margin-bottom: 24px;
+  }
+
+  .hero .btn-get-started,
+  .hero .btn-watch-video {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  .hero .btn-watch-video {
+    margin-left: 12px;
+  }
+
+  /* Hide animated image on very small screens */
+  .hero .animated {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .hero .btn-watch-video {
+    margin-left: 0;
+    margin-top: 12px;
+    display: flex;
+  }
+
+  /* Stack the buttons */
+  .hero .d-flex,
+  .hero .hero-btns {
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+}
+
+/* --- Global sections padding --- */
+@media (max-width: 768px) {
+  section,
+  .section {
+    padding: 40px 0;
+  }
+
+  .section-title {
+    padding-bottom: 36px;
+  }
+
+  .section-title p {
+    font-size: 24px;
+  }
+}
+
+/* --- Featured services --- */
+@media (max-width: 768px) {
+  .featured-services .service-item {
+    padding: 30px 20px;
+    margin-bottom: 20px;
+  }
+}
+
+/* --- About section --- */
+@media (max-width: 768px) {
+  .about .about-content ul li {
+    flex-direction: column;
+    margin-bottom: 24px;
+  }
+
+  .about .about-content ul i {
+    margin-right: 0;
+    margin-bottom: 10px;
+  }
+}
+
+/* --- Stats section --- */
+@media (max-width: 576px) {
+  .stats .stats-item {
+    margin-bottom: 48px;
+  }
+
+  .stats .stats-item span {
+    font-size: 28px;
+  }
+}
+
+/* --- Services section --- */
+@media (max-width: 576px) {
+  .services .service-item {
+    padding: 50px 16px;
+  }
+}
+
+/* --- Team section --- */
+@media (max-width: 576px) {
+  .team .team-member {
+    max-width: 320px;
+    margin: 0 auto 24px;
+  }
+}
+
+/* --- Contact section --- */
+@media (max-width: 768px) {
+  .contact .info-wrap,
+  .contact .php-email-form {
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+}
+
+/* --- Portfolio filters --- */
+@media (max-width: 480px) {
+  .portfolio .portfolio-filters li {
+    font-size: 13px;
+    padding: 6px 12px;
+  }
+}
+
+/* --- Service details sidebar stacks on mobile --- */
+@media (max-width: 768px) {
+  .service-details .services-list {
+    margin-bottom: 16px;
+  }
+}
+
+/* --- Page title breadcrumbs --- */
+@media (max-width: 576px) {
+  .page-title h1 {
+    font-size: 20px;
+  }
+}
+
+/* --- Header topbar text on small screens --- */
+@media (max-width: 480px) {
+  .header .topbar {
+    font-size: 12px;
+  }
+
+  .header .topbar .contact-info {
+    justify-content: center;
+  }
+}
+
+/* --- Status badge too large on mobile --- */
+@media (max-width: 576px) {
+  .status-badge {
+    font-size: 1.4rem !important;
+    padding: 0.4em 0.75em !important;
+  }
+}
+
+
+/* ============================================================
+   3. STYLES.CSS (careers.css) — Public career pages
+   ============================================================ */
+
+/* --- Careers hero --- */
+@media (max-width: 480px) {
+  .careers-hero {
+    padding: 2.5rem 1rem 2.25rem;
+  }
+
+  .hero-title {
+    font-size: clamp(1.6rem, 6vw, 2rem);
+  }
+
+  .hero-desc {
+    font-size: .9rem;
+  }
+}
+
+/* --- Careers grid — already has @media(max-width:576px) 1-col,
+       but min card width 320px overflows on narrow phones --- */
+@media (max-width: 359px) {
+  .careers-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .career-card {
+    padding: 1.25rem 1.1rem;
+  }
+}
+
+/* --- Details layout — sidebar + main panel on desktop,
+       stacks at 991px (already handled). Add touch polish. --- */
+@media (max-width: 768px) {
+  .details-main,
+  .form-main {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .apply-card {
+    padding: 1.25rem 1.25rem;
+  }
+
+  .apply-card-text .apply-title {
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .form-card-header {
+    padding: 1.1rem 1.25rem;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr; /* already at 768px but safety fallback */
+  }
+
+  .btn-submit {
+    font-size: .85rem;
+  }
+
+  /* Page hero breadcrumb wraps cleanly */
+  .page-hero .hero-inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+
+/* ============================================================
+   4. ADMIN.CSS — Careers admin + view-applications
+   ============================================================ */
+
+/* --- Topbar wraps on very narrow screens --- */
+@media (max-width: 400px) {
+  .topbar {
+    padding: .5rem .6rem;
+    gap: .4rem;
+  }
+
+  .topbar-admin-link .btn-label,
+  .btn-applications .btn-label {
+    display: none;
+  }
+
+  .topbar-admin-link,
+  .btn-applications {
+    padding: .35rem .55rem;
+  }
+}
+
+/* --- Applications table — hide lower-priority columns on mobile --- */
+@media (max-width: 768px) {
+  /* Already handled in admin.css, but extend for apps-table */
+  table.apps-table thead th:nth-child(5),
+  table.apps-table tbody td:nth-child(5) {
+    display: none; /* hide "Files" column, accessible via row expand */
+  }
+}
+
+@media (max-width: 480px) {
+  table.apps-table thead th:nth-child(4),
+  table.apps-table tbody td:nth-child(4),
+  table.apps-table thead th:nth-child(6),
+  table.apps-table tbody td:nth-child(6) {
+    display: none;
+  }
+
+  table.apps-table thead th,
+  table.apps-table tbody td {
+    padding: .55rem .45rem;
+    font-size: .77rem;
+  }
+
+  .applicant-name { font-size: .82rem; }
+  .applicant-meta { font-size: .7rem; }
+}
+
+/* --- Filter card on mobile --- */
+@media (max-width: 576px) {
+  .filter-card {
+    padding: .85rem 1rem;
+  }
+
+  .filter-card .filter-row {
+    gap: .5rem;
+  }
+
+  .filter-card .form-select,
+  .filter-card .form-control {
+    font-size: .8rem;
+  }
+}
+
+/* --- Tab bar wraps cleanly --- */
+@media (max-width: 576px) {
+  .app-tab-bar {
+    gap: .3rem;
+    padding: .25rem;
+  }
+
+  .app-tab {
+    font-size: .76rem;
+    padding: .38rem .75rem;
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .app-tab .tab-label {
+    display: none; /* show only icon on tiny screens */
+  }
+}
+
+/* --- Pagination on mobile --- */
+@media (max-width: 480px) {
+  .pagination-wrap {
+    gap: .2rem;
+    padding: 1rem .5rem;
+    flex-wrap: wrap;
+  }
+
+  .page-btn {
+    min-width: 30px;
+    height: 30px;
+    font-size: .75rem;
+  }
+}
+
+/* --- Files dropdown doesn't go off-screen --- */
+@media (max-width: 576px) {
+  .files-dropdown {
+    left: auto;
+    right: 0;
+    min-width: 200px;
+  }
+}
+
+/* --- Status pill smaller on tiny screens --- */
+@media (max-width: 360px) {
+  .status-pill {
+    font-size: .65rem;
+    padding: .2rem .45rem;
+  }
+}
+
+
+/* ============================================================
+   5. FUEL.CSS — Fuel module / internal dashboard
+   ============================================================ */
+
+/* --- Topbar --- */
+@media (max-width: 992px) {
+  .topbar {
+    padding: 0 1.25rem;
+    gap: .75rem;
+  }
+
+  .topbar-sub,
+  .topbar-divider {
+    display: none;
+  }
+
+  .topbar-date {
+    font-size: .68rem;
+    padding: .25rem .6rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    height: auto;
+    min-height: 56px;
+    padding: .5rem 1rem;
+    flex-wrap: nowrap;
+  }
+
+  .topbar-logo {
+    font-size: .88rem;
+  }
+
+  .topbar-date {
+    display: none;
+  }
+}
+
+/* --- Container/page padding --- */
+@media (max-width: 768px) {
+  .container {
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .container {
+    padding: 1rem .75rem 1.5rem;
+  }
+}
+
+/* --- Page header stacks --- */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .page-title {
+    font-size: 1.25rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-title {
+    font-size: 1.1rem;
+  }
+}
+
+/* --- Stats row — 2 columns on tablet, 1 on phone --- */
+@media (max-width: 768px) {
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: .75rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .stats-row {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-value {
+    font-size: 1.25rem;
+  }
+}
+
+/* --- Fuel-specific tables (all share .table-card / .table-responsive) --- */
+@media (max-width: 768px) {
+  .table-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .5rem;
+    padding: .85rem 1rem;
+  }
+
+  .table-card-header .ms-auto,
+  .table-card-header > *:last-child {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+
+/* ============================================================
+   6. HR.CSS — HR module (sidebar + main shell)
+   ============================================================ */
+
+/* --- Sidebar overlay toggle already set in hr.css.
+       These additions improve the mobile experience. --- */
+@media (max-width: 768px) {
+  /* Main content fills full width when sidebar is hidden */
+  .hr-main {
+    width: 100%;
+    padding: 1rem;
+    overflow-x: hidden;
+  }
+
+  /* Backdrop for sidebar overlay */
+  .hr-sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .45);
+    z-index: 199;
+  }
+
+  .hr-sidebar-backdrop.active {
+    display: block;
+  }
+
+  /* Collapsed state overrides on mobile — always show full width when open */
+  .hr-sidebar.mobile-open {
+    left: 0 !important;
+    width: 220px !important;
+    min-width: 220px !important;
+  }
+
+  /* Tab nav wraps cleanly */
+  .hr-tab-nav {
+    gap: .3rem;
+  }
+
+  .hr-tab-nav a,
+  .hr-tab-nav button {
+    font-size: .76rem;
+    padding: .38rem .85rem;
+  }
+
+  /* Table toolbar stacks */
+  .hr-table-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .5rem;
+    padding: .75rem 1rem;
+  }
+
+  .hr-table-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .hr-search-wrap input {
+    width: 100%;
+  }
+
+  /* Table scroll hint */
+  .hr-table-scroll {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 480px) {
+  .hr-main {
+    padding: .75rem .6rem;
+  }
+
+  .hr-table thead th,
+  .hr-table tbody td {
+    padding: .45rem .55rem;
+    font-size: .75rem;
+  }
+
+  .hr-btn-primary,
+  .hr-btn-ghost,
+  .hr-btn-success {
+    font-size: .76rem;
+    padding: 0 .85rem;
+    height: 32px;
+  }
+}
+
+/* --- HR shell layout on mobile --- */
+@media (max-width: 768px) {
+  .hr-shell {
+    flex-direction: column;
+  }
+}
+
+
+/* ============================================================
+   7. TOPBAR.CSS — Shared topbar
+   ============================================================ */
+
+/* topbar.css already has its own @media blocks.
+   These fill in gaps for very small phones. */
+@media (max-width: 360px) {
+  .topbar {
+    padding: .45rem .6rem;
+    gap: .35rem;
+  }
+
+  .topbar-brand-name {
+    font-size: .74rem;
+  }
+
+  .tb-dropdown {
+    min-width: 200px;
+    right: -10px; /* keep on-screen on tiny viewports */
+  }
+}
+
+/* Department dropdown badge shrinks gracefully */
+@media (max-width: 480px) {
+  .dept-dropdown-btn {
+    font-size: .65rem;
+    padding: .2rem .55rem;
+  }
+}
+
+/* Topbar avatar dropdown stays on screen */
+@media (max-width: 400px) {
+  .tb-dropdown {
+    right: 0;
+    left: auto;
+    min-width: 190px;
+  }
+}
+
+
+/* ============================================================
+   8. UTILITY — Shared across all pages
+   ============================================================ */
+
+/* Tables always scroll horizontally instead of breaking layout */
+.table-responsive,
+.hr-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent long words/emails from overflowing cells */
+td, th {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Bootstrap row gutters tighter on small screens */
+@media (max-width: 576px) {
+  .row {
+    --bs-gutter-x: 1rem;
+  }
+}
+
+/* Modals full-screen on phones (applies to Bootstrap modals across all pages) */
+@media (max-width: 576px) {
+  .modal-dialog:not(.modal-fullscreen) {
+    margin: .5rem auto !important;
+    max-width: calc(100vw - 1rem) !important;
+  }
+
+  .modal-content {
+    border-radius: 14px !important;
+  }
+
+  .modal-body {
+    padding: 1rem !important;
+  }
+
+  .modal-footer {
+    flex-wrap: wrap;
+    gap: .4rem;
+  }
+
+  .modal-footer .btn {
+    flex: 1;
+    min-width: 80px;
+    justify-content: center;
+  }
+}
+
+/* Print: don't break layouts (keeps existing @media print rules) */
+@media print {
+  .hr-sidebar,
+  .topbar,
+  .navmenu,
+  .mobile-nav-toggle,
+  .scroll-top {
+    display: none !important;
+  }
+
+  .hr-main,
+  .main-wrapper,
+  .container {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+}

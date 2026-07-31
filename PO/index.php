@@ -9,16 +9,19 @@ rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 $isViewOnly = rbac_is_view_only('po_index');
 
 // Filters
-$filter_category = isset($_GET['category']) ? (int)$_GET['category'] : 0;
-$filter_status   = isset($_GET['status'])   ? $_GET['status']         : '';
-$filter_search   = isset($_GET['search'])   ? trim($_GET['search'])    : '';
+$filter_category   = isset($_GET['category'])   ? (int)$_GET['category']     : 0;
+$filter_status     = isset($_GET['status'])     ? $_GET['status']             : '';
+$filter_department = isset($_GET['department']) ? trim($_GET['department'])   : '';
+$filter_search     = isset($_GET['search'])     ? trim($_GET['search'])       : '';
 
 $where  = "WHERE 1=1";
 $params = [];
-if ($filter_category > 0) { $where .= " AND po.category_id = ?"; $params[] = $filter_category; }
-if ($filter_status !== '')  { $where .= " AND po.status = ?";      $params[] = $filter_status; }
+if ($filter_category > 0)    { $where .= " AND po.category_id = ?";        $params[] = $filter_category; }
+if ($filter_status !== '')    { $where .= " AND po.status = ?";              $params[] = $filter_status; }
+if ($filter_department !== '') { $where .= " AND po.department = ?";         $params[] = $filter_department; }
 if ($filter_search !== '') {
-    $where .= " AND (po.po_number LIKE ? OR po.vendor_company LIKE ?)";
+    $where .= " AND (po.po_number LIKE ? OR po.vendor_company LIKE ? OR po.department LIKE ?)";
+    $params[] = "%$filter_search%";
     $params[] = "%$filter_search%";
     $params[] = "%$filter_search%";
 }
@@ -27,7 +30,7 @@ $sql = "
     SELECT po.po_id, po.po_number, po.po_date,
            cat.category_name, po.vendor_company,
            po.vendor_contact, po.total_amount,
-           po.status, po.prepared_by
+           po.status, po.prepared_by, po.department
     FROM purchase_order po
     JOIN po_categories cat ON cat.category_id = po.category_id
     $where
@@ -47,6 +50,11 @@ while ($r = sqlsrv_fetch_array($count_res, SQLSRV_FETCH_ASSOC)) {
 $cats_q = sqlsrv_query($conn, "SELECT category_id, category_name FROM po_categories ORDER BY category_name");
 $categories = [];
 while ($r = sqlsrv_fetch_array($cats_q, SQLSRV_FETCH_ASSOC)) $categories[] = $r;
+
+// Departments for filter dropdown
+$dept_q = sqlsrv_query($conn, "SELECT DISTINCT department FROM purchase_order WHERE department IS NOT NULL AND department <> '' ORDER BY department");
+$departments = [];
+while ($r = sqlsrv_fetch_array($dept_q, SQLSRV_FETCH_ASSOC)) $departments[] = $r['department'];
 
 // Collect rows
 $rows_data = [];
@@ -211,6 +219,15 @@ $rowCount = count($rows_data);
             </option>
           <?php endforeach; ?>
         </select>
+        <select name="department">
+          <option value="">All Departments</option>
+          <?php foreach ($departments as $dept): ?>
+            <option value="<?= htmlspecialchars($dept) ?>"
+              <?= $filter_department === $dept ? 'selected' : '' ?>>
+              <?= htmlspecialchars($dept) ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
         <select name="status">
           <option value="">All Status</option>
           <option value="Draft"     <?= $filter_status=='Draft'     ? 'selected':'' ?>>Draft</option>
@@ -220,7 +237,7 @@ $rowCount = count($rows_data);
         <button type="submit" class="btn btn-add" style="padding:.42rem .9rem; font-size:.84rem;">
           <i class="bi bi-funnel-fill"></i> Filter
         </button>
-        <?php if ($filter_search || $filter_category || $filter_status): ?>
+        <?php if ($filter_search || $filter_category || $filter_status || $filter_department): ?>
           <a href="<?= base_url('PO/index.php') ?>" class="btn btn-secondary-custom" style="padding:.42rem .9rem; font-size:.84rem;">
             <i class="bi bi-x-lg"></i> Reset
           </a>
@@ -236,6 +253,7 @@ $rowCount = count($rows_data);
             <th>PO Number</th>
             <th>Date</th>
             <th>Category</th>
+            <th>Department</th>
             <th>Vendor</th>
             <th>Prepared By</th>
             <th style="text-align:right;">Total (₱)</th>
@@ -246,7 +264,7 @@ $rowCount = count($rows_data);
         <tbody>
           <?php if (empty($rows_data)): ?>
             <tr class="empty-row">
-              <td colspan="9">
+              <td colspan="10">
                 <i class="bi bi-inbox" style="font-size:2rem;display:block;margin-bottom:.5rem;opacity:.3;"></i>
                 No purchase orders found.
               </td>
@@ -262,10 +280,20 @@ $rowCount = count($rows_data);
               <td><span class="po-number"><?= htmlspecialchars($row['po_number']) ?></span></td>
               <td style="color:var(--text-muted);font-size:.83rem;"><?= htmlspecialchars($date_str) ?></td>
               <td>
-                <span style="font-size:.76rem;background:rgba(99,102,241,.1);color:#4f46e5;
+                <span style="font-size:.76rem;background:#6366f11a;color:#4f46e5;
                              padding:.18rem .6rem;border-radius:999px;font-weight:600;">
                   <?= htmlspecialchars($row['category_name']) ?>
                 </span>
+              </td>
+              <td>
+                <?php if (!empty(trim($row['department'] ?? ''))): ?>
+                <span style="font-size:.76rem;background:#6366F11a;color:#4f46e5;
+                             padding:.18rem .6rem;border-radius:999px;font-weight:600;">
+                  <?= htmlspecialchars($row['department']) ?>
+                </span>
+                <?php else: ?>
+                <span style="color:var(--text-muted);font-size:.78rem;">—</span>
+                <?php endif; ?>
               </td>
               <td>
                 <div class="vendor-name"><?= htmlspecialchars($row['vendor_company']) ?></div>

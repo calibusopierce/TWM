@@ -94,6 +94,12 @@ $bs = $bs_map[$po['status']] ?? 'bs-draft';
         <span class="badge-status <?= $bs ?>"><?= $po['status'] ?></span>
         &nbsp;·&nbsp; <?= $date_str ?>
         &nbsp;·&nbsp; <?= htmlspecialchars($po['category_name']) ?>
+        <?php if (!empty(trim($po['department'] ?? ''))): ?>
+          &nbsp;·&nbsp; <i class="bi bi-diagram-3" style="color:var(--primary);"></i> <?= htmlspecialchars(trim($po['department'])) ?>
+        <?php endif; ?>
+        <?php if (!empty(trim($po['branch'] ?? ''))): ?>
+          &nbsp;·&nbsp; <i class="bi bi-geo-alt" style="color:var(--primary);"></i> <?= htmlspecialchars(trim($po['branch'])) ?>
+        <?php endif; ?>
       </div>
     </div>
     <div style="display:flex;gap:.6rem;">
@@ -121,6 +127,27 @@ $bs = $bs_map[$po['status']] ?? 'bs-draft';
       <i class="bi bi-check-circle-fill me-2"></i> Purchase Order updated successfully.
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
+  <?php endif; ?>
+
+  <!-- Department / Branch / Remarks -->
+  <?php if (!empty(trim($po['department'] ?? '')) || !empty(trim($po['branch'] ?? '')) || !empty(trim($po['remarks'] ?? ''))): ?>
+  <div class="info-card" style="margin-bottom:1rem;">
+    <div class="info-card-header"><i class="bi bi-info-circle-fill"></i> Additional Details</div>
+    <div class="info-card-body" style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:1rem;">
+      <div>
+        <div style="font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.2rem;">Department</div>
+        <div><?= htmlspecialchars(trim($po['department'] ?? '') ?: '—') ?></div>
+      </div>
+      <div>
+        <div style="font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.2rem;">Branch</div>
+        <div><?= htmlspecialchars(trim($po['branch'] ?? '') ?: '—') ?></div>
+      </div>
+      <div>
+        <div style="font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.2rem;">Remarks</div>
+        <div><?= htmlspecialchars(trim($po['remarks'] ?? '') ?: '—') ?></div>
+      </div>
+    </div>
+  </div>
   <?php endif; ?>
 
   <!-- Vendor & Ship To -->

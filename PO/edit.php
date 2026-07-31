@@ -48,6 +48,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $approved_by     = trim($_POST['approved_by']);
     $approved_title  = trim($_POST['approved_title']);
     $status          = $_POST['status'];
+    $department      = trim($_POST['department']);
+    $branch          = trim($_POST['branch']);
+    $remarks         = trim($_POST['remarks']);
 
     $items_new = []; $subtotal = 0;
     if (isset($_POST['item_desc'])) {
@@ -67,12 +70,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         category_id=?,po_date=?,vendor_company=?,vendor_contact=?,vendor_address=?,vendor_phone=?,
         ship_to_name=?,ship_to_company=?,ship_to_address=?,ship_to_phone=?,
         subtotal=?,tax_amount=?,shipping_amount=?,other_amount=?,total_amount=?,
-        status=?,prepared_by=?,prepared_title=?,approved_by=?,approved_title=?,updated_at=GETDATE()
+        status=?,prepared_by=?,prepared_title=?,approved_by=?,approved_title=?,
+        department=?,branch=?,remarks=?,updated_at=GETDATE()
         WHERE po_id=?";
     $p = [$category_id,$po_date_upd,$vendor_company,$vendor_contact,$vendor_address,$vendor_phone,
           $ship_to_name,$ship_to_company,$ship_to_address,$ship_to_phone,
           $subtotal,$tax_amount,$shipping_amount,$other_amount,$grand_total,
-          $status,$prepared_by,$prepared_title,$approved_by,$approved_title,$po_id];
+          $status,$prepared_by,$prepared_title,$approved_by,$approved_title,
+          $department,$branch,$remarks,$po_id];
     $r2 = sqlsrv_query($conn, $upd, $p);
     if ($r2 === false) {
         $error = "Update failed: " . print_r(sqlsrv_errors(), true);
@@ -199,6 +204,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <option value="<?= $s ?>" <?= $po['status']==$s?'selected':'' ?>><?= $s ?></option>
               <?php endforeach; ?>
             </select>
+          </div>
+          <div class="form-group">
+            <label>Department</label>
+            <input type="text" name="department" value="<?= htmlspecialchars($po['department'] ?? '') ?>" placeholder="e.g. Operations">
+          </div>
+          <div class="form-group">
+            <label>Branch</label>
+            <input type="text" name="branch" value="<?= htmlspecialchars($po['branch'] ?? '') ?>" placeholder="e.g. Lucena Branch">
+          </div>
+          <div class="form-group" style="grid-column:span 2;">
+            <label>Remarks</label>
+            <input type="text" name="remarks" value="<?= htmlspecialchars($po['remarks'] ?? '') ?>" placeholder="Optional notes for this PO">
           </div>
         </div>
       </div>

@@ -42,6 +42,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $tax_amount      = floatval($_POST['tax_amount']);
     $shipping_amount = floatval($_POST['shipping_amount']);
     $other_amount    = floatval($_POST['other_amount']);
+    $department      = trim($_POST['department']);
+    $branch          = trim($_POST['branch']);
+    $remarks         = trim($_POST['remarks']);
     $prepared_by     = trim($_POST['prepared_by']);
     $prepared_title  = trim($_POST['prepared_title']);
     $approved_by     = trim($_POST['approved_by']);
@@ -71,9 +74,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (po_number,category_id,po_date,vendor_company,vendor_contact,vendor_address,vendor_phone,
              ship_to_name,ship_to_company,ship_to_address,ship_to_phone,
              subtotal,tax_amount,shipping_amount,other_amount,total_amount,
-             status,prepared_by,prepared_title,approved_by,approved_title,created_by)
+             status,prepared_by,prepared_title,approved_by,approved_title,
+             department,branch,remarks,created_by)
             OUTPUT INSERTED.po_id
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         $p = [
             $po_number, $category_id, $po_date,
@@ -81,6 +85,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ship_to_name, $ship_to_company, $ship_to_address, $ship_to_phone,
             $subtotal, $tax_amount, $shipping_amount, $other_amount, $grand_total,
             $status, $prepared_by, $prepared_title, $approved_by, $approved_title,
+            $department, $branch, $remarks,
             $_SESSION['user_id'] ?? null
         ];
 
@@ -222,11 +227,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
           <div class="form-group">
             <label>Status</label>
-            <select name="status">
+            <select name="status" required>
               <option value="Draft">Draft</option>
               <option value="Approved">Approved</option>
               <option value="Cancelled">Cancelled</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label>Department</label>
+            <input type="text" name="department" placeholder="e.g. Operations" required>
+          </div>
+          <div class="form-group">
+            <label>Branch</label>
+            <input type="text" name="branch" placeholder="e.g. Lucena Branch" required>
+          </div>
+          <div class="form-group" style="grid-column:span 2;">
+            <label>Remarks</label>
+            <input type="text" name="remarks" placeholder="Optional notes for this PO" required>
           </div>
         </div>
       </div>
@@ -240,11 +257,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <div class="form-group"><label>Company Name *</label>
             <input type="text" name="vendor_company" placeholder="e.g. Star Honda Inc." required></div>
           <div class="form-group"><label>Contact Person</label>
-            <input type="text" name="vendor_contact" placeholder="e.g. Mr. Angelo Supremo"></div>
+            <input type="text" name="vendor_contact" placeholder="e.g. Mr. Angelo Supremo" required></div>
           <div class="form-group"><label>Address</label>
-            <input type="text" name="vendor_address" placeholder="Brgy., City"></div>
+            <input type="text" name="vendor_address" placeholder="Brgy., City" required></div>
           <div class="form-group"><label>Phone</label>
-            <input type="text" name="vendor_phone" placeholder="0950 930 7198"></div>
+            <input type="text" name="vendor_phone" placeholder="0950 930 7198" required></div>
         </div>
       </div>
       <div class="form-card">
@@ -253,11 +270,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <div class="form-group"><label>Recipient Name *</label>
             <input type="text" name="ship_to_name" value="Rozaldie B. Chua" required></div>
           <div class="form-group"><label>Company</label>
-            <input type="text" name="ship_to_company" value="Urban Tradewell Corp"></div>
+            <input type="text" name="ship_to_company" value="Urban Tradewell Corp" required></div>
           <div class="form-group"><label>Address</label>
-            <input type="text" name="ship_to_address" value="Sta. Monica St. Lourdes Subd., Ibabang Iyam, Lucena City, Quezon Province 4301"></div>
+            <input type="text" name="ship_to_address" value="Sta. Monica St. Lourdes Subd., Ibabang Iyam, Lucena City, Quezon Province 4301" required></div>
           <div class="form-group"><label>Phone</label>
-            <input type="text" name="ship_to_phone" value="(042) 788-0765"></div>
+            <input type="text" name="ship_to_phone" value="(042) 788-0765" required></div>
         </div>
       </div>
     </div>
@@ -297,11 +314,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <tr><td class="t-label">Subtotal</td>
                 <td class="t-val"><input type="text" id="subtotal" name="subtotal" readonly placeholder="0.00"></td></tr>
             <tr><td class="t-label">Tax</td>
-                <td class="t-val"><input type="number" id="tax" name="tax_amount" step="0.01" value="0" onchange="recalc()"></td></tr>
+                <td class="t-val"><input type="number" id="tax" name="tax_amount" step="0.01" value="0" onchange="recalc()" required></td></tr>
             <tr><td class="t-label">Shipping</td>
-                <td class="t-val"><input type="number" id="shipping" name="shipping_amount" step="0.01" value="0" onchange="recalc()"></td></tr>
+                <td class="t-val"><input type="number" id="shipping" name="shipping_amount" step="0.01" value="0" onchange="recalc()" required></td></tr>
             <tr><td class="t-label">Other</td>
-                <td class="t-val"><input type="number" id="other" name="other_amount" step="0.01" value="0" onchange="recalc()"></td></tr>
+                <td class="t-val"><input type="number" id="other" name="other_amount" step="0.01" value="0" onchange="recalc()" required></td></tr>
             <tr class="grand-row">
               <td class="t-label">TOTAL</td>
               <td class="t-val"><input type="text" id="grand_total" readonly placeholder="0.00"></td>
@@ -317,13 +334,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="form-card-body">
         <div class="form-grid-4">
           <div class="form-group"><label>Prepared By</label>
-            <input type="text" name="prepared_by" placeholder="Full Name"></div>
+            <input type="text" name="prepared_by" placeholder="Full Name" required></div>
           <div class="form-group"><label>Title / Position</label>
-            <input type="text" name="prepared_title" placeholder="e.g. Purchasing Officer"></div>
+            <input type="text" name="prepared_title" placeholder="e.g. Purchasing Officer" required></div>
           <div class="form-group"><label>Approved By</label>
-            <input type="text" name="approved_by" placeholder="Full Name"></div>
+            <input type="text" name="approved_by" placeholder="Full Name" required></div>
           <div class="form-group"><label>Title / Position</label>
-            <input type="text" name="approved_title" placeholder="e.g. Corporate President"></div>
+            <input type="text" name="approved_title" placeholder="e.g. Corporate President" required></div>
         </div>
       </div>
     </div>
@@ -352,10 +369,10 @@ function addRow(desc='', qty=1, cash=0, pct=0) {
   tr.id = 'row-' + n;
   tr.innerHTML = `
     <td style="text-align:center;color:var(--text-muted);font-size:.78rem;font-weight:600;">${n}</td>
-    <td><input type="text" name="item_desc[]" value="${desc}" placeholder="Item description"></td>
-    <td><input type="number" name="item_qty[]" value="${qty}" min="1" oninput="recalcRow(${n})"></td>
-    <td><input type="number" name="item_cash_price[]" value="${cash}" step="0.01" oninput="recalcRow(${n})"></td>
-    <td><input type="number" name="item_pct_price[]" value="${pct}" step="0.01" oninput="recalcRow(${n})"></td>
+    <td><input type="text" name="item_desc[]" value="${desc}" placeholder="Item description" required></td>
+    <td><input type="number" name="item_qty[]" value="${qty}" min="1" oninput="recalcRow(${n})" required></td>
+    <td><input type="number" name="item_cash_price[]" value="${cash}" step="0.01" oninput="recalcRow(${n})" required></td>
+    <td><input type="number" name="item_pct_price[]" value="${pct}" step="0.01" oninput="recalcRow(${n})" required></td>
     <td class="row-total">
       <span id="rt-${n}">${fmt(total)}</span>
       <input type="hidden" name="item_total[]" id="ht-${n}" value="${total}">

@@ -1,339 +1,298 @@
-# 📦 TWM — Tradewell Management System
+# 🚀 TWM — Technology Workplace Manager
 
-TWM (Tradewell Management System) is an internal enterprise web application developed to streamline and centralize operations across multiple departments including Human Resources, Logistics, Sales, Uniform Inventory, and User Access Control.
+> **Empowering Modern Business Operations.**
 
-The system is built using PHP and Microsoft SQL Server and is designed for real-world business workflows such as applicant processing, trucking coordination, fuel monitoring, inventory tracking, purchasing, and offline mobile sales synchronization.
+TWM (Technology Workplace Manager) is a modular enterprise management platform designed to streamline, automate, and centralize business operations across organizations of any size.
 
----
+Built with **PHP** and **Microsoft SQL Server**, TWM provides a scalable foundation for Human Resources, Attendance, Payroll, Logistics, Inventory, Finance, Sales, and administrative workflows through a unified web-based system.
 
-# 🚀 System Overview
-
-| Category            | Technology                      |
-| ------------------- | ------------------------------- |
-| 🔧 Backend          | PHP                             |
-| 🗄️ Database        | Microsoft SQL Server (`sqlsrv`) |
-| 🌐 Environment      | XAMPP / Apache                  |
-| 🔐 Authentication   | Session-based Auth + RBAC       |
-| 📦 Architecture     | Modular PHP System              |
+Designed with extensibility in mind, each module operates independently while sharing a centralized authentication, permissions, and database architecture.
 
 ---
 
-# 🧩 Core Modules
+# ✨ Key Features
 
-## 👥 Human Resources (HR)
+- 👥 Human Resource Management
+- ⏰ Attendance Management
+- 📅 Leave Management
+- 💰 Payroll & Loans
+- 🚚 Logistics & Fleet Monitoring
+- ⛽ Fuel Monitoring & Analytics
+- 📦 Inventory Management
+- 🛒 Purchasing & Receiving
+- 📈 Sales & Business Operations
+- 🔐 Role-Based Access Control (RBAC)
+- 📊 Executive Dashboards & Reports
+- 📱 Offline Mobile Synchronization
+- 🏢 Multi-department Enterprise Architecture
 
-Human resource management and applicant processing tools.
+---
+
+# 🏗 Technology Stack
+
+| Category | Technology |
+|----------|------------|
+| Backend | PHP |
+| Database | Microsoft SQL Server (`sqlsrv`) |
+| Frontend | HTML, CSS, JavaScript, Bootstrap |
+| Server | Apache (XAMPP) |
+| Authentication | Session-based Authentication |
+| Authorization | Role-Based Access Control (RBAC) |
+| Architecture | Modular Enterprise Platform |
+
+---
+
+# 📦 Platform Modules
+
+## 👥 Human Resources
+
+Designed to simplify workforce management from recruitment to employee lifecycle.
 
 ### Features
 
-* Job application management
-* Applicant status tracking
-* Interview scheduling
-* Applicant evaluation workflow
-* Employee management
-* Employee profile picture uploads
-* Resume and attachment handling
-* Fuel Dashboard Monitoring
-* Fuel Graph Visualization
-* Uniform Inventory
-* RBAC-enabled admin management
+- Recruitment & Applicant Tracking
+- Interview Management
+- Employee Records
+- Employee Profiles
+- Document Management
+- Digital Personnel Files
+- Employee Photo Management
+- Organizational Administration
 
-### Job Applicant Workflow
+### Recruitment Workflow
 
-```Job Application
-Pending → Evaluating → For Interview → For Final Interview → Hired / Rejected
+```text
+Pending
+   ↓
+Evaluating
+   ↓
+For Interview
+   ↓
+Final Interview
+   ↓
+Hired / Rejected
 ```
 
 ---
 
-# 🚚 Logistics Dashboard
+## ⏰ Attendance Management
 
-Fleet and delivery management system for monitoring vehicle operations and fuel usage.
-
-### Features
-
-* Vehicle Consumption Summary
-* Fuel monitoring dashboard
-* Fuel anomaly detection
-* Area-based fuel reporting
-* Monthly fuel checklist system
-* Delivery scheduling support
-* Vehicle consumption monitoring
-* Graph analytics and reports
-
-### Logistics Dashboard Pages
-
-| Page                   | Description                              |
-| ---------------------- | ---------------------------------------- |
-| `fuel_dashboard.php`   | Fleet fuel summary dashboard             |
-| `Fuel-30Day.php`       | 30-day monitoring dashboard              |
-| `Fuel-Anomaly.php`     | Suspicious fuel transaction detection    |
-| `Fuel-Area.php`        | Area fuel consumption summary            |
-| `Fuel-Checklist.php`   | Refuel schedule monitoring               |
-| `Fuel-Comparison.php`  | Truck fuel efficiency comparison         |
-| `Fuel-Consumption.php` | Weekly/monthly fuel consumption tracking |
-| `Fuel-Report.php`      | Raw fuel transaction reporting           |
-| `graphs.php`           | Charts and analytics                     |
+- Daily Time Records
+- Attendance Monitoring
+- Attendance Dashboard
+- Overtime Tracking
+- Leave Integration
+- Attendance Analytics
 
 ---
 
+## 📅 Leave Management
 
-# 📦 Uniform Inventory System
-
-Inventory and purchasing system for company uniform management.
-
-### Features
-
-* Uniform stock tracking
-* Receiving transactions
-* Purchase order report
-* Release of uniforms
-* Return of uniforms
-* Stock movement history
-* Real-time stock balance monitoring
-* Printable reports
-
-### Database Tables
-
-| Table                   |
-| ----------------------- |
-| `UniformStock`          |
-| `UniformRequests`       |
-| `UniformReleased`       |
-| `UniformPO`             |
-| `UniformPOItems`        |
-| `UniformReceiving`      |
-| `UniformReceivingItems` |
-| `UniformReturns`        |
+- Leave Applications
+- Supervisor Approval
+- HR Approval
+- Leave History
+- Leave Balance Monitoring
+- Attendance Synchronization
 
 ---
 
-# ⚙️ Shared System Features
+## 💰 Payroll & Finance
 
-## 🔐 RBAC (Role-Based Access Control)
-
-The system includes centralized RBAC handling.
-
-### Features
-
-* Shared PDO connection architecture
-* Session-based authentication
-* Dynamic page permissions
-* Shared navigation and topbar handling
-* Centralized auth checks
+- Payroll Management
+- Employee Loans
+- Salary Deductions
+- Remittance Monitoring
+- Accounts Receivable
+- Financial Reporting
 
 ---
 
-# 🖼️ Employee Profile Picture System
+## 🚚 Logistics
+
+Monitor fleet operations, fuel efficiency, and delivery performance.
 
 ### Features
 
-* Employee avatar uploads
-* Fullscreen photo preview modal
-* Automatic initials fallback
-* Dynamic image rendering
-* Admin-only photo change permissions
+- Vehicle Monitoring
+- Fuel Consumption Analytics
+- Fuel Anomaly Detection
+- Area Consumption Reports
+- Fleet Performance
+- Delivery Monitoring
+- Fuel Checklists
+- Executive Reports
 
-### Upload Directory
+---
 
+## 📦 Inventory Management
+
+Manage company assets and inventory with complete stock visibility.
+
+### Features
+
+- Stock Monitoring
+- Purchase Orders
+- Receiving Transactions
+- Stock Releases
+- Returns Management
+- Inventory Movement History
+- Real-Time Inventory Balances
+- Printable Reports
+
+---
+
+## 🔐 Role-Based Access Control
+
+Enterprise-grade access management across all modules.
+
+### Features
+
+- Role-Based Permissions
+- Dynamic Navigation
+- Page-Level Security
+- Module Authorization
+- Session Management
+- Shared Authentication
+
+---
+
+# 🏛 Architecture
+
+TWM follows a centralized modular architecture.
+
+```text
+                Users
+                  │
+                  ▼
+      Authentication / RBAC
+                  │
+      ─────────────────────────
+      │      │      │      │
+      ▼      ▼      ▼      ▼
+     HR  Attendance Inventory Logistics
+      │      │      │      │
+      ─────────────────────────
+              Database
+      Microsoft SQL Server
 ```
-/uploads/
-/uploads/employee_pics/
-```
 
 ---
 
-# 🗄️ Database Architecture
+# 🗄 Database
 
-## Shared Connection System
+The platform utilizes a centralized SQL Server connection shared across all modules.
 
-Database connections are centralized using:
+### Connection
 
-```Sql Server Conn
+```text
 test_sqlsrv.php
 ```
 
-### Improvements
+### Benefits
 
-* Shared `$pdo` and `$conn`
-* Production/local environment switching
-* Reduced duplicate SQL connection logic
-* Easier deployment configuration
-
----
-
-# ⚙️ Getting Started
-
-## 1️⃣ Install Environment
-
-Install:
-
-* XAMPP
-* Microsoft SQL Server
-* SQLSRV PHP Driver
+- Shared PDO Connection
+- Environment Switching
+- Reduced Code Duplication
+- Easier Deployment
+- Improved Maintainability
 
 ---
 
-# 📂 Project Placement
+# ⚙ Installation
+## Requirements
 
-Place the project inside:
+- XAMPP
+- Microsoft SQL Server
+- SQLSRV PHP Driver
+- PHP 8+
+
+---
+
+## Project Location
 
 ```text
-C:/xampp/htdocs/TWM
+C:\xampp\htdocs\TWM
 ```
 
 ---
 
-# ▶️ Start Server
+## Database Setup
 
-Open XAMPP Control Panel and start:
-
-* Apache
-
----
-
-# 🌐 Open in Browser
-
+1. Restore or create the SQL Server database.
+2. Execute SQL scripts inside:
+```text
+TABLES/
+```
+3. Configure:
+```text
+test_sqlsrv.php
+```
+4. Start Apache.
+5. Open
 ```text
 http://localhost/TWM
 ```
 
 ---
 
-# 🗄️ Database Setup
-
-> ⚠️ This project uses Microsoft SQL Server (`sqlsrv`) — NOT MySQL.
-
-## Setup Steps
-
-1. Open SQL Server Management Studio (SSMS)
-2. Create or restore the database
-3. Locate SQL files inside:
-
-```text
-/TABLES/
-```
-
-4. Run required `.sql` files
-5. Configure:
-
-```text
-test_sqlsrv.php
-```
-
-for local or production environments
-
----
-
-# 🧑‍💻 Development Workflow
-
-```bash
-cd /c/xampp/htdocs/TWM
-
-git add .
-git commit -m "Update Description"
-git push
-```
-
----
-
-# 📁 Project Structure
+# 📂 Project Structure
 
 ```text
 TWM/
 │
-├── assets/                 # CSS, JS, images
-├── uploads/                # Uploaded files
-├── TABLES/                 # SQL schema and migration files
-├── includes/               # Shared includes and components
-├── HR/                     # HR module
-├── LOGISTICS/              # Logistics dashboard
-├── SALES/                  # Sales module
-├── RBAC/                   # Role-based access control
-├── Android/                # Android-related resources
-├── test_sqlsrv.php         # Shared database connection
-└── *.php                   # Core application pages
+├── assets/
+├── includes/
+├── uploads/
+├── Android/
+├── TABLES/
+│
+├── HR/
+├── ATTENDANCE/
+├── PAYROLL/
+├── LEAVE/
+├── LOGISTICS/
+├── INVENTORY/
+├── SALES/
+├── FINANCE/
+├── RBAC/
+│
+├── test_sqlsrv.php
+└── index.php
 ```
 
 ---
 
-# 🚀 Recent Improvements
+# 🚀 Platform Highlights
 
-## Latest Refactors
-
-### Database
-
-* Centralized PDO architecture
-* Shared SQL connection handling
-* Production-ready connection switching
-
-### RBAC
-
-* Removed hardcoded PDO connections
-* Shared auth handling
-* Cleaner permission management
-
-### Employee Module
-
-* Fullscreen avatar preview
-* Better image fallback handling
-* Improved upload directory structure
-
-### Uniform Inventory
-
-* Production database migration completed
-* Inventory tables standardized
-* Stock views recreated
+- Modular Architecture
+- Enterprise RBAC
+- SQL Server Integration
+- Responsive Dashboard
+- Shared Components
+- Dynamic Navigation
+- Analytics & Reporting
+- Production Ready
+- Scalable Design
 
 ---
 
-# 📌 Development Notes
+# 🔮 Roadmap
 
-## Do NOT Commit
-
-* Local environment configs
-* Temporary files
-* Uploaded user files
-* Backup SQL dumps
-* Sensitive credentials
-
----
-
-# 🏢 Intended Usage
-
-This system is designed for:
-
-* Internal company operations
-* Multi-user environments
-* Real-world enterprise workflows
-* Logistics and inventory management
-* HR and applicant processing
+- REST API
+- Mobile Application
+- Real-Time Notifications
+- Business Intelligence Dashboards
+- Multi-Branch Support
+- Multi-Tenant Deployment
+- Audit Logs
+- Workflow Automation
+- AI-powered Insights
 
 ---
 
-# 🔮 Future Improvements
+# 🔒 License
 
-Planned future enhancements include:
+**Private Software**
 
-* Advanced RBAC permissions
-* Dashboard analytics improvements
-* API integrations
-* Mobile app enhancements
-* UI/UX modernization
-* Real-time notifications
-* Centralized reporting dashboards
-* Multi-warehouse inventory support
-
----
-
-# 👨‍💻 Author
-
-## Pierce Crisver Calibuso
-
-Tradewell System Developer
-
----
-
-# 📄 License
-
-Private / Internal Company Use Only
+Technology Workplace Manager (TWM) is proprietary software intended for licensed organizational and enterprise use.

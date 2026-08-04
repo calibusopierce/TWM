@@ -85,7 +85,11 @@ if (isset($_POST['Forgotsubmit'])) {
                 <table width="500" cellpadding="20" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
                     <tr>
                         <td align="center">
+<<<<<<< HEAD
                             <h2 style="color: #08173d;">Password Reset Request.</h2>
+=======
+                            <h2 style="color: #08173d;">Password Reset Request</h2>
+>>>>>>> 090df7350d1dc602857b9e39db5b7bfd1e1ab31e
                         </td>
                     </tr>
                     <tr>
@@ -389,6 +393,7 @@ HTML;
   if (forgotForm) {
     forgotForm.addEventListener('submit', function () {
       const btn = document.getElementById('submitBtn');
+<<<<<<< HEAD
       // Defer disabling the button — disabling it synchronously inside the
       // submit event can cause some browsers to cancel the form submission
       // entirely (the button becomes disabled before the POST is sent).
@@ -396,9 +401,17 @@ HTML;
         btn.disabled = true;
         btn.querySelector('.btn-text').innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Sending...';
       }, 0);
+=======
+      btn.disabled = true;
+      btn.querySelector('.btn-text').innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Sending...';
+>>>>>>> 090df7350d1dc602857b9e39db5b7bfd1e1ab31e
     });
   }
 </script>
 
 </body>
+<<<<<<< HEAD
 </html>
+=======
+</html>
+>>>>>>> 090df7350d1dc602857b9e39db5b7bfd1e1ab31e

@@ -266,6 +266,30 @@ if (isset($_POST['login'])) {
     }
     .back-link:hover { color: var(--white); transform: translateX(-3px); }
 
+    .forgot-row { text-align: right; margin-top: .5rem; }
+    .forgot-link {
+      font-size: .78rem; font-weight: 600;
+      color: var(--white-60); text-decoration: none;
+      transition: color .15s;
+    }
+    .forgot-link:hover { color: var(--blue-light); }
+
+    .signup-row {
+      text-align: center;
+      font-size: .8rem;
+      color: var(--white-60);
+      margin-top: 1.25rem;
+      animation: fadeUp .5s .46s ease both;
+    }
+    .signup-link {
+      color: var(--blue-light);
+      font-weight: 700;
+      text-decoration: none;
+      margin-left: .3rem;
+      transition: color .15s;
+    }
+    .signup-link:hover { color: var(--white); text-decoration: underline; }
+
     .card-divider { height: 1px; background: var(--white-10); margin: 1.5rem 0 1.25rem; }
 
     @media (max-width: 480px) {
@@ -324,6 +348,9 @@ if (isset($_POST['login'])) {
               <i class="bi bi-eye-slash-fill" id="toggleIcon"></i>
             </button>
           </div>
+          <div class="forgot-row">
+            <a href="<?= base_url('forgot_password.php') ?>" class="forgot-link">Forgot Password?</a>
+          </div>
         </div>
 
         <div class="form-group">
@@ -339,6 +366,12 @@ if (isset($_POST['login'])) {
         </div>
 
       </form>
+
+      <div class="signup-row">
+        Don't have an account?
+        <!-- TODO: registration module not built yet — placeholder link, update filename/route once signup.php exists -->
+        <a href="<?= base_url('signup.php') ?>" class="signup-link">Sign Up</a>
+      </div>
 
       <div class="card-divider"></div>
 

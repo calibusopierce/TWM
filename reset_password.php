@@ -397,6 +397,7 @@ if ($tokenValid && isset($_POST['ResetSubmit'])) {
         return;
       }
       const btn = document.getElementById('submitBtn');
+<<<<<<< HEAD
       // Deferred for the same reason as forgot_password.php — disabling
       // synchronously inside 'submit' can cause the browser to cancel
       // the POST before it's sent.
@@ -404,9 +405,17 @@ if ($tokenValid && isset($_POST['ResetSubmit'])) {
         btn.disabled = true;
         btn.querySelector('.btn-text').innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Resetting...';
       }, 0);
+=======
+      btn.disabled = true;
+      btn.querySelector('.btn-text').innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Resetting...';
+>>>>>>> 090df7350d1dc602857b9e39db5b7bfd1e1ab31e
     });
   }
 </script>
 
 </body>
+<<<<<<< HEAD
 </html>
+=======
+</html>
+>>>>>>> 090df7350d1dc602857b9e39db5b7bfd1e1ab31e

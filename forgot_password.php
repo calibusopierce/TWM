@@ -85,7 +85,7 @@ if (isset($_POST['Forgotsubmit'])) {
                 <table width="500" cellpadding="20" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
                     <tr>
                         <td align="center">
-                            <h2 style="color: #08173d;">Password Reset Request</h2>
+                            <h2 style="color: #08173d;">Password Reset Request.</h2>
                         </td>
                     </tr>
                     <tr>

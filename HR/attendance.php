@@ -52,8 +52,12 @@ if ($canFilterDept) {
 $validTabs = ['timeinout', 'devicelog', 'toplates', 'absents', 'generated', 'calendar'];
 $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] : 'timeinout';
 
-// ── Generated Attendance extra filters ──────────────────────
-// These only apply to (and only render on) the 'generated' tab.
+// ── Category filter ──────────────────────────────────────────
+// $filterCategory is shared across tabs: the Generated Attendance tab uses
+// it against View_AttendanceRecord (see $categoryList/$extraFilters below),
+// and the Time In/Out tab uses it against View_ATtendanceTimeInTimeOut2
+// (see $timeinoutCategoryList / $catFilter below). Cut off/Branch/Employee
+// Status remain 'generated'-tab-only.
 $filterCutOff    = isset($_GET['cutoff'])    && $_GET['cutoff']    !== '' ? trim($_GET['cutoff'])    : '';
 $filterCategory  = isset($_GET['category'])  && $_GET['category']  !== '' ? trim($_GET['category'])  : '';
 $filterBranch    = isset($_GET['branch'])    && $_GET['branch']    !== '' ? trim($_GET['branch'])    : '';
@@ -63,6 +67,15 @@ $filterCutOffSafe    = str_replace("'", "''", $filterCutOff);
 $filterCategorySafe  = str_replace("'", "''", $filterCategory);
 $filterBranchSafe    = str_replace("'", "''", $filterBranch);
 $filterEmpStatusSafe = str_replace("'", "''", $filterEmpStatus);
+
+// Category dropdown for the Time In/Out tab — sourced from the same view
+// that tab's query uses (View_ATtendanceTimeInTimeOut2), independent of
+// the Generated Attendance tab's $categoryList below.
+$timeinoutCategoryList = [];
+if ($tab === 'timeinout') {
+    $tcStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS Category FROM View_ATtendanceTimeInTimeOut2 WHERE Category IS NOT NULL AND Category <> '' ORDER BY Category");
+    if ($tcStmt) { while ($tr = sqlsrv_fetch_array($tcStmt, SQLSRV_FETCH_ASSOC)) { $timeinoutCategoryList[] = $tr['Category']; } sqlsrv_free_stmt($tcStmt); }
+}
 
 // Dropdown option lists — only queried when the tab is actually open,
 // same lazy pattern as $deptList above.
@@ -113,13 +126,14 @@ $debugLog = []; // tab => sqlsrv_errors() when a query fails, surfaced in an HTM
 
 if ($tab === 'timeinout') {
     $dc = dc($filterDeptSafe);
+    $catFilter = $filterCategorySafe !== '' ? " AND RTRIM(Category) = '$filterCategorySafe'" : '';
     $timeinoutStmt = sqlsrv_query($conn, "
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
            AMLate, PMLate, Late1, MorningTotalHours, AfternoonTotalHours,
            MorningAfternoonTotal, TotalHours
     FROM View_ATtendanceTimeInTimeOut2
-    WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
+    WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
     ORDER BY ADate DESC, MorningIn DESC
 ");
     if ($timeinoutStmt === false) { $debugLog['timeinout'] = sqlsrv_errors(); }
@@ -136,39 +150,19 @@ if ($tab === 'timeinout') {
 
 } elseif ($tab === 'toplates') {
     // All late-arrival records in the date range, sorted by minutes late (highest first).
-    // NOTE: previously sourced from View_Attendance_Record_Daily.Late1, which was found to
-    // miss lates that the merged 3-source Integrated Log (View_Attendance_Log2.Late) does
-    // catch. Now sourced directly from View_Attendance_Log2 instead, grouped per
-    // employee/day (a day can have several late-flagged punches across sources — we take
-    // the highest Late value for that day as the representative figure). The "earliest in
-    // punch" subqueries are kept for HR to cross-check which punch drove the Late value.
+    // Sourced from View_ATtendanceTimeInTimeOut2 — the SAME view the Time In/Out tab
+    // uses — so the two tabs' Late figures always agree. (Previously sourced from the
+    // merged 3-source Integrated Log, View_Attendance_Log2, which used a different Late
+    // computation and could disagree with the Time In/Out tab.) Note this view doesn't
+    // carry Position_Held or per-punch source info, so "Morning In" stands in as the
+    // reference punch instead of the old "Earliest Integrated Log Punch + Source".
     $dc = dc($filterDeptSafe);
     $lateRows = fetchAll(sqlsrv_query($conn, "
-        SELECT L.EmployeeID,
-               MAX(L.EmployeeName)  AS EmployeeName,
-               MAX(L.Department)    AS Department,
-               MAX(L.Position_Held) AS Position_Held,
-               CAST(L.ADate AS DATE) AS ADate,
-               MAX(L.Late) AS Late1,
-               (
-                   SELECT MIN(L2.ATime)
-                   FROM dbo.View_Attendance_Log2 L2
-                   WHERE L2.EmployeeID = L.EmployeeID
-                     AND CAST(L2.ADate AS DATE) = CAST(L.ADate AS DATE)
-                     AND LOWER(L2.Direction) LIKE '%in%'
-               ) AS EarliestLogIn,
-               (
-                   SELECT TOP 1 RTRIM(L2.DataFrom)
-                   FROM dbo.View_Attendance_Log2 L2
-                   WHERE L2.EmployeeID = L.EmployeeID
-                     AND CAST(L2.ADate AS DATE) = CAST(L.ADate AS DATE)
-                     AND LOWER(L2.Direction) LIKE '%in%'
-                   ORDER BY L2.ATime ASC
-               ) AS EarliestLogSource
-        FROM dbo.View_Attendance_Log2 L
-        WHERE L.ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' AND L.Late > 0 $dc
-        GROUP BY L.EmployeeID, CAST(L.ADate AS DATE)
-        ORDER BY MAX(L.Late) DESC
+        SELECT EmployeeID, Department, EmployeeName, Category, ADate,
+               MorningIn, AMLate, PMLate, Late1
+        FROM View_ATtendanceTimeInTimeOut2
+        WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' AND Late1 > 0 $dc
+        ORDER BY Late1 DESC
     "));
     foreach ($lateRows as $i => $r) { $lateRows[$i]['Rank'] = $i + 1; }
 
@@ -394,7 +388,7 @@ function dirBadge(string $dir): string {
 }
 function lateBadge($late): string {
     if (!$late || $late === '0' || $late === 0) return '<span class="hr-badge hr-badge-present">On Time</span>';
-    return '<span class="hr-badge hr-badge-late">⚠ Late</span>';
+    return '<span class="hr-badge hr-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>Late</span>';
 }
 function tabUrl(string $t): string {
     $p = $_GET; $p['tab'] = $t; unset($p['page']);
@@ -413,15 +407,15 @@ function calWorkStatusBadge($hours): string {
     if ($hours === null || $hours === '') return '';
     $h = (float)$hours;
     if ($h > 8.3) {
-        return '<div class="att-cal-workstatus att-cal-ws-overtime" title="Overtime">⏱ OT</div>';
+        return '<div class="att-cal-workstatus att-cal-ws-overtime" title="Overtime"><i class="bi bi-stopwatch" style="margin-right:.3rem;"></i>OT</div>';
     }
     if ($h >= 8 && $h <= 8.3) {
-        return '<div class="att-cal-workstatus att-cal-ws-regular" title="Regular">✔ Reg</div>';
+        return '<div class="att-cal-workstatus att-cal-ws-regular" title="Regular"><i class="bi bi-check-circle-fill" style="margin-right:.3rem;"></i>Reg</div>';
     }
     if ($h > 4 && $h < 8) {
-        return '<div class="att-cal-workstatus att-cal-ws-undertime" title="Undertime">⏱ UT</div>';
+        return '<div class="att-cal-workstatus att-cal-ws-undertime" title="Undertime"><i class="bi bi-clock-fill" style="margin-right:.3rem;"></i>UT</div>';
     }
-    return '<div class="att-cal-workstatus att-cal-ws-halfday" title="Halfday">½ Day</div>';
+    return '<div class="att-cal-workstatus att-cal-ws-halfday" title="Halfday"><i class="bi bi-circle-half" style="margin-right:.3rem;"></i>½ Day</div>';
 }
 
 // JSON for JS (safe embed)
@@ -554,12 +548,12 @@ $jsGenRows     = json_encode($genRows,     JSON_HEX_TAG | JSON_HEX_AMP | JSON_HE
 .att-cal-mark-absent  { color:#dc2626; }
 .att-cal-mark-leave   { color:#a16207; }
 .att-cal-mark-sunday  { color:#94a3b8; }
-.att-cal-late { font-size:.63rem; font-weight:700; color:#dc2626; line-height:1.2; }
+.att-cal-late { font-size:.63rem; font-weight:700; color:#ca8a04; line-height:1.2; }
 .att-cal-workstatus { font-size:.6rem; font-weight:700; line-height:1.2; }
-.att-cal-ws-overtime  { color:#16a34a; }
-.att-cal-ws-regular   { color:#2563eb; }
-.att-cal-ws-undertime { color:#ca8a04; }
-.att-cal-ws-halfday   { color:#dc2626; }
+.att-cal-ws-overtime  { color:#2563eb; }
+.att-cal-ws-regular   { color:#16a34a; }
+.att-cal-ws-undertime { color:#7c3aed; }
+.att-cal-ws-halfday   { color:#f97316; }
 
 @media (max-width:640px) {
     .att-cal-cell { min-height:48px; padding:3px 4px; }
@@ -635,6 +629,17 @@ require_once __DIR__ . '/hr_nav.php';
       </div>
     </div>
     <?php endif; ?>
+    <?php if ($tab === 'timeinout'): ?>
+    <div class="hr-filter-group">
+      <label>Category</label>
+      <select name="category" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:150px;">
+        <option value="">— All —</option>
+        <?php foreach ($timeinoutCategoryList as $c): ?>
+        <option value="<?= htmlspecialchars($c) ?>" <?= ($filterCategory === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <?php endif; ?>
     <?php if ($tab === 'generated'): ?>
     <div class="hr-filter-group">
       <label>Cut Off</label>
@@ -697,7 +702,7 @@ require_once __DIR__ . '/hr_nav.php';
     <?php endif; ?>
   </a>
   <a href="<?= tabUrl('toplates') ?>" class="<?= $tab === 'toplates' ? 'active' : '' ?>">
-    <i class="bi bi-alarm-fill"></i> Top Employee Lates
+    <i class="bi bi-clock-fill"></i> Top Employee Lates
     <?php if ($tab === 'toplates'): ?>
     <span style="background:rgba(255,255,255,.25);border-radius:999px;padding:0 6px;font-size:.68rem;font-weight:700;"><?= count($lateRows) ?></span>
     <?php endif; ?>
@@ -723,6 +728,15 @@ require_once __DIR__ . '/hr_nav.php';
 
 <!-- ── Device Time In/Out ─────────────────────────────────── -->
 <div class="hr-table-card" style="margin-bottom:1.25rem;">
+  <div class="att-cal-legend" style="border-top:none;">
+    <span><i class="bi bi-check-circle-fill" style="color:#16a34a;"></i> Present</span>
+    <span><i class="bi bi-x-circle-fill" style="color:#dc2626;"></i> Absent</span>
+    <span><i class="bi bi-stopwatch" style="color:#2563eb;"></i> Overtime</span>
+    <span><i class="bi bi-clock-fill" style="color:#ca8a04;"></i> Late</span>
+    <span><i class="bi bi-clock-fill" style="color:#7c3aed;"></i> Undertime</span>
+    <span><i class="bi bi-dash-circle-fill" style="color:#6b7280;"></i> Incomplete</span>
+    <span><i class="bi bi-circle-half" style="color:#f97316;"></i> Halfday</span>
+  </div>
   <div class="hr-table-toolbar">
     <div class="hr-table-title">
       🖥️ Device Time In / Out
@@ -808,8 +822,7 @@ require_once __DIR__ . '/hr_nav.php';
   <div style="display:flex;align-items:center;gap:.6rem;padding:.25rem 0;font-size:.85rem;color:#1e40af;">
     <i class="bi bi-info-circle-fill" style="font-size:1.3rem;color:#2563eb;"></i>
     All late-arrival records, sorted by minutes late (highest first), within <?= htmlspecialchars($dateFrom) ?> → <?= htmlspecialchars($dateTo) ?>.
-    Sourced directly from the Integrated Attendance Log (all 3 punch sources merged) so no lates are missed.
-    "Earliest Integrated Log Punch" shows the earliest in-punch of the day — use it to cross-check employees who dispute the Late computation.
+    Sourced from the same view as the Time In/Out tab, so figures here always match what's shown there.
   </div>
 </div>
 
@@ -837,7 +850,7 @@ require_once __DIR__ . '/hr_nav.php';
     <table class="att-table" id="latesTable">
       <thead>
         <tr>
-          <th>Rank</th><th>Date</th><th>Employee ID</th><th>Name</th><th>Department</th><th>Position Held</th><th>Late (mins)</th><th>Earliest Integrated Log Punch</th>
+          <th>Rank</th><th>Date</th><th>Employee ID</th><th>Name</th><th>Department</th><th>Category</th><th>Morning In</th><th>AM Late</th><th>PM Late</th><th>Total Late (mins)</th>
         </tr>
       </thead>
       <tbody id="latesBody"></tbody>
@@ -983,8 +996,8 @@ require_once __DIR__ . '/hr_nav.php';
       <span><i class="att-cal-dot att-cal-dot-absent"></i> Absent</span>
       <span><i class="att-cal-dot att-cal-dot-leave"></i> Leave</span>
       <span><i class="att-cal-dot att-cal-dot-sunday"></i> Sunday</span>
-      <span><i class="bi bi-alarm-fill" style="color:#dc2626;"></i> Late (mins shown)</span>
-      <span><i class="bi bi-speedometer2" style="color:#2563eb;"></i> Work Status (OT / Reg / UT / ½ Day)</span>
+      <span><i class="bi bi-clock-fill" style="color:#ca8a04;"></i> Late (mins shown)</span>
+      <span><i class="bi bi-speedometer2" style="color:#2563eb;"></i> Work Status (Present / Absent / OT / Late / UT / Incomplete / Halfday)</span>
     </div>
 
     <?php foreach (calMonths($dateFrom, $dateTo) as $mo):
@@ -1016,11 +1029,11 @@ require_once __DIR__ . '/hr_nav.php';
             <div class="att-cal-daynum"><?= $day ?></div>
             <?php if ($st['status'] === 'present'): ?>
               <div class="att-cal-mark att-cal-mark-present"><i class="bi bi-check-lg"></i></div>
-              <?php if (!empty($st['late'])): ?><div class="att-cal-late">⏰ <?= (int)$st['late'] ?>m late</div><?php endif; ?>
+              <?php if (!empty($st['late'])): ?><div class="att-cal-late"><i class="bi bi-clock-fill" style="margin-right:.25rem;"></i><?= (int)$st['late'] ?>m late</div><?php endif; ?>
               <?= calWorkStatusBadge($st['hours'] ?? null) ?>
             <?php elseif ($st['status'] === 'halfday'): ?>
               <div class="att-cal-mark att-cal-mark-halfday"><i class="bi bi-check-lg"></i> ½</div>
-              <?php if (!empty($st['late'])): ?><div class="att-cal-late">⏰ <?= (int)$st['late'] ?>m late</div><?php endif; ?>
+              <?php if (!empty($st['late'])): ?><div class="att-cal-late"><i class="bi bi-clock-fill" style="margin-right:.25rem;"></i><?= (int)$st['late'] ?>m late</div><?php endif; ?>
               <?= calWorkStatusBadge($st['hours'] ?? null) ?>
             <?php elseif ($st['status'] === 'absent'): ?>
               <div class="att-cal-mark att-cal-mark-absent">A</div>
@@ -1087,7 +1100,7 @@ function fmtHours(h) {
 function lateMinsBadge(mins) {
     const m = parseFloat(mins) || 0;
     return m > 0
-        ? `<span class="hr-badge hr-badge-late">⚠ ${m} min</span>`
+        ? `<span class="hr-badge hr-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>${m} min</span>`
         : '<span class="hr-badge hr-badge-present">On Time</span>';
 }
 function dirBadge(dir) {
@@ -1098,16 +1111,39 @@ function dirBadge(dir) {
 }
 function lateBadge(late) {
     return (parseFloat(late) > 0)
-        ? '<span class="hr-badge hr-badge-late">⚠ Late</span>'
+        ? '<span class="hr-badge hr-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>Late</span>'
         : '<span class="hr-badge hr-badge-present">On Time</span>';
 }
-// Work Status: derived purely from TotalHours.
-//   Overtime  -> TotalHours > 8.3
-//   Undertime -> 4 < TotalHours <= 8.3 
-//   Halfday   -> TotalHours <= 4
-function workStatusBadge(totalHours) {
-    if (totalHours === null || totalHours === undefined || totalHours === '') {
-        return '<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">—</span>';
+// Work Status badge builder — Bootstrap icon + tinted color, matching the
+// scheme used across Present/Absent/Overtime/Late/Undertime/Incomplete/Halfday.
+function statusBadge(icon, color, label) {
+    return `<span class="hr-badge" style="background:${color}1a;color:${color};"><i class="bi ${icon}" style="margin-right:.35rem;"></i>${esc(label)}</span>`;
+}
+
+// Work Status — evaluated in priority order (most specific/definitive first):
+//   1. Absent    -> MorningIn, MorningOut, AfternoonIn, AfternoonOut all null
+//   2. Halfday   -> exactly one of AM/PM has no record at all
+//   3. Late      -> Total Late minutes > 0 (same source as the Total Late column)
+//   4. Overtime  -> TotalHours >= 9
+//   5. Present   -> TotalHours >= 8 (and < 9, already caught by Overtime)
+//   6. Undertime -> 5 < TotalHours < 8
+//   7. Incomplete-> everything else (TotalHours < 4, and the 4–5 hr gap)
+function workStatusBadge(totalHours, amIn, amOut, pmIn, pmOut, totalLate) {
+    const isEmpty = v => v === null || v === undefined || v === '';
+    const amMissing = isEmpty(amIn) && isEmpty(amOut);
+    const pmMissing = isEmpty(pmIn) && isEmpty(pmOut);
+
+    if (amMissing && pmMissing) {
+        return statusBadge('bi-x-circle-fill', '#dc2626', 'Absent');
+    }
+
+    if (amMissing || pmMissing) {
+        return statusBadge('bi-dash-circle-fill', '#6b7280', 'Incomplete');
+        
+    }
+
+    if ((parseFloat(totalLate) || 0) > 0) {
+        return statusBadge('bi-clock-fill', '#ca8a04', 'Late');
     }
 
     const h = parseFloat(totalHours);
@@ -1116,19 +1152,19 @@ function workStatusBadge(totalHours) {
         return '<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">—</span>';
     }
 
-    if (h > 8.3) {
-        return '<span class="hr-badge" style="background:#dcfce7;color:#16a34a;">⏱ Overtime</span>';
+    if (h >= 9) {
+        return statusBadge('bi-stopwatch', '#2563eb', 'Overtime');
     }
 
-    if (h >= 8 && h <= 8.3) {
-        return '<span class="hr-badge" style="background:#dbeafe;color:#2563eb;">✔ Regular</span>';
+    if (h >= 8) {
+        return statusBadge('bi-check-circle-fill', '#16a34a', 'Present');
     }
 
-    if (h > 4 && h < 8) {
-        return '<span class="hr-badge" style="background:#fef9c3;color:#ca8a04;">⏱ Undertime</span>';
+    if (h > 5 && h < 8) {
+        return statusBadge('bi-clock-fill', '#7c3aed', 'Undertime');
     }
-
-    return '<span class="hr-badge" style="background:#fee2e2;color:#dc2626;">⏱ Halfday</span>';
+    return statusBadge('bi-circle-half', '#f97316', 'Halfday');
+    
 }
 function esc(s) {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1161,7 +1197,7 @@ function rowDev(r) {
       <td>${lateMinsBadge(r.PMLate)}</td>
       <td>${fmtHours(r.TotalHours)}</td>
       <td>${lateMinsBadge(r.Late1)}</td>
-      <td>${workStatusBadge(r.TotalHours)}</td>
+      <td>${workStatusBadge(r.TotalHours, r.MorningIn, r.MorningOut, r.AfternoonIn, r.AfternoonOut, r.Late1)}</td>
     </tr>`;
 }
 function rowLog(r) {
@@ -1188,25 +1224,17 @@ function rowLates(r) {
     const badgeBg   = isDanger ? '#fee2e2' : '#fef9c3';
     const badgeText = isDanger ? '#dc2626' : '#a16207';
 
-    // Earliest "in" punch pulled from the Integrated Log (all 3 sources merged).
-    // This is just for HR to eyeball against the Late value below — Late1 here is now
-    // the MAX(Late) reported by the Integrated Log itself for that employee/day.
-    let logCell;
-    if (!r.EarliestLogIn) {
-        logCell = '<span class="att-time absent">No log punch found</span>';
-    } else {
-        logCell = `${fmtTime(r.EarliestLogIn)} <span class="hr-badge" style="background:#f1f5f9;color:#475569;margin-left:4px;">${esc(r.EarliestLogSource||'—')}</span>`;
-    }
-
     return `<tr class="${rowClass}">
       <td style="font-weight:800;color:#dc2626;">#${esc(r.Rank||'—')}</td>
       <td>${fmtDate(r.ADate)}</td>
       <td class="mono" style="color:#7c3aed;font-weight:700">${esc(r.EmployeeID||'—')}</td>
       <td style="font-weight:600">${esc(r.EmployeeName||'—')}</td>
       <td>${esc(r.Department||'—')}</td>
-      <td>${esc(r.Position_Held||'—')}</td>
+      <td>${esc(r.Category||'—')}</td>
+      <td>${fmtTime(r.MorningIn)}</td>
+      <td>${lateMinsBadge(r.AMLate)}</td>
+      <td>${lateMinsBadge(r.PMLate)}</td>
       <td><span class="late-badge-big" style="background:${badgeBg};color:${badgeText};">⚠ ${esc(r.Late1||0)} mins</span></td>
-      <td>${logCell}</td>
     </tr>`;
 }
 function rowAbsent(r) {
@@ -1228,7 +1256,7 @@ function rowGen(r) {
       <td>${esc(r.Aday||'—')}</td>
       <td>${fmtTime(r.AtimeIn)}</td>
       <td>${fmtTime(r.AtimeOut)}</td>
-      <td>${(r.Late === null || r.Late === undefined || r.Late === '') ? '—' : ((parseFloat(r.Late)||0) > 0 ? `<span class="hr-badge hr-badge-late">⚠ ${esc(r.Late)} min</span>` : '<span class="hr-badge hr-badge-present">On Time</span>')}</td>
+      <td>${(r.Late === null || r.Late === undefined || r.Late === '') ? '—' : ((parseFloat(r.Late)||0) > 0 ? `<span class="hr-badge hr-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>${esc(r.Late)} min</span>` : '<span class="hr-badge hr-badge-present">On Time</span>')}</td>
       <td>${esc(r.Position_held||'—')}</td>
       <td>${esc(r.Job_tittle||'—')}</td>
       <td>${esc(r.Category||'—')}</td>

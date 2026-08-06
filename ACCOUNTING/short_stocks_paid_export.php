@@ -46,19 +46,15 @@ if ($search !== '') {
 
 $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-// Full detail record — same column set as short_stocks_paid_ajax.php,
-// independent of whatever's trimmed on the visible table / print report.
+// Same trimmed column set as the on-screen table / print report —
+// Employee Name through Remarks, plus Payment Method. Full detail record lives on the View page.
 $sql = "
     SELECT
-        [SEID], [Position], [Status], [Amount], [SPPID], [AmountDue], [PaidAmount],
-        [Balance], [DateGenerate], [SDID], [DID], [Department],
-        CONVERT(varchar(10), [DateSchedule], 23) AS [DateSchedule],
-        [PlateNumber], [Area], [Outlet], [RefNo], [TotalAmount], [NumAccountable],
-        [AmountL], [StatusofShort], [Remarks], [IDS], [EmployeeID], [EmployeeName],
+        [EmployeeName], [Department], [Area], [Outlet], [PlateNumber], [RefNo],
+        CONVERT(varchar(10), [DateGenerate], 23) AS [DateGenerateFmt],
+        [TotalAmount], [AmountDue], [PaidAmount], [Balance],
         CONVERT(varchar(10), [DatePaid], 23) AS [DatePaid],
-        [TypeShort], [Category], [Employee_Status], [Job_tittle], [Position_held],
-        [PaymentID], [Source],
-        CONVERT(varchar(10), [DateGenerate], 23) AS [DateGenerateFmt]
+        [PaymentMethod], [TypeShort], [Remarks]
     FROM [dbo].[View_ShortPaymentPaidDetails]
     $whereSql
     ORDER BY [DatePaid] DESC
@@ -69,17 +65,15 @@ foreach ($params as $key => $val) { $stmt->bindValue($key, $val); }
 $stmt->execute();
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$totalAmount = $totalAmountDue = $totalPaid = $totalBalance = $totalAmountTotal = $totalAmountL = 0;
+$totalAmountTotal = $totalAmountDue = $totalPaid = $totalBalance = 0;
 foreach ($rows as $r) {
-    $totalAmount      += floatval($r['Amount']);
+    $totalAmountTotal += floatval($r['TotalAmount']);
     $totalAmountDue   += floatval($r['AmountDue']);
     $totalPaid        += floatval($r['PaidAmount']);
     $totalBalance     += floatval($r['Balance']);
-    $totalAmountTotal += floatval($r['TotalAmount']);
-    $totalAmountL     += floatval($r['AmountL']);
 }
 
-$filename = 'short_stocks_paid_full_' . date('Ymd_His') . '.xls';
+$filename = 'short_stocks_paid_' . date('Ymd_His') . '.xls';
 
 header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
 header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -90,90 +84,52 @@ echo "\xEF\xBB\xBF"; // UTF-8 BOM so Excel renders ₱ / accented text correctly
 <table border="1">
     <thead>
         <tr>
-            <th>SEID</th>
-            <th>Employee ID</th>
             <th>Employee Name</th>
-            <th>Position</th>
-            <th>Job Title</th>
-            <th>Position Held</th>
-            <th>Employee Status</th>
-            <th>Record Status</th>
             <th>Department</th>
             <th>Area</th>
             <th>Outlet</th>
-            <th>Plate Number</th>
-            <th>SPPID</th>
+            <th>Plate No.</th>
             <th>Ref No.</th>
-            <th>SDID</th>
-            <th>DID</th>
-            <th>IDS</th>
-            <th>Amount</th>
+            <th>Date Generated</th>
             <th>Total Amount</th>
             <th>Amount Due</th>
             <th>Paid Amount</th>
             <th>Balance</th>
-            <th>Amount (L)</th>
-            <th>Num. Accountable</th>
-            <th>Date Generated</th>
-            <th>Date Schedule</th>
             <th>Date Paid</th>
+            <th>Payment Method</th>
             <th>Type Short</th>
-            <th>Category</th>
-            <th>Status of Short</th>
-            <th>Payment ID</th>
-            <th>Source</th>
             <th>Remarks</th>
         </tr>
     </thead>
     <tbody>
         <?php foreach ($rows as $r): ?>
         <tr>
-            <td><?php echo htmlspecialchars($r['SEID'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['EmployeeID'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['EmployeeName'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Position'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Job_tittle'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Position_held'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Employee_Status'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Status'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['Department'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['Area'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['Outlet'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['PlateNumber'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['SPPID'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['RefNo'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['SDID'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['DID'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['IDS'] ?? '-'); ?></td>
-            <td><?php echo number_format((float)($r['Amount'] ?? 0), 2); ?></td>
+            <td><?php echo htmlspecialchars($r['DateGenerateFmt'] ?? '-'); ?></td>
             <td><?php echo number_format((float)($r['TotalAmount'] ?? 0), 2); ?></td>
             <td><?php echo number_format((float)($r['AmountDue'] ?? 0), 2); ?></td>
             <td><?php echo number_format((float)($r['PaidAmount'] ?? 0), 2); ?></td>
             <td><?php echo number_format((float)($r['Balance'] ?? 0), 2); ?></td>
-            <td><?php echo number_format((float)($r['AmountL'] ?? 0), 2); ?></td>
-            <td><?php echo htmlspecialchars($r['NumAccountable'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['DateGenerateFmt'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['DateSchedule'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['DatePaid'] ?? '-'); ?></td>
+            <td><?php echo htmlspecialchars($r['PaymentMethod'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['TypeShort'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Category'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['StatusofShort'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['PaymentID'] ?? '-'); ?></td>
-            <td><?php echo htmlspecialchars($r['Source'] ?? '-'); ?></td>
             <td><?php echo htmlspecialchars($r['Remarks'] ?? '-'); ?></td>
         </tr>
         <?php endforeach; ?>
     </tbody>
     <tfoot>
         <tr>
-            <td colspan="17" align="right"><b>TOTALS</b></td>
-            <td><b><?php echo number_format($totalAmount, 2); ?></b></td>
+            <td colspan="7" align="right"><b>TOTALS</b></td>
             <td><b><?php echo number_format($totalAmountTotal, 2); ?></b></td>
             <td><b><?php echo number_format($totalAmountDue, 2); ?></b></td>
             <td><b><?php echo number_format($totalPaid, 2); ?></b></td>
             <td><b><?php echo number_format($totalBalance, 2); ?></b></td>
-            <td><b><?php echo number_format($totalAmountL, 2); ?></b></td>
-            <td colspan="9"></td>
+            <td colspan="4"></td>
         </tr>
     </tfoot>
 </table>

@@ -1,6 +1,7 @@
-<?php include('validation.php');
+<?php 
 session_start();
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
+include('validation.php');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -358,8 +359,8 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
       <div class="card-divider"></div>
 
       <div class="back-wrap">
-        <a href="<?= route('index') ?>" class="back-link">
-          <i class="bi bi-arrow-left"></i> Back to Website.
+        <a href="https://122.52.195.3/" class="back-link">
+          <i class="bi bi-arrow-left"></i> Back to Website
         </a>
       </div>
 

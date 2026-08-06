@@ -47,9 +47,10 @@ define('ROUTES', [
     'my_loans'             => 'EMPLOYEE/my_loans.php',
     'cash_advance'         => 'VALE/create.php',
     'cash_advance_record'  => 'VALE/cash-advance-record.php',
-    'leave_application'      => 'LEAVE/leave-application.php',
-    'leave_management'      => 'LEAVE/leave-info-management.php',
-    'leave_approval'        => 'LEAVE/leave-application-list.php',
+    'leave_application'    => 'LEAVE/leave-application.php',
+    'leave_management'     => 'LEAVE/leave-info-management.php',
+    'leave_approval'       => 'LEAVE/leave-application-list.php',
+    'override_attendance'  => 'HR/override-attendance.php',
 
 
     // ── Logistics Module
@@ -57,6 +58,7 @@ define('ROUTES', [
     'graphs'               => 'LOGISTICS/graphs.php',
     'team_schedule'        => 'LOGISTICS/team_schedule.php',
     'fuel'                 => 'fuel/index.php',
+    'maintenance_report'     => 'MaintenanceReport/index.php',
 
     // ── PO Module
     'po_index'             => 'PO/index.php',

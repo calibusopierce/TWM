@@ -1,4 +1,3 @@
-
 <?php
 /**
  * index.php (formerly landing.php)
@@ -14,7 +13,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
 auth_check(); // redirects to the real TWM login if not logged in
 
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,6 +21,7 @@ auth_check(); // redirects to the real TWM login if not logged in
 <title>Tradewell — Expense Ledger</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   :root {
     --navy: #10203A;
@@ -511,7 +510,7 @@ auth_check(); // redirects to the real TWM login if not logged in
     <span class="subtitle"></span>
   </div>
   <div class="header-right">
-    <a id="backBtn" href="<?= route('home') ?>" title="Go back">‹ Back</a>
+<a id="backBtn" href="<?= route('home') ?>" title="Go back">‹ Back</a>
     <span id="status">...</span>
   </div>
 </header>
@@ -548,7 +547,7 @@ auth_check(); // redirects to the real TWM login if not logged in
     <button class="action" id="applyFilters">Filter</button>
     <button class="ghost" id="printBtn">Print</button>
     <button class="ghost" id="toggleCols">Columns</button>
-    <button class="action" id="exportCsv">Export CSV</button>
+    <button class="action" id="exportExcel">Export Excel</button>
   </div>
 </div>
 
@@ -670,7 +669,7 @@ async function loadData() {
       statusEl.textContent = '●';
       statusEl.className = 'ok';
     } else {
-      statusEl.textContent = '●';
+      statusEl.textContent = '● slow';
       statusEl.className = 'err';
     }
 
@@ -906,18 +905,95 @@ $('#printBtn').addEventListener('click', () => {
   window.print();
 });
 
-// ---- Export ---------------------------------------------------------------
-$('#exportCsv').addEventListener('click', () => {
-  const cols = getVisibleColumnsOrdered();
-  const rows = getFilteredSortedRows();
-  const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [cols.map(c => esc(c.label)).join(',')];
-  rows.forEach(r => lines.push(cols.map(c => esc(r[c.key])).join(',')));
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+// ---- Export (real .xlsx, not CSV) -----------------------------------------
+// Builds a formatted Excel workbook using whatever columns/rows are
+// currently visible/filtered — same source data as the on-screen table
+// and the print report, just as a downloadable spreadsheet instead.
+async function exportToExcel(cols, rows) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Tradewell Expense Ledger';
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet('Expenses', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  const border = {
+    top: { style: 'thin', color: { argb: 'FF999999' } },
+    left: { style: 'thin', color: { argb: 'FF999999' } },
+    bottom: { style: 'thin', color: { argb: 'FF999999' } },
+    right: { style: 'thin', color: { argb: 'FF999999' } },
+  };
+
+  // Header row — navy fill, white bold 15pt, matching the app's branding.
+  const headerRow = sheet.addRow(cols.map(c => c.label));
+  headerRow.height = 24;
+  headerRow.eachCell(cell => {
+    cell.font = { size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10203A' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    cell.border = border;
+  });
+
+  const amountColIdx = cols.findIndex(c => c.key === 'Amount') + 1; // 1-based; 0 if not visible
+
+  // Data rows — 12pt body text, thin borders on every cell.
+  rows.forEach(r => {
+    const rowData = cols.map(c => {
+      if (DATE_COLUMNS.has(c.key)) return formatDateForPrint(r[c.key]);
+      if (c.key === 'Amount') return parseFloat(r[c.key]) || 0;
+      return r[c.key] == null ? '' : r[c.key];
+    });
+    const row = sheet.addRow(rowData);
+    row.eachCell(cell => {
+      cell.font = { size: 12 };
+      cell.border = border;
+    });
+    if (amountColIdx > 0) {
+      const cell = row.getCell(amountColIdx);
+      cell.numFmt = '#,##0.00';
+      cell.alignment = { horizontal: 'right' };
+    }
+  });
+
+  // Total row under the Amount column, only if Amount is currently visible.
+  if (amountColIdx > 0) {
+    const totalAmount = rows.reduce((sum, r) => sum + (parseFloat(r.Amount) || 0), 0);
+    const totalRow = sheet.addRow([]);
+    totalRow.getCell(1).value = 'TOTAL AMOUNT';
+    if (amountColIdx > 1) sheet.mergeCells(totalRow.number, 1, totalRow.number, amountColIdx - 1);
+    const amtCell = totalRow.getCell(amountColIdx);
+    amtCell.value = totalAmount;
+    amtCell.numFmt = '#,##0.00';
+    amtCell.alignment = { horizontal: 'right' };
+    for (let i = 1; i <= cols.length; i++) {
+      const cell = totalRow.getCell(i);
+      cell.font = { size: 12, bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2C983' } };
+      cell.border = border;
+    }
+  }
+
+  // Column widths sized to fit their content (header or longest value).
+  cols.forEach((c, i) => {
+    const maxLen = Math.max(
+      c.label.length,
+      ...rows.map(r => String(DATE_COLUMNS.has(c.key) ? formatDateForPrint(r[c.key]) : (r[c.key] ?? '')).length)
+    );
+    sheet.getColumn(i + 1).width = Math.min(Math.max(maxLen + 4, 12), 40);
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `tradewell-expenses-${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `tradewell-expenses-${new Date().toISOString().slice(0, 10)}.xlsx`;
   a.click();
+}
+
+$('#exportExcel').addEventListener('click', () => {
+  const cols = getVisibleColumnsOrdered();
+  const rows = getFilteredSortedRows();
+  exportToExcel(cols, rows);
 });
 
 // ---- Filtering / sorting --------------------------------------------------

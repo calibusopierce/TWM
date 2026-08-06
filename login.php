@@ -370,7 +370,7 @@ if (isset($_POST['login'])) {
       <div class="signup-row">
         Don't have an account?
         <!-- TODO: registration module not built yet — placeholder link, update filename/route once signup.php exists -->
-        <a href="<?= base_url('signup.php') ?>" class="signup-link">Sign Up</a>
+        <a href="https://122.52.195.3/tradewellportal/signup.php" class="signup-link">Sign Up</a>
       </div>
 
       <div class="card-divider"></div>

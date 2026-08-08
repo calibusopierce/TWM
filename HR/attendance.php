@@ -132,7 +132,7 @@ if ($tab === 'timeinout') {
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
            AMLate, PMLate, Late1, MorningTotalHours, AfternoonTotalHours,
            MorningAfternoonTotal, TotalHours
-    FROM View_ATtendanceTimeInTimeOut2
+    FROM View_ATtendanceTimeInTimeOut2_Override
     WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
     ORDER BY ADate DESC, MorningIn DESC
 ");
@@ -1156,11 +1156,11 @@ function workStatusBadge(totalHours, amIn, amOut, pmIn, pmOut, totalLate) {
         return statusBadge('bi-stopwatch', '#2563eb', 'Overtime');
     }
 
-    if (h >= 8) {
+    if (h >= 7.9) {
         return statusBadge('bi-check-circle-fill', '#16a34a', 'Present');
     }
 
-    if (h > 5 && h < 8) {
+    if (h > 5 && h < 7.9) {
         return statusBadge('bi-clock-fill', '#7c3aed', 'Undertime');
     }
     return statusBadge('bi-circle-half', '#f97316', 'Halfday');

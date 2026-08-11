@@ -378,6 +378,28 @@ if ($action === 'update_override' || $action === 'approve_override' || $action =
         $overrideType, $remarks,
     ];
 
+    // ── Duplicate-approval guard: don't let a second row for the same
+    //    EmployeeID+ADate become Approved. If one already exists, HR must
+    //    reject/reopen it first — this preserves the audit trail instead of
+    //    silently superseding the earlier Approved row.
+    if ($action === 'approve_override') {
+        $dupCheckSql = "SELECT [ID] FROM [dbo].[TBL_Attendance_Override]
+                         WHERE [EmployeeID] = (SELECT [EmployeeID] FROM [dbo].[TBL_Attendance_Override] WHERE [ID] = ?)
+                           AND [ADate] = (SELECT [ADate] FROM [dbo].[TBL_Attendance_Override] WHERE [ID] = ?)
+                           AND [HR_Status] = 1
+                           AND [ID] != ?";
+        $dupCheckStmt = sqlsrv_query($conn, $dupCheckSql, [$id, $id, $id]);
+        $existingApproved = $dupCheckStmt ? sqlsrv_fetch_array($dupCheckStmt, SQLSRV_FETCH_ASSOC) : null;
+
+        if ($existingApproved) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'An approved override already exists for this employee and date. Reject or reopen it before approving this one.',
+            ]);
+            exit;
+        }
+    }
+
     if ($action === 'approve_override' || $action === 'reject_override') {
         $newStatus = $action === 'approve_override' ? 1 : 2;
         $setClauses[] = "[HR_Status] = ?";

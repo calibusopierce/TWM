@@ -16,12 +16,34 @@ $username    = $_SESSION['Username']    ?? '';
 $hour = (int) date('G');
 $greeting = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
 
+// Department chip — colors mirror set_department.php so it reads as one system
+$deptChipColors = [
+    'Monde'                 => ['bg' => 'rgba(239,68,68,.15)',  'color' => '#fca5a5', 'border' => 'rgba(239,68,68,.35)'],
+    'Century'                => ['bg' => 'rgba(59,130,246,.15)', 'color' => '#93c5fd', 'border' => 'rgba(59,130,246,.35)'],
+    'Multilines'             => ['bg' => 'rgba(234,179,8,.15)',  'color' => '#fde047', 'border' => 'rgba(234,179,8,.35)'],
+    'NutriAsia'              => ['bg' => 'rgba(16,185,129,.15)', 'color' => '#6ee7b7', 'border' => 'rgba(16,185,129,.35)'],
+    'Silverswan'             => ['bg' => 'rgba(99,102,241,.15)', 'color' => '#a5b4fc', 'border' => 'rgba(99,102,241,.35)'],
+    'Urban Tradewell Corp.'  => ['bg' => 'rgba(147,197,253,.15)','color' => '#bfdbfe', 'border' => 'rgba(147,197,253,.35)'],
+];
+$deptKey = $department;
+if ($department !== '' && !isset($deptChipColors[$deptKey])) {
+    foreach ($deptChipColors as $k => $v) {
+        if (strcasecmp($k, $department) === 0) { $deptKey = $k; break; }
+    }
+}
+$deptChip  = $deptChipColors[$deptKey] ?? ['bg' => 'var(--w10)', 'color' => 'var(--white)', 'border' => 'var(--w15)'];
+
+// set_department.php restricts access to these roles — mirror that here so
+// the button doesn't show for users who'd just hit a 403.
+$deptSwitchRoles  = ['Admin', 'Administrator', 'HR', 'Delivery', 'Logistic'];
+$canSwitchDept    = in_array($userType, $deptSwitchRoles, true);
+
 // Bust RBAC cache on homepage load so admin changes reflect immediately
 unset($_SESSION['rbac_permissions_uid_' . ($_SESSION['UserID'] ?? 0)]);
 
-$permissions = rbac_load_permissions($pdo, $userType);
-
 // Filter out nav-only modules before building homepage sections
+$permissions = rbac_load_permissions($pdo, $userType);
+$canAccessRbac = isset($permissions['RBAC']);
 $navOnlyModules = ['RBAC'];
 $homepagePerms  = array_filter($permissions, fn($k) => !in_array($k, $navOnlyModules, true), ARRAY_FILTER_USE_KEY);
 
@@ -196,6 +218,17 @@ foreach ($sections as $section) {
     .user-detail-row .label { color: var(--w60); }
     .user-detail-row .value { color: var(--white); font-weight: 600; }
     .user-dropdown-divider { height: 1px; background: var(--w10); margin: .45rem 0 .3rem; }
+
+    .rbac-badge-link {
+      display: inline-flex; align-items: center; gap: .3rem;
+      text-decoration: none; cursor: pointer;
+      background: rgba(167,139,250,.18);
+      border: 1px solid rgba(167,139,250,.35);
+      color: #c4b5fd;
+      transition: filter .15s, transform .15s;
+    }
+    .rbac-badge-link:hover { filter: brightness(1.2); transform: translateY(-1px); }
+    .rbac-badge-link i { font-size: .68rem; }
     .user-dropdown-item {
       display: flex; align-items: center; gap: .5rem;
       padding: .4rem .4rem; border-radius: 8px;
@@ -237,6 +270,20 @@ foreach ($sections as $section) {
     }
     .welcome-strip strong { color: var(--white); }
     .welcome-strip .user-badge { font-size: .68rem; padding: .12rem .6rem; }
+
+    .welcome-strip .user-badge-link {
+      display: inline-flex; align-items: center; gap: .3rem;
+      text-decoration: none; cursor: pointer;
+      background: var(--dept-bg, rgba(67,128,226,.25));
+      border-color: var(--dept-border, rgba(147,197,253,.3));
+      color: var(--dept-color, var(--blue-light));
+      transition: filter .15s, transform .15s;
+    }
+    .welcome-strip .user-badge-link:hover { filter: brightness(1.18); transform: translateY(-1px); }
+    .welcome-strip .user-badge-link .badge-divider {
+      width: 1px; height: 10px; background: currentColor; opacity: .35; margin: 0 .05rem;
+    }
+    .welcome-strip .user-badge-link i { font-size: .62rem; opacity: .8; }
 
     /* ── Search bar ── */
     .hub-search {
@@ -481,10 +528,17 @@ foreach ($sections as $section) {
       </button>
       <div class="user-dropdown" id="user-dropdown">
         <div class="user-dropdown-name"><?= $greeting ?>, <?= htmlspecialchars($displayName) ?></div>
-        <span class="user-badge">
-          <?= htmlspecialchars($userType) ?>
-          <?php if ($department): ?>&nbsp;·&nbsp;<?= htmlspecialchars($department) ?><?php endif; ?>
-        </span>
+        <div style="display:flex; align-items:center; gap:.4rem; flex-wrap:wrap;">
+          <span class="user-badge">
+            <?= htmlspecialchars($userType) ?>
+            <?php if ($department): ?>&nbsp;·&nbsp;<?= htmlspecialchars($department) ?><?php endif; ?>
+          </span>
+          <?php if ($canAccessRbac): ?>
+          <a href="RBAC/index.php" class="user-badge rbac-badge-link" title="RBAC Management">
+            <i class="bi bi-shield-lock"></i> RBAC
+          </a>
+          <?php endif; ?>
+        </div>
         <span class="last-login">
           <i class="bi bi-clock"></i>
           Session started: <?= date('F j, Y \a\t g:i A') ?>
@@ -514,10 +568,27 @@ foreach ($sections as $section) {
   </div>
   <div class="welcome-strip">
     <?= $greeting ?>, <strong><?= htmlspecialchars($displayName) ?></strong>
+    <?php if ($canSwitchDept): ?>
+    <a href="set_department.php" class="user-badge user-badge-link"
+       style="--dept-bg:<?= htmlspecialchars($deptChip['bg']) ?>; --dept-color:<?= htmlspecialchars($deptChip['color']) ?>; --dept-border:<?= htmlspecialchars($deptChip['border']) ?>;"
+       title="Change department">
+      <?= htmlspecialchars($userType) ?>
+      <?php if ($department): ?>&nbsp;·&nbsp;<?= htmlspecialchars($department) ?><?php endif; ?>
+      <span class="badge-divider"></span>
+      Change
+      <i class="bi bi-arrow-left-right"></i>
+    </a>
+    <?php else: ?>
     <span class="user-badge">
       <?= htmlspecialchars($userType) ?>
       <?php if ($department): ?>&nbsp;·&nbsp;<?= htmlspecialchars($department) ?><?php endif; ?>
     </span>
+    <?php endif; ?>
+    <?php if ($canAccessRbac): ?>
+    <a href="RBAC/index.php" class="user-badge rbac-badge-link" title="RBAC Management">
+      <i class="bi bi-shield-lock"></i> RBAC
+    </a>
+    <?php endif; ?>
   </div>
   <div id="search-status"></div>
 

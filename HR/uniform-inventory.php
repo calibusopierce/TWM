@@ -15,7 +15,7 @@ rbac_gate($pdo, 'uniform_inventory');
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
 $tab         = $_GET['tab'] ?? 'stocks';
-$validTabs   = ['stocks','stockview','released','requests','po','receiving','returns','report'];
+$validTabs   = ['stocks','stockview','released','requests','po','receiving','returns','pending_inspection','report'];
 if (!in_array($tab, $validTabs)) $tab = 'stocks';
 // Editable Stocks tab is restricted to full-access users; view-only users
 // get bounced to the read-only Stock Overview tab further down, once
@@ -786,8 +786,21 @@ foreach ($stocks as $s) $totalStock[$s['UniformType']] += max(0,intval($s['Curre
 $relSearch = trim($_GET['rsearch']??'');
 $relUType  = trim($_GET['reltype']??'');
 $relDept   = trim($_GET['reldept']??'');
+$relReqBy  = trim($_GET['relreqby']??'');
+$relSize   = trim($_GET['relsize']??'');
+$relDateFrom = trim($_GET['reldatefrom']??'');
+$relDateTo   = trim($_GET['reldateto']??'');
+
+// Distinct "Requested By" values already on record, for the filter dropdown
+$reqByRows = rq($conn,"SELECT DISTINCT RequestedBy FROM [dbo].[UniformReleased] WHERE RequestedBy IS NOT NULL AND RequestedBy <> '' ORDER BY RequestedBy ASC");
+$reqByList = array_map(fn($r)=>$r['RequestedBy'], $reqByRows);
+
 if (!in_array($relUType, ['TSHIRT','POLOSHIRT'])) $relUType = '';
 if (!in_array($relDept, $depts))                   $relDept  = '';
+if (!in_array($relSize, $sizes))                    $relSize  = '';
+if (!in_array($relReqBy, $reqByList, true))          $relReqBy = '';
+if ($relDateFrom !== '' && !strtotime($relDateFrom)) $relDateFrom = '';
+if ($relDateTo   !== '' && !strtotime($relDateTo))   $relDateTo   = '';
 
 // If dept-scoped user, force their department
 $effectiveRelDept = $deptScope !== '' ? $deptScope : $relDept;
@@ -799,6 +812,10 @@ if ($relSearch !== '') {
 }
 if ($relUType !== '') $relConditions[] = "UniformType = '" . str_replace("'","''",$relUType) . "'";
 if ($effectiveRelDept !== '') $relConditions[] = "Department = '" . str_replace("'","''",$effectiveRelDept) . "'";
+if ($relReqBy !== '') $relConditions[] = "RequestedBy = '" . str_replace("'","''",$relReqBy) . "'";
+if ($relSize !== '') $relConditions[] = "UniformSize = '" . str_replace("'","''",$relSize) . "'";
+if ($relDateFrom !== '') $relConditions[] = "DateGiven >= '" . date('Y-m-d',strtotime($relDateFrom)) . "'";
+if ($relDateTo   !== '') $relConditions[] = "DateGiven <= '" . date('Y-m-d',strtotime($relDateTo)) . "'";
 $relWhere = !empty($relConditions) ? 'WHERE ' . implode(' AND ', $relConditions) : '';
 
 $relAll    = rq($conn,"SELECT * FROM [dbo].[UniformReleased] {$relWhere} ORDER BY DateGiven DESC, CreatedAt DESC");
@@ -910,8 +927,21 @@ if ($editId>0 && $tab==='released') {
 $retSearch = trim($_GET['retsearch'] ?? '');
 $retUType  = trim($_GET['rettype']  ?? '');
 $retDept   = trim($_GET['retdept']  ?? '');
+$retSize   = trim($_GET['retsize']  ?? '');
+$retReturnedTo = trim($_GET['retreturnedto'] ?? '');
+$retDateFrom   = trim($_GET['retdatefrom']   ?? '');
+$retDateTo     = trim($_GET['retdateto']     ?? '');
+
+// Distinct "Returned To" values already on record, for the filter dropdown
+$returnedToRows = rq($conn,"SELECT DISTINCT ReturnedTo FROM [dbo].[UniformReturns] WHERE ReturnedTo IS NOT NULL AND ReturnedTo <> '' ORDER BY ReturnedTo ASC");
+$returnedToList = array_map(fn($r)=>$r['ReturnedTo'], $returnedToRows);
+
 if (!in_array($retUType, ['TSHIRT','POLOSHIRT'])) $retUType = '';
 if (!in_array($retDept, $depts))                   $retDept  = '';
+if (!in_array($retSize, $sizes))                    $retSize  = '';
+if (!in_array($retReturnedTo, $returnedToList, true)) $retReturnedTo = '';
+if ($retDateFrom !== '' && !strtotime($retDateFrom)) $retDateFrom = '';
+if ($retDateTo   !== '' && !strtotime($retDateTo))   $retDateTo   = '';
 
 $effectiveRetDept = $deptScope !== '' ? $deptScope : $retDept;
 
@@ -922,6 +952,10 @@ if ($retSearch !== '') {
 }
 if ($retUType !== '') $retConditions[] = "UniformType = '" . str_replace("'","''",$retUType) . "'";
 if ($effectiveRetDept !== '') $retConditions[] = "Department = '" . str_replace("'","''",$effectiveRetDept) . "'";
+if ($retSize !== '') $retConditions[] = "UniformSize = '" . str_replace("'","''",$retSize) . "'";
+if ($retReturnedTo !== '') $retConditions[] = "ReturnedTo = '" . str_replace("'","''",$retReturnedTo) . "'";
+if ($retDateFrom !== '') $retConditions[] = "DateReturned >= '" . date('Y-m-d',strtotime($retDateFrom)) . "'";
+if ($retDateTo   !== '') $retConditions[] = "DateReturned <= '" . date('Y-m-d',strtotime($retDateTo)) . "'";
 $retWhere = !empty($retConditions) ? 'WHERE ' . implode(' AND ', $retConditions) : '';
 
 $retAll    = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$retWhere} ORDER BY DateReturned DESC, CreatedAt DESC");
@@ -940,6 +974,13 @@ $returnedReadyWhere     = $retWhere !== '' ? $retWhere." AND InspectionStatus='R
 $pendingInspectionList  = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$pendingInspectionWhere} ORDER BY DateReturned ASC, CreatedAt ASC");
 $cleaningList           = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$cleaningWhere} ORDER BY DateReturned ASC, CreatedAt ASC");
 $returnedReadyList      = rq($conn, "SELECT * FROM [dbo].[UniformReturns] {$returnedReadyWhere} ORDER BY InspectedAt ASC");
+
+// Dept-scoped-only pending count, for the nav tab badge — independent of
+// whatever ad-hoc search/type/size/date filters are active on the Returns tab.
+$pendingInspectionCountWhere = $deptScope !== ''
+    ? "WHERE Department = '" . str_replace("'","''",$deptScope) . "' AND InspectionStatus='Pending Inspection'"
+    : "WHERE InspectionStatus='Pending Inspection'";
+$pendingInspectionCountAll = count(rq($conn, "SELECT ReturnID FROM [dbo].[UniformReturns] {$pendingInspectionCountWhere}"));
 
 // ── Edit mode (Returns) ───────────────────────────────────────
 $editRetId  = intval($_GET['editretid'] ?? 0);
@@ -1151,11 +1192,7 @@ if ($tab === 'report') {
       <?php endif; ?>
     </div>
   </div>
-  <?php if($canManageStock): ?>
-  <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal">
-    <i class="bi bi-plus-lg"></i> Release Uniform
-  </button>
-  <?php endif; ?>
+
 </div>
 
 <?php foreach($messages as $m): ?>
@@ -1182,6 +1219,7 @@ if ($tab === 'report') {
   <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
   <a href="?tab=receiving" class="tab-btn <?= $tab==='receiving'?'active':'' ?>"><i class="bi bi-box-seam-fill"></i> Receiving Form</a>
   <a href="?tab=returns"   class="tab-btn <?= $tab==='returns'  ?'active':'' ?>"><i class="bi bi-arrow-return-left"></i> Returns</a>
+  <a href="?tab=pending_inspection" class="tab-btn <?= $tab==='pending_inspection' ?'active':'' ?>"><i class="bi bi-hourglass-split"></i> Pending Inspection<?php if($pendingInspectionCountAll>0): ?> <span style="background:#fde047;color:#854d0e;border-radius:10px;padding:0 .45rem;font-size:.68rem;font-weight:800;margin-left:.15rem;"><?= $pendingInspectionCountAll ?></span><?php endif; ?></a>
   <a href="?tab=report"    class="tab-btn <?= $tab==='report'   ?'active':'' ?>"><i class="bi bi-bar-chart-fill"></i> Reports</a>
 </div>
 
@@ -1489,6 +1527,23 @@ elseif($tab==='released'): ?>
         <option value="POLOSHIRT" <?= $relUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt</option>
       </select>
 
+      <select name="relsize" class="form-select" style="width:110px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $relSize===''?'selected':'' ?>>All Sizes</option>
+        <?php foreach($sizes as $sz): ?>
+        <option value="<?= $sz ?>" <?= $relSize===$sz?'selected':'' ?>><?= $sz ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <select name="relreqby" class="form-select" style="width:170px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $relReqBy===''?'selected':'' ?>>All Requested By</option>
+        <?php foreach($reqByList as $rb): ?>
+        <option value="<?= safe($rb) ?>" <?= $relReqBy===$rb?'selected':'' ?>><?= safe($rb) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <input type="date" name="reldatefrom" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($relDateFrom) ?>" title="Date Given — from">
+      <input type="date" name="reldateto" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($relDateTo) ?>" title="Date Given — to">
+
       <?php if($deptScope===''): ?>
       <select name="reldept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
         <option value="" <?= $relDept===''?'selected':'' ?>>All Departments</option>
@@ -1501,7 +1556,7 @@ elseif($tab==='released'): ?>
       <?php endif; ?>
 
       <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
-      <?php if($relSearch!==''||$relUType!==''||$relDept!==''): ?>
+      <?php if($relSearch!==''||$relUType!==''||$relDept!==''||$relReqBy!==''||$relSize!==''||$relDateFrom!==''||$relDateTo!==''): ?>
       <a href="?tab=released" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
       <?php endif; ?>
     </form>
@@ -1545,7 +1600,7 @@ elseif($tab==='released'): ?>
     </tbody>
   </table>
   </div>
-  <?= paginationBar('relpage',$relPage,$relPages,$relTotal,['tab'=>'released','rsearch'=>$relSearch,'reltype'=>$relUType,'reldept'=>$relDept]) ?>
+  <?= paginationBar('relpage',$relPage,$relPages,$relTotal,['tab'=>'released','rsearch'=>$relSearch,'reltype'=>$relUType,'reldept'=>$relDept,'relreqby'=>$relReqBy,'relsize'=>$relSize,'reldatefrom'=>$relDateFrom,'reldateto'=>$relDateTo]) ?>
   <?php endif; ?>
 </div>
 
@@ -2328,46 +2383,6 @@ elseif($tab==='returns'):
 </div>
 <?php endif; ?>
 
-<?php if(!empty($pendingInspectionList)): ?>
-<div class="panel" style="border:1.5px solid #fde047;">
-  <div class="panel-hdr" style="background:rgba(234,179,8,.08);">
-    <div class="panel-title" style="color:#854d0e;"><i class="bi bi-hourglass-split"></i> Pending Inspection (<?= count($pendingInspectionList) ?>)</div>
-  </div>
-  <div style="overflow-x:auto;">
-  <table class="utbl">
-    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Reported</th><th>Date</th><?php if($canManageStock): ?><th style="text-align:center;">Inspect</th><?php endif; ?></tr></thead>
-    <tbody>
-    <?php foreach($pendingInspectionList as $p): ?>
-    <tr>
-      <td style="font-weight:700;"><?= safe($p['EmployeeName']) ?></td>
-      <td><span class="bdg <?= $p['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $p['UniformType'] ?></span></td>
-      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($p['UniformSize']) ?></td>
-      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($p['Quantity']) ?></td>
-      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($p['Condition']??'—') ?></td>
-      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($p['DateReturned']) ?></td>
-      <?php if($canManageStock): ?>
-      <td style="text-align:center;white-space:nowrap;">
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Confirm this item is Returned?','It will be HELD as confirmed-good, but not yet counted as Available. Use Add to Stock afterward to make it available.','#4338ca')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Returned">
-          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Returned</button>
-        </form>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Send for cleaning/repair?','It will be held out of available stock until marked repaired.','#0d9488')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Cleaning/Repair">
-          <button type="submit" class="btn-sm-action" style="background:rgba(13,148,136,.1);color:#0d9488;border:1px solid #5eead4;"><i class="bi bi-droplet-fill"></i> Cleaning</button>
-        </form>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Dispose this item?','It will be permanently removed from stock.','#dc2626')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Disposed">
-          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i> Dispose</button>
-        </form>
-      </td>
-      <?php endif; ?>
-    </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  </div>
-</div>
-<?php endif; ?>
 
 <?php if(!empty($cleaningList)): ?>
 <div class="panel" style="border:1.5px solid #5eead4;">
@@ -2459,6 +2474,23 @@ elseif($tab==='returns'):
         <option value="POLOSHIRT" <?= $retUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt</option>
       </select>
 
+      <select name="retsize" class="form-select" style="width:110px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $retSize===''?'selected':'' ?>>All Sizes</option>
+        <?php foreach($sizes as $sz): ?>
+        <option value="<?= $sz ?>" <?= $retSize===$sz?'selected':'' ?>><?= $sz ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <select name="retreturnedto" class="form-select" style="width:170px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $retReturnedTo===''?'selected':'' ?>>All Returned To</option>
+        <?php foreach($returnedToList as $rt): ?>
+        <option value="<?= safe($rt) ?>" <?= $retReturnedTo===$rt?'selected':'' ?>><?= safe($rt) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <input type="date" name="retdatefrom" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($retDateFrom) ?>" title="Date Returned — from">
+      <input type="date" name="retdateto" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($retDateTo) ?>" title="Date Returned — to">
+
       <?php if($deptScope===''): ?>
       <select name="retdept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
         <option value="" <?= $retDept===''?'selected':'' ?>>All Departments</option>
@@ -2471,7 +2503,7 @@ elseif($tab==='returns'):
       <?php endif; ?>
 
       <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
-      <?php if($retSearch!==''||$retUType!==''||$retDept!==''): ?>
+      <?php if($retSearch!==''||$retUType!==''||$retDept!==''||$retSize!==''||$retReturnedTo!==''||$retDateFrom!==''||$retDateTo!==''): ?>
       <a href="?tab=returns" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
       <?php endif; ?>
     </form>
@@ -2547,7 +2579,55 @@ elseif($tab==='returns'):
     </tbody>
   </table>
   </div>
-  <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch,'rettype'=>$retUType,'retdept'=>($deptScope!==''?'':$retDept)]) ?>
+  <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch,'rettype'=>$retUType,'retdept'=>($deptScope!==''?'':$retDept),'retsize'=>$retSize,'retreturnedto'=>$retReturnedTo,'retdatefrom'=>$retDateFrom,'retdateto'=>$retDateTo]) ?>
+  <?php endif; ?>
+</div>
+
+<?php
+// ═══ TAB: PENDING INSPECTION ═══════════════════════════════════
+elseif($tab==='pending_inspection'):
+?>
+
+<div class="panel" style="border:1.5px solid #fde047;">
+  <div class="panel-hdr" style="background:rgba(234,179,8,.08);">
+    <div class="panel-title" style="color:#854d0e;"><i class="bi bi-hourglass-split"></i> Pending Inspection (<?= count($pendingInspectionList) ?>)</div>
+  </div>
+  <?php if(empty($pendingInspectionList)): ?>
+  <div class="empty-st"><i class="bi bi-hourglass-split"></i><p>No returns awaiting inspection.</p></div>
+  <?php else: ?>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Reported</th><th>Date</th><?php if($canManageStock): ?><th style="text-align:center;">Inspect</th><?php endif; ?></tr></thead>
+    <tbody>
+    <?php foreach($pendingInspectionList as $p): ?>
+    <tr>
+      <td style="font-weight:700;"><?= safe($p['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $p['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $p['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($p['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($p['Quantity']) ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($p['Condition']??'—') ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($p['DateReturned']) ?></td>
+      <?php if($canManageStock): ?>
+      <td style="text-align:center;white-space:nowrap;">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Confirm this item is Returned?','It will be HELD as confirmed-good, but not yet counted as Available. Use Add to Stock afterward to make it available.','#4338ca')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Returned">
+          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Returned</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Send for cleaning/repair?','It will be held out of available stock until marked repaired.','#0d9488')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Cleaning/Repair">
+          <button type="submit" class="btn-sm-action" style="background:rgba(13,148,136,.1);color:#0d9488;border:1px solid #5eead4;"><i class="bi bi-droplet-fill"></i> Cleaning</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Dispose this item?','It will be permanently removed from stock.','#dc2626')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Disposed">
+          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i> Dispose</button>
+        </form>
+      </td>
+      <?php endif; ?>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
   <?php endif; ?>
 </div>
 
@@ -2555,6 +2635,7 @@ elseif($tab==='returns'):
 // ═══ TAB: REPORT ═══════════════════════════════════════════════
 elseif($tab==='report'):
 ?>
+
 
 <!-- Report filter bar -->
 <div class="panel" style="margin-bottom:1.25rem;">

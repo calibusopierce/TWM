@@ -356,13 +356,17 @@ function buildTabWhere(string $tab, array &$params): string
     $params = $statuses;
 
     if ($tab !== 'pending') {
-        if (!$viewAll) {
+        if ($viewAll) {
+            if ($deptFilter !== '') {
+                $where .= " AND d.DepartmentName = ?";
+                $params[] = $deptFilter;
+            }
+        } elseif ($_userDept !== '') {
             $where .= " AND d.DepartmentName = ?";
             $params[] = $_userDept;
-        } elseif ($deptFilter !== '') {
-            $where .= " AND d.DepartmentName = ?";
-            $params[] = $deptFilter;
         }
+        // else: $_userDept === '' means "All Departments" was selected via the
+        // department switcher (set_department.php) — no dept filter, show all.
     }
 
     $statusInt = is_numeric($statusFilter) ? (int)$statusFilter : null;

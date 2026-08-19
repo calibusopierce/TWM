@@ -51,7 +51,11 @@ define('ROUTES', [
     'leave_management'     => 'LEAVE/leave-info-management.php',
     'leave_approval'       => 'LEAVE/leave-application-list.php',
     'override_attendance'  => 'HR/override-attendance.php',
-
+    'override_attendance_approval' => 'HR/override-approval.php',
+    'schedule_calendar'    => 'HR/schedule_calendar.php',
+    'payroll_cutoff'       => 'HR/payroll_cutoff.php',
+    'attendance_present'   => 'HR/attendance_present.php',
+    'weekly_payroll'      => 'HR/weekly_payroll.php',
 
     // ── Logistics Module
     'fuel_dashboard'       => 'LOGISTICS/fuel_dashboard.php',
@@ -65,6 +69,7 @@ define('ROUTES', [
 
     // ── Accounting Module
     'short_stocks_paid' => 'ACCOUNTING/short_stocks_paid.php',
+    'employee_expenses' => 'ACCOUNTING/employee_expenses.php',
     
     // ── Customer Module
     'customer_list'        => 'CUSTOMERS/customer-list.php',

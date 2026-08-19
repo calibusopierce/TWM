@@ -49,7 +49,7 @@ if ($canFilterDept) {
 }
 
 // ── Active tab ─────────────────────────────────────────────
-$validTabs = ['timeinout', 'devicelog', 'toplates', 'absents', 'generated', 'calendar'];
+$validTabs = ['timeinout', 'fieldstaff', 'devicelog', 'toplates', 'absents', 'generated', 'calendar'];
 $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] : 'timeinout';
 
 // ── Category filter ──────────────────────────────────────────
@@ -103,6 +103,7 @@ function dc(string $deptSafe, string $col = 'Department'): string {
 // We load everything into PHP arrays, JSON-encode into JS, and let
 // the client handle pagination + search without extra round-trips.
 $rows      = []; // Device Time In/Out summary (timeinout tab)
+$fieldRows = []; // Field Staff Time In/Out summary — View_ATtendanceTimeInTimeOut_Field (fieldstaff tab)
 $logRows   = []; // Integrated attendance log — 3 sources merged (devicelog tab)
 $lateRows  = []; // All late-arrival records, sorted by minutes late (toplates tab)
 $absentRows = []; // Absentee list for the selected day (absents tab)
@@ -131,20 +132,38 @@ if ($tab === 'timeinout') {
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
            AMLate, PMLate, Late1, MorningTotalHours, AfternoonTotalHours,
-           MorningAfternoonTotal, TotalHours
+           MorningAfternoonTotal, TotalHours, Status
     FROM View_ATtendanceTimeInTimeOut2_Override
-    WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
+    WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
     ORDER BY ADate DESC, MorningIn DESC
 ");
     if ($timeinoutStmt === false) { $debugLog['timeinout'] = sqlsrv_errors(); }
     $rows = fetchAll($timeinoutStmt);
+
+} elseif ($tab === 'fieldstaff') {
+    // Field Staff Time In/Out — sourced from View_ATtendanceTimeInTimeOut_Field,
+    // a single-punch (not split AM/PM) view. Dept-filtered the same way every
+    // other tab is. The view itself does NOT exclude Office Personnel, so we
+    // explicitly filter out Category = 'OP' here — this tab is field staff only.
+    $dc = dc($filterDeptSafe);
+    $fieldStmt = sqlsrv_query($conn, "
+        SELECT EmployeeID, Department, EmployeeName, Category, ADate,
+               MorningIn, AfternoonOut, TimeIn, AMLate, TotalHours, Status,
+               DayCount, PayrollGroup
+        FROM View_ATtendanceTimeInTimeOut_Field
+        WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
+              AND (Category IS NULL OR RTRIM(Category) <> 'OP')
+        ORDER BY ADate DESC, MorningIn DESC
+    ");
+    if ($fieldStmt === false) { $debugLog['fieldstaff'] = sqlsrv_errors(); }
+    $fieldRows = fetchAll($fieldStmt);
 
 } elseif ($tab === 'devicelog') {
     $dc = dc($filterDeptSafe);
     $logRows = fetchAll(sqlsrv_query($conn, "
         SELECT DataFrom, Department, EmployeeID, EmployeeName, Position_Held, ADate, CheckIn, ATime, Area, Category, Direction, Late
         FROM View_Attendance_Log2
-        WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
+        WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
         ORDER BY ADate DESC, ATime DESC
     "));
 
@@ -161,7 +180,7 @@ if ($tab === 'timeinout') {
         SELECT EmployeeID, Department, EmployeeName, Category, ADate,
                MorningIn, AMLate, PMLate, Late1
         FROM View_ATtendanceTimeInTimeOut2
-        WHERE ADate BETWEEN '$dateFromSafe' AND '$dateToSafe' AND Late1 > 0 $dc
+        WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' AND Late1 > 0 $dc
         ORDER BY Late1 DESC
     "));
     foreach ($lateRows as $i => $r) { $lateRows[$i]['Rank'] = $i + 1; }
@@ -206,7 +225,7 @@ if ($tab === 'timeinout') {
             Department, Adate, Aday, AtimeIn, AtimeOut, Late, Position_held, Job_tittle,
             Category, Employee_Status, Branch, Area, CutOff, SetTime, Remarks
         FROM View_AttendanceRecord
-        WHERE Adate BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $extraFilters
+        WHERE CAST(Adate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $extraFilters
         ORDER BY Adate DESC, EmployeeName
     "));
 }
@@ -254,7 +273,7 @@ if ($tab === 'calendar') {
         $attStmt = sqlsrv_query($conn, "
             SELECT ADate, DayCount
             FROM View_Attendance_Record_Daily
-            WHERE EmployeeID = '$calEmpIdSafe' AND ADate BETWEEN '$dateFromSafe' AND '$dateToSafe'
+            WHERE EmployeeID = '$calEmpIdSafe' AND CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe'
         ");
         if ($attStmt) {
             while ($ar = sqlsrv_fetch_array($attStmt, SQLSRV_FETCH_ASSOC)) {
@@ -276,7 +295,7 @@ if ($tab === 'calendar') {
         $hrsStmt = sqlsrv_query($conn, "
             SELECT ADate, TotalHours, Late1
             FROM View_ATtendanceTimeInTimeOut2
-            WHERE EmployeeID = '$calEmpIdSafe' AND ADate BETWEEN '$dateFromSafe' AND '$dateToSafe'
+            WHERE EmployeeID = '$calEmpIdSafe' AND CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe'
         ");
         if ($hrsStmt) {
             while ($hr = sqlsrv_fetch_array($hrsStmt, SQLSRV_FETCH_ASSOC)) {
@@ -397,19 +416,21 @@ function tabUrl(string $t): string {
 function deptLabel(string $d): string {
     return $d !== '' ? htmlspecialchars($d) : 'All Departments';
 }
-// Work Status for the calendar cell — mirrors the JS workStatusBadge()
-// thresholds used on the Time In/Out tab:
-//   > 8.3          -> Overtime
-//   8.0 – 8.3      -> Regular
-//   > 4.0 and < 8  -> Undertime
-//   <= 4.0         -> Halfday
+// Work Status for the calendar cell — hours-only approximation (this view
+// has no per-punch AM/PM in/out data, so it can't apply the structural
+// Halfday/Incomplete rules used on the Time In/Out tab). Overtime threshold
+// kept in sync with workStatusBadge() below: >= 10 hrs.
+//   >= 10           -> Overtime
+//   8.0 – 9.99      -> Regular
+//   > 4.0 and < 8   -> Undertime
+//   <= 4.0          -> Halfday
 function calWorkStatusBadge($hours): string {
     if ($hours === null || $hours === '') return '';
     $h = (float)$hours;
-    if ($h > 8.3) {
+    if ($h >= 10) {
         return '<div class="att-cal-workstatus att-cal-ws-overtime" title="Overtime"><i class="bi bi-stopwatch" style="margin-right:.3rem;"></i>OT</div>';
     }
-    if ($h >= 8 && $h <= 8.3) {
+    if ($h >= 8 && $h < 10) {
         return '<div class="att-cal-workstatus att-cal-ws-regular" title="Regular"><i class="bi bi-check-circle-fill" style="margin-right:.3rem;"></i>Reg</div>';
     }
     if ($h > 4 && $h < 8) {
@@ -419,11 +440,29 @@ function calWorkStatusBadge($hours): string {
 }
 
 // JSON for JS (safe embed)
-$jsRows        = json_encode($rows,        JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-$jsLogRows     = json_encode($logRows,     JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-$jsLateRows    = json_encode($lateRows,    JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-$jsAbsentRows  = json_encode($absentRows,  JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-$jsGenRows     = json_encode($genRows,     JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+// JSON_INVALID_UTF8_SUBSTITUTE keeps one bad-byte row (e.g. mixed-collation
+// name from a view join) from nulling out the ENTIRE payload — without it,
+// json_encode() silently returns false, $jsRows prints blank, and the
+// <script> block below throws a syntax error that kills every renderTable()
+// call for ALL tabs (count badges stay server-rendered, but tbody stays empty).
+$jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE;
+
+function safeJsonEncode(array $data, int $flags, string $label, array &$debugLog) {
+    $json = json_encode($data, $flags);
+    if ($json === false) {
+        $debugLog['json_' . $label] = json_last_error_msg();
+        error_log("TWM attendance.php json_encode failed for [$label]: " . json_last_error_msg());
+        return '[]';
+    }
+    return $json;
+}
+
+$jsRows        = safeJsonEncode($rows,        $jsonFlags, 'rows',        $debugLog);
+$jsFieldRows   = safeJsonEncode($fieldRows,   $jsonFlags, 'fieldRows',   $debugLog);
+$jsLogRows     = safeJsonEncode($logRows,     $jsonFlags, 'logRows',     $debugLog);
+$jsLateRows    = safeJsonEncode($lateRows,    $jsonFlags, 'lateRows',    $debugLog);
+$jsAbsentRows  = safeJsonEncode($absentRows,  $jsonFlags, 'absentRows',  $debugLog);
+$jsGenRows     = safeJsonEncode($genRows,     $jsonFlags, 'genRows',     $debugLog);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -695,6 +734,12 @@ require_once __DIR__ . '/hr_nav.php';
     <span style="background:rgba(255,255,255,.25);border-radius:999px;padding:0 6px;font-size:.68rem;font-weight:700;"><?= count($rows) ?></span>
     <?php endif; ?>
   </a>
+  <a href="<?= tabUrl('fieldstaff') ?>" class="<?= $tab === 'fieldstaff' ? 'active' : '' ?>">
+    <i class="bi bi-signpost-split-fill"></i> Field Staff Time In / Out
+    <?php if ($tab === 'fieldstaff'): ?>
+    <span style="background:rgba(255,255,255,.25);border-radius:999px;padding:0 6px;font-size:.68rem;font-weight:700;"><?= count($fieldRows) ?></span>
+    <?php endif; ?>
+  </a>
   <a href="<?= tabUrl('devicelog') ?>" class="<?= $tab === 'devicelog' ? 'active' : '' ?>">
     <i class="bi bi-layers-fill"></i> Integrated Log
     <?php if ($tab === 'devicelog'): ?>
@@ -777,6 +822,60 @@ require_once __DIR__ . '/hr_nav.php';
     <i class="bi bi-layers-fill" style="font-size:1.2rem;color:#2563eb;"></i>
     Looking for per-punch detail (device, portal, biometric)? See the <a href="<?= tabUrl('devicelog') ?>" style="font-weight:600;">Integrated Log</a> tab.
   </div>
+</div>
+
+<?php elseif ($tab === 'fieldstaff'): ?>
+
+<div class="hr-table-card" style="margin-bottom:1rem;background:linear-gradient(135deg,#eff6ff,#f0f9ff);border:1px solid #bfdbfe;">
+  <div style="display:flex;align-items:center;gap:.6rem;padding:.25rem 0;font-size:.85rem;color:#1e40af;">
+    <i class="bi bi-info-circle-fill" style="font-size:1.3rem;color:#2563eb;"></i>
+    Single-punch Time In / Out for field-based staff, sourced from View_ATtendanceTimeInTimeOut_Field. Records with Category = "OP" (Office Personnel) are excluded.
+  </div>
+</div>
+
+<!-- ── Field Staff Time In/Out ────────────────────────────── -->
+<div class="hr-table-card">
+  <div class="att-cal-legend" style="border-top:none;">
+    <span><i class="bi bi-check-circle-fill" style="color:#16a34a;"></i> Present</span>
+    <span><i class="bi bi-x-circle-fill" style="color:#dc2626;"></i> Absent</span>
+    <span><i class="bi bi-stopwatch" style="color:#2563eb;"></i> Overtime</span>
+    <span><i class="bi bi-clock-fill" style="color:#ca8a04;"></i> Late</span>
+    <span><i class="bi bi-clock-fill" style="color:#7c3aed;"></i> Undertime</span>
+    <span><i class="bi bi-dash-circle-fill" style="color:#6b7280;"></i> Incomplete</span>
+    <span><i class="bi bi-circle-half" style="color:#f97316;"></i> Halfday</span>
+  </div>
+  <div class="hr-table-toolbar">
+    <div class="hr-table-title">
+      🧭 Field Staff Time In / Out
+      <span class="hr-table-count" id="fieldCount"><?= count($fieldRows) ?> records</span>
+    </div>
+    <div class="hr-table-actions">
+      <div class="hr-search-wrap">
+        <i class="bi bi-search"></i>
+        <input type="text" id="fieldSearch" placeholder="Search all records…" oninput="tableSearch('field')">
+      </div>
+      <button class="hr-btn hr-btn-ghost" onclick="exportCSV('field', 'field_staff_timeinout')">
+        <i class="bi bi-filetype-csv"></i> CSV
+      </button>
+      <button class="hr-btn hr-btn-ghost" onclick="printTable('field', 'Field Staff Time In / Out')">
+        <i class="bi bi-printer"></i> Print
+      </button>
+    </div>
+  </div>
+  <div class="hr-table-scroll">
+    <table class="att-table" id="fieldTable">
+      <thead>
+        <tr>
+          <th>Name</th><th>Department</th><th>Category</th><th>Date</th>
+          <th>Morning In</th><th>Afternoon Out</th><th>Time In</th><th>AM Late</th>
+          <th>Total Hours</th><th>Status</th><th>Day Count</th><th>Payroll Group</th>
+        </tr>
+      </thead>
+      <tbody id="fieldBody"></tbody>
+    </table>
+    <div id="fieldEmpty" class="hr-empty" style="display:none;"><span class="icon">📭</span><p>No records found.</p></div>
+  </div>
+  <div class="att-pagination" id="fieldPager"></div>
 </div>
 
 <?php elseif ($tab === 'devicelog'): ?>
@@ -1061,6 +1160,7 @@ require_once __DIR__ . '/hr_nav.php';
 // ── Data from PHP ──────────────────────────────────────────
 const DATA = {
     dev: <?= $jsRows ?>,
+    field: <?= $jsFieldRows ?>,
     log: <?= $jsLogRows ?>,
     lates: <?= $jsLateRows ?>,
     absent: <?= $jsAbsentRows ?>,
@@ -1071,7 +1171,7 @@ const PAGE_SIZE = 20;
 
 // Per-table state
 const state = {};
-['dev','log','lates','absent','gen'].forEach(id => {
+['dev','field','log','lates','absent','gen'].forEach(id => {
     state[id] = { page: 1, filtered: DATA[id] || [] };
 });
 
@@ -1101,7 +1201,7 @@ function lateMinsBadge(mins) {
     const m = parseFloat(mins) || 0;
     return m > 0
         ? `<span class="hr-badge hr-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>${m} min</span>`
-        : '<span class="hr-badge hr-badge-present">On Time</span>';
+        : '<span class="att-time">—</span>';
 }
 function dirBadge(dir) {
     dir = (dir||'').toLowerCase();
@@ -1120,52 +1220,74 @@ function statusBadge(icon, color, label) {
     return `<span class="hr-badge" style="background:${color}1a;color:${color};"><i class="bi ${icon}" style="margin-right:.35rem;"></i>${esc(label)}</span>`;
 }
 
-// Work Status — evaluated in priority order (most specific/definitive first):
-//   1. Absent    -> MorningIn, MorningOut, AfternoonIn, AfternoonOut all null
-//   2. Halfday   -> exactly one of AM/PM has no record at all
-//   3. Late      -> Total Late minutes > 0 (same source as the Total Late column)
-//   4. Overtime  -> TotalHours >= 9
-//   5. Present   -> TotalHours >= 8 (and < 9, already caught by Overtime)
-//   6. Undertime -> 5 < TotalHours < 8
-//   7. Incomplete-> everything else (TotalHours < 4, and the 4–5 hr gap)
-function workStatusBadge(totalHours, amIn, amOut, pmIn, pmOut, totalLate) {
-    const isEmpty = v => v === null || v === undefined || v === '';
-    const amMissing = isEmpty(amIn) && isEmpty(amOut);
-    const pmMissing = isEmpty(pmIn) && isEmpty(pmOut);
+// ── Work Status: now sourced directly from the view's Status column ──
+// (View_ATtendanceTimeInTimeOut2_Override.Status) via fieldStatusBadge()
+// below, same as the Field Staff tab already did. Client-side computation
+// disabled in favor of that — kept here, commented out, in case we need
+// to revert or compare against it later.
+//
+// NOTE: this block was ALSO missing its closing brace before `esc()`,
+// which nested esc/sourceBadge/rowDev/fieldStatusBadge/rowField/RENDERERS
+// etc. all inside workStatusBadge()'s scope and broke the whole script
+// (that's why the table wasn't rendering even though the count showed).
+// Brace is fixed below now that it's inert.
+//
+// function workStatusBadge(totalHours, amIn, amOut, pmIn, pmOut, totalLate) {
+//     const isEmpty = v => v === null || v === undefined || v === '';
+//     const amIn_missing  = isEmpty(amIn);
+//     const amOut_missing = isEmpty(amOut);
+//     const pmIn_missing  = isEmpty(pmIn);
+//     const pmOut_missing = isEmpty(pmOut);
+//
+//     const amFull  = !amIn_missing && !amOut_missing;   // AM in AND out present
+//     const amEmpty = amIn_missing && amOut_missing;      // AM in AND out both missing
+//     const pmFull  = !pmIn_missing && !pmOut_missing;   // PM in AND out present
+//     const pmEmpty = pmIn_missing && pmOut_missing;      // PM in AND out both missing
+//
+//     // 1. Absent — nothing punched at all
+//     if (amEmpty && pmEmpty) {
+//         return statusBadge('bi-x-circle-fill', '#dc2626', 'Absent');
+//     }
+//
+//     // 2. Halfday — exactly one side fully worked & the other fully empty,
+//     //    OR total hours worked is under 5 (even with all 4 punches present)
+//     const hHalf = parseFloat(totalHours);
+//     if ((amFull && pmEmpty) || (pmFull && amEmpty) || (!isNaN(hHalf) && hHalf < 5)) {
+//         return statusBadge('bi-circle-half', '#f97316', 'Halfday');
+//     }
+//
+//     // 3. Incomplete — any remaining missing punch (partial AM and/or partial PM)
+//     if (amIn_missing || amOut_missing || pmIn_missing || pmOut_missing) {
+//         return statusBadge('bi-dash-circle-fill', '#6b7280', 'Incomplete');
+//     }
+//
+//     // From here, all four punches are present and total hours >= 5.
+//     const h = parseFloat(totalHours);
+//
+//     if (isNaN(h)) {
+//         return '<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">—</span>';
+//     }
+//
+//     if (h >= 10) {
+//         return statusBadge('bi-stopwatch', '#2563eb', 'Overtime');
+//     }
+//
+//     if (h >= 7.9) {
+//         return statusBadge('bi-check-circle-fill', '#16a34a', 'Present');
+//     }
+//
+//     if (h >= 5) {
+//         return statusBadge('bi-clock-fill', '#7c3aed', 'Undertime');
+//     }
+//
+//     // Late — fallback only; unreachable in practice since Halfday/Undertime/
+//     // Present/Overtime now cover the full hours range. Kept in case totalHours
+//     // logic changes later.
+//     if ((parseFloat(totalLate) || 0) > 0) {
+//         return statusBadge('bi-clock-fill', '#ca8a04', 'Late');
+//     }
+// }
 
-    if (amMissing && pmMissing) {
-        return statusBadge('bi-x-circle-fill', '#dc2626', 'Absent');
-    }
-
-    if (amMissing || pmMissing) {
-        return statusBadge('bi-dash-circle-fill', '#6b7280', 'Incomplete');
-        
-    }
-
-    if ((parseFloat(totalLate) || 0) > 0) {
-        return statusBadge('bi-clock-fill', '#ca8a04', 'Late');
-    }
-
-    const h = parseFloat(totalHours);
-
-    if (isNaN(h)) {
-        return '<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">—</span>';
-    }
-
-    if (h >= 9) {
-        return statusBadge('bi-stopwatch', '#2563eb', 'Overtime');
-    }
-
-    if (h >= 7.9) {
-        return statusBadge('bi-check-circle-fill', '#16a34a', 'Present');
-    }
-
-    if (h > 5 && h < 7.9) {
-        return statusBadge('bi-clock-fill', '#7c3aed', 'Undertime');
-    }
-    return statusBadge('bi-circle-half', '#f97316', 'Halfday');
-    
-}
 function esc(s) {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
@@ -1197,7 +1319,48 @@ function rowDev(r) {
       <td>${lateMinsBadge(r.PMLate)}</td>
       <td>${fmtHours(r.TotalHours)}</td>
       <td>${lateMinsBadge(r.Late1)}</td>
-      <td>${workStatusBadge(r.TotalHours, r.MorningIn, r.MorningOut, r.AfternoonIn, r.AfternoonOut, r.Late1)}</td>
+      <td>${fieldStatusBadge(r.Status)}</td>
+    </tr>`;
+}
+// Work Status badge — maps the DB view's own Status string onto a consistent
+// icon/color scheme (Absent/Halfday/Late/Overtime/Present/Undertime/
+// Incomplete). Originally built for the Field Staff tab (View_ATtendanceTimeInTimeOut_Field
+// returns Status directly); now also used by the Device tab since
+// View_ATtendanceTimeInTimeOut2_Override returns Status too — so Work
+// Status is sourced from the DB on both tabs instead of computed client-side.
+const FIELD_STATUS_MAP = {
+    absent:     ['bi-x-circle-fill',      '#dc2626', 'Absent'],
+    halfday:    ['bi-circle-half',        '#f97316', 'Halfday'],
+    'half day': ['bi-circle-half',        '#f97316', 'Halfday'],
+    late:       ['bi-clock-fill',         '#ca8a04', 'Late'],
+    overtime:   ['bi-stopwatch',          '#2563eb', 'Overtime'],
+    present:    ['bi-check-circle-fill',  '#16a34a', 'Present'],
+    undertime:  ['bi-clock-fill',         '#7c3aed', 'Undertime'],
+    incomplete: ['bi-dash-circle-fill',   '#6b7280', 'Incomplete'],
+};
+function fieldStatusBadge(status) {
+    const raw = String(status||'').trim();
+    if (!raw) return '<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">—</span>';
+    const key = raw.toLowerCase();
+    const entry = FIELD_STATUS_MAP[key];
+    if (!entry) return `<span class="hr-badge" style="background:#f1f5f9;color:#64748b;">${esc(raw)}</span>`; // unrecognized status text — show as-is, uncolored
+    const [icon, color, label] = entry;
+    return statusBadge(icon, color, label);
+}
+function rowField(r) {
+    return `<tr>
+      <td style="font-weight:600">${esc(r.EmployeeName||'—')}</td>
+      <td>${esc(r.Department||'—')}</td>
+      <td>${esc(r.Category||'—')}</td>
+      <td>${fmtDate(r.ADate)}</td>
+      <td>${fmtTime(r.MorningIn)}</td>
+      <td>${fmtTime(r.AfternoonOut)}</td>
+      <td>${fmtTime(r.TimeIn)}</td>
+      <td>${lateMinsBadge(r.AMLate)}</td>
+      <td>${fmtHours(r.TotalHours)}</td>
+      <td>${fieldStatusBadge(r.Status)}</td>
+      <td>${esc(r.DayCount ?? '—')}</td>
+      <td>${esc(r.PayrollGroup||'—')}</td>
     </tr>`;
 }
 function rowLog(r) {
@@ -1269,7 +1432,7 @@ function rowGen(r) {
     </tr>`;
 }
 
-const RENDERERS = { dev: rowDev, log: rowLog, lates: rowLates, absent: rowAbsent, gen: rowGen };
+const RENDERERS = { dev: rowDev, field: rowField, log: rowLog, lates: rowLates, absent: rowAbsent, gen: rowGen };
 
 // ── Render a table page ────────────────────────────────────
 function renderTable(id) {
@@ -1406,6 +1569,8 @@ function printTable(id, title) {
 document.addEventListener('DOMContentLoaded', () => {
 <?php if ($tab === 'timeinout'): ?>
     renderTable('dev');
+<?php elseif ($tab === 'fieldstaff'): ?>
+    renderTable('field');
 <?php elseif ($tab === 'devicelog'): ?>
     renderTable('log');
 <?php elseif ($tab === 'toplates'): ?>

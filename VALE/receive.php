@@ -38,8 +38,11 @@ if ($current['Status'] !== 'Approved') {
 }
 
 // Only the same person who approved this request is allowed to mark it received
-if ($current['ApprovedByID'] != $_SESSION['EmployeeID']) {
-    echo json_encode(['success' => false, 'message' => 'Only the employee who approved this request can mark it as received.']);
+if (trim((string)$current['ApprovedByID']) !== trim((string)$_SESSION['EmployeeID'])) {
+    echo json_encode([
+        'success' => false,
+        'message' => 'DEBUG mismatch — ApprovedByID: [' . $current['ApprovedByID'] . '] SessionEmployeeID: [' . $_SESSION['EmployeeID'] . ']'
+    ]);
     exit;
 }
 
@@ -54,7 +57,7 @@ $params = [$_SESSION['UserID'], $id];
 $stmt = sqlsrv_query($conn, $sql, $params);
 
 if ($stmt === false) {
-    echo json_encode(['success' => false, 'message' => 'Database error occurred.']);
+    echo json_encode(['success' => false, 'message' => 'DB error: ' . print_r(sqlsrv_errors(), true)]);
     exit;
 }
 

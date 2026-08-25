@@ -15,9 +15,9 @@ $params = [$EmployeeID];
 if ($statusFilter !== 'All') { $where .= " AND ca.Status = ?"; $params[] = $statusFilter; }
 
 $sql = "SELECT ca.CashAdvanceID, ca.Amount, ca.Reason, ca.Status, ca.Department, ca.Branch,
-               CONVERT(varchar(10), ca.RequestDate,  107) AS RequestDate,
-               CONVERT(varchar(10), ca.ApprovedDate, 107) AS ApprovedDate,
-               CONVERT(varchar(10), ca.ReceivedDate, 107) AS ReceivedDate,
+               CONVERT(varchar(20), ca.RequestDate,  107) AS RequestDate,
+               CONVERT(varchar(20), ca.ApprovedDate, 107) AS ApprovedDate,
+               CONVERT(varchar(20), ca.ReceivedDate, 107) AS ReceivedDate,
                rec.FirstName  + ' ' + rec.LastName  AS RecommendByName,
                appr.FirstName + ' ' + appr.LastName AS ApprovedByName
         FROM TBL_CashAdvance ca

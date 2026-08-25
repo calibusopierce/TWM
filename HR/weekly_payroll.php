@@ -45,6 +45,9 @@ function dc(string $deptSafe, string $col = 'Department'): string {
 function eqOrAll(string $valSafe, string $col): string {
     return $valSafe !== '' ? "AND RTRIM($col) = '$valSafe'" : '';
 }
+function csEq(string $dateSafe): string {
+    return $dateSafe !== '' ? "AND CAST(CutoffStart AS DATE) = '$dateSafe'" : '';
+}
 
 // ── Dropdown option lists — dept-scoped for locked-department users ──
 // Sourced from View_Payroll_Weekly_DayCount (canonical dept/category/
@@ -55,20 +58,107 @@ if ($canFilterDept) {
     if ($dStmt) { while ($r = sqlsrv_fetch_array($dStmt, SQLSRV_FETCH_ASSOC)) { $deptList[] = $r['Department']; } sqlsrv_free_stmt($dStmt); }
 }
 
+// ── Single combined dropdown-source query — replaces 4 separate
+// DISTINCT scans (category/pgroup/year/week) against the view with
+// ONE query. Category/PGroup/Year lists stay dept-scoped only (same
+// behavior as before); the Week list additionally narrows by
+// Category/PGroup/Year/Month, done in PHP below from this same
+// result set instead of hitting the DB a second time.
+$dropdownRows = [];
+$ddStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS Category, RTRIM(PayrollGroup) AS PayrollGroup, CutoffStart, PayrollYear, RTRIM(MonthName) AS MonthName, RTRIM(CutOff) AS CutOff
+    FROM View_Payroll_Weekly_DayCount
+    WHERE CutoffStart IS NOT NULL " . dc($filterDeptSafe));
+if ($ddStmt) {
+    while ($r = sqlsrv_fetch_array($ddStmt, SQLSRV_FETCH_ASSOC)) {
+        $cs = $r['CutoffStart'];
+        $dropdownRows[] = [
+            'Category'     => $r['Category'],
+            'PayrollGroup' => $r['PayrollGroup'],
+            'CutoffStart'  => ($cs instanceof DateTime) ? $cs->format('Y-m-d') : (string)$cs,
+            'PayrollYear'  => $r['PayrollYear'],
+            'MonthName'    => $r['MonthName'],
+            'CutOff'       => $r['CutOff'],
+        ];
+    }
+    sqlsrv_free_stmt($ddStmt);
+}
+
 $categoryList = [];
-$catStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS V FROM View_Payroll_Weekly_DayCount WHERE Category IS NOT NULL AND Category <> '' " . dc($filterDeptSafe) . " ORDER BY V");
-if ($catStmt) { while ($r = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC)) { $categoryList[] = $r['V']; } sqlsrv_free_stmt($catStmt); }
+foreach ($dropdownRows as $r) {
+    if ($r['Category'] !== null && $r['Category'] !== '' && !in_array($r['Category'], $categoryList, true)) {
+        $categoryList[] = $r['Category'];
+    }
+}
+sort($categoryList);
 
 $pGroupList = [];
-$pgStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(PayrollGroup) AS V FROM View_Payroll_Weekly_DayCount WHERE PayrollGroup IS NOT NULL AND PayrollGroup <> '' " . dc($filterDeptSafe) . " ORDER BY V");
-if ($pgStmt) { while ($r = sqlsrv_fetch_array($pgStmt, SQLSRV_FETCH_ASSOC)) { $pGroupList[] = $r['V']; } sqlsrv_free_stmt($pgStmt); }
+foreach ($dropdownRows as $r) {
+    if ($r['PayrollGroup'] !== null && $r['PayrollGroup'] !== '' && !in_array($r['PayrollGroup'], $pGroupList, true)) {
+        $pGroupList[] = $r['PayrollGroup'];
+    }
+}
+sort($pGroupList);
 
-// Year list derived from CutoffStart (these views have no PayrollYear column)
+// Year list — uses the view's own PayrollYear column directly (added
+// alongside Day7/MonthName) instead of parsing CutoffStart's calendar
+// year, since a cutoff's CutoffStart date can fall in a different
+// calendar month/year than the payroll period it's actually reported under.
 $yearList = [];
-$yStmt = sqlsrv_query($conn, "SELECT DISTINCT YEAR(CutoffStart) AS V FROM View_Payroll_Weekly_DayCount WHERE CutoffStart IS NOT NULL " . dc($filterDeptSafe) . " ORDER BY V DESC");
-if ($yStmt) { while ($r = sqlsrv_fetch_array($yStmt, SQLSRV_FETCH_ASSOC)) { $yearList[] = $r['V']; } sqlsrv_free_stmt($yStmt); }
+foreach ($dropdownRows as $r) {
+    $y = (int) ($r['PayrollYear'] ?? 0);
+    if ($y > 0 && !in_array($y, $yearList, true)) { $yearList[] = $y; }
+}
+rsort($yearList);
 
 $monthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
+
+// ── Week lists — GROUP-SCOPED (Mon-Sat vs Sat-Fri), narrowed from
+// $dropdownRows by Category/PGroup/Year/Month, then split by the same
+// weekday rule used later to split the fetched rows (CutoffStart on a
+// Saturday => Sat-Fri group, everything else => Mon-Sat group). Actual
+// filtering happens client-side (MS_WEEKS/SF_WEEKS + weekFilterChange()
+// in the script below) so it can never over-narrow the other tab.
+// Month name resolved from the numeric Month filter, for matching
+// against the view's MonthName column (case-insensitive, trimmed).
+$filterMonthName = ($filterMonth !== '') ? ($monthNames[(int)$filterMonth] ?? '') : '';
+
+function buildWeekList(array $rows, string $group, string $cat, string $pg, string $yr, string $monthName): array {
+    $dates = [];
+    foreach ($rows as $r) {
+        if ($cat !== '' && strcasecmp($r['Category'] ?? '', $cat) !== 0) { continue; }
+        if ($pg  !== '' && strcasecmp($r['PayrollGroup'] ?? '', $pg) !== 0) { continue; }
+        // Filtered against the view's own PayrollYear/MonthName rather
+        // than CutoffStart's calendar date — a cutoff's CutoffStart can
+        // land in a different calendar month/year than the payroll
+        // period it's actually reported under (e.g. a Sat-Fri cutoff
+        // starting the last Saturday of July but belonging to August).
+        if ($yr !== '' && (string)($r['PayrollYear'] ?? '') !== (string)$yr) { continue; }
+        if ($monthName !== '' && strcasecmp(trim((string)($r['MonthName'] ?? '')), $monthName) !== 0) { continue; }
+        $rowGroup = (trim((string)($r['CutOff'] ?? '')) === 'Sat-Fri') ? 'sf' : 'ms'; // same rule as weeklyGroup()
+        if ($rowGroup !== $group) { continue; }
+        $cs = $r['CutoffStart'];
+        $ts = strtotime($cs);
+        if ($ts === false) { continue; }
+        if (!in_array($cs, $dates, true)) { $dates[] = $cs; }
+    }
+    sort($dates);
+
+    $list = [];
+    $idx = 1;
+    foreach ($dates as $dateStr) {
+        $ts = strtotime($dateStr);
+        if ($ts === false) { continue; }
+        $isSat = ((int)date('N', $ts) === 6);
+        $endTs = $isSat ? strtotime('+6 days', $ts) : strtotime('+5 days', $ts);
+        $label = 'Week ' . $idx . ' (' . date('M j', $ts) . '–' . date('j', $endTs) . ')';
+        $list[] = ['idx' => $idx, 'date' => $dateStr, 'label' => $label];
+        $idx++;
+    }
+    return $list;
+}
+
+$msWeekList = buildWeekList($dropdownRows, 'ms', $filterCategory, $filterPGroup, $filterYear, $filterMonthName);
+$sfWeekList = buildWeekList($dropdownRows, 'sf', $filterCategory, $filterPGroup, $filterYear, $filterMonthName);
 
 // ── Main queries ─────────────────────────────────────────
 // Attendance = View_Payroll_Weekly_DayCount, Lates = View_Payroll_Weekly_Late.
@@ -76,20 +166,33 @@ $monthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'Jun
 // since neither view carries a PayrollYear/PayrollMonth column.
 $debugLog = [];
 
-function weeklyWhere(string $deptSafe, string $categorySafe, string $pgroupSafe, string $yearSafe, string $monthSafe, string $searchSafe): string {
+// Shared WHERE builder — View_Payroll_Weekly_Late now carries the same
+// PayrollYear/MonthName/Day7 columns as View_Payroll_Weekly_DayCount
+// (confirmed), so both Attendance and Lates use identical filter logic.
+// Filters by the view's own PayrollYear/MonthName rather than
+// YEAR(CutoffStart)/MONTH(CutoffStart): a cutoff's CutoffStart date can
+// fall in the PREVIOUS calendar month (e.g. CutoffStart = July 25 for a
+// cutoff whose payroll period is August) — filtering by the raw
+// calendar date silently excluded those rows whenever a Month filter
+// was applied.
+function weeklyWhere(string $deptSafe, string $categorySafe, string $pgroupSafe, string $yearSafe, string $monthNameSafe, string $searchSafe): string {
     return "WHERE 1=1
           " . dc($deptSafe) . "
           " . eqOrAll($categorySafe, 'Category') . "
           " . eqOrAll($pgroupSafe, 'PayrollGroup') . "
-          " . ($yearSafe  !== '' ? "AND YEAR(CutoffStart) = '$yearSafe'"  : '') . "
-          " . ($monthSafe !== '' ? "AND MONTH(CutoffStart) = '$monthSafe'" : '') . "
-          " . ($searchSafe !== '' ? "AND EmployeeName LIKE '%$searchSafe%'" : '');
+          " . ($yearSafe      !== '' ? "AND PayrollYear = '$yearSafe'" : '') . "
+          " . ($monthNameSafe !== '' ? "AND RTRIM(MonthName) = '$monthNameSafe'" : '') . "
+          " . ($searchSafe    !== '' ? "AND EmployeeName LIKE '%$searchSafe%'" : '');
 }
-$whereClause = weeklyWhere($filterDeptSafe, $filterCategorySafe, $filterPGroupSafe, $filterYearSafe, $filterMonthSafe, $searchNameSafe);
+$filterMonthNameSafe = str_replace("'", "''", $filterMonthName);
+// NOTE: Week filtering happens client-side, per group (Mon-Sat vs
+// Sat-Fri), so picking a week on one tab can never wipe out the other
+// tab's rows. See MS_WEEKS / SF_WEEKS / weekFilterChange() below.
+$whereClause = weeklyWhere($filterDeptSafe, $filterCategorySafe, $filterPGroupSafe, $filterYearSafe, $filterMonthNameSafe, $searchNameSafe);
 
 $sqlAtt = "
     SELECT Department, Category, PayrollGroup, EmployeeName, CutoffStart, CutOff,
-           Day1, Day2, Day3, Day4, Day5, Day6, Present, Absent, HalfDay, TotalDays
+           Day1, Day2, Day3, Day4, Day5, Day6, Day7, Present, Absent, HalfDay, TotalDays
     FROM View_Payroll_Weekly_DayCount
     $whereClause
     ORDER BY CutoffStart DESC, EmployeeName ASC
@@ -99,7 +202,7 @@ if ($stmtAtt === false) { $debugLog['weekly_payroll_att'] = sqlsrv_errors(); }
 
 $sqlLate = "
     SELECT Department, Category, PayrollGroup, EmployeeName, CutoffStart, CutOff, MonthName, Week,
-           Day1, Day2, Day3, Day4, Day5, Day6, Present, Absent, HalfDay, TotalDays, TotalLate
+           Day1, Day2, Day3, Day4, Day5, Day6, Day7, Present, Absent, HalfDay, TotalDays, TotalLate
     FROM View_Payroll_Weekly_Late
     $whereClause
     ORDER BY CutoffStart DESC, EmployeeName ASC
@@ -124,27 +227,22 @@ $attRows  = fetchRows($stmtAtt);
 $lateRows = fetchRows($stmtLate);
 
 // ── Split each view's rows into Mon-Sat / Sat-Fri groups ──────────
-// Weekly cutoffs run exactly 6 working days with Sunday excluded from
-// the schema entirely (only Day1..Day6 columns exist — unlike the
-// semi-monthly view, there's no Sunday slot to backfill/mark DAY OFF).
-// The split is driven off CutoffStart's weekday rather than parsing
-// [CutOff] text, so it stays correct regardless of what that column's
-// display text says: CutoffStart falling on a Monday => Mon-Sat cutoff
-// (Day1..Day6 = Mon..Sat), CutoffStart falling on a Saturday => Sat-Fri
-// cutoff (Day1..Day6 = Sat, Mon, Tue, Wed, Thu, Fri — Sunday skipped).
-// Anything that doesn't land on either weekday falls back to Mon-Sat
+// Grouping is keyed off the view's own [CutOff] column, which holds
+// the exact literal 'Mon-Sat' or 'Sat-Fri' (confirmed via
+// `SELECT DISTINCT RTRIM(CutOff) FROM View_Payroll_Weekly_DayCount`).
+// This replaces the earlier CutoffStart-weekday guess, which silently
+// misclassified/dropped rows whenever a cutoff's start date landed on
+// an unexpected weekday relative to its actual payroll period.
+// Anything that doesn't match either literal falls back to Mon-Sat
 // rather than being silently dropped.
-function weeklyGroup(string $cutoffStart): string {
-    if ($cutoffStart === '') { return 'ms'; }
-    $ts = strtotime($cutoffStart);
-    if ($ts === false) { return 'ms'; }
-    return ((int)date('N', $ts) === 6) ? 'sf' : 'ms'; // ISO-8601: 6 = Saturday
+function weeklyGroup(string $cutOff): string {
+    return (trim($cutOff) === 'Sat-Fri') ? 'sf' : 'ms';
 }
 
 function splitWeekly(array $rows): array {
     $out = ['ms' => [], 'sf' => []];
     foreach ($rows as $r) {
-        $out[weeklyGroup($r['CutoffStart'] ?? '')][] = $r;
+        $out[weeklyGroup($r['CutOff'] ?? '')][] = $r;
     }
     return $out;
 }
@@ -230,6 +328,23 @@ function deptLabel(string $d): string {
 </style>
 </head>
 <body>
+<?php
+// TEMP DIAGNOSTIC — remove once Sat-Fri empty-tab issue is confirmed fixed.
+$diag = [
+    'attRows_count'    => count($attRows),
+    'attRows_cutoffs'  => array_values(array_unique(array_map(fn($r) => $r['CutoffStart'] ?? null, $attRows))),
+    'attRows_weekdays' => array_map(function($cs) {
+        $ts = strtotime($cs);
+        return $cs . ' => ' . ($ts ? date('D (N)', $ts) : 'invalid');
+    }, array_values(array_unique(array_map(fn($r) => $r['CutoffStart'] ?? '', $attRows)))),
+    'attSplit_ms_count' => count($attSplit['ms']),
+    'attSplit_sf_count' => count($attSplit['sf']),
+    'sfWeekList'        => $sfWeekList,
+];
+?>
+<!-- TWM DIAGNOSTIC (temporary — remove once Sat-Fri issue is confirmed fixed):
+<?= htmlspecialchars(print_r($diag, true)) ?>
+-->
 <?php if (!empty($debugLog)): ?>
 <!-- TWM DEBUG (remove once fixed):
 <?= htmlspecialchars(print_r($debugLog, true)) ?>
@@ -309,11 +424,18 @@ require_once __DIR__ . '/hr_nav.php';
 
     <div class="hr-filter-group">
       <label>Month</label>
-      <select name="month" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:130px;">
+      <select name="month" onchange="this.form.submit()" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:130px;">
         <option value="">— All —</option>
         <?php foreach ($monthNames as $num => $label): ?>
         <option value="<?= $num ?>" <?= ((string)$filterMonth === (string)$num) ? 'selected' : '' ?>><?= $label ?></option>
         <?php endforeach; ?>
+      </select>
+    </div>
+
+    <div class="hr-filter-group">
+      <label>Week <span id="weekGroupLabel" style="font-weight:400;color:var(--text-muted,#64748b);">(Mon-Sat)</span></label>
+      <select id="weekFilter" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:170px;" onchange="weekFilterChange()">
+        <option value="0">— All Weeks —</option>
       </select>
     </div>
 
@@ -344,10 +466,10 @@ function renderWpThead(array $dayHeaders, bool $hasLate): string {
 }
 
 $wpTabs = [
-    'msAtt'  => ['label' => 'Cutoff Mon-Sat Attendance', 'dayHeaders' => ['Mon','Tue','Wed','Thu','Fri','Sat'], 'hasLate' => false],
-    'sfAtt'  => ['label' => 'Cutoff Sat-Fri Attendance',  'dayHeaders' => ['Sat','Mon','Tue','Wed','Thu','Fri'], 'hasLate' => false],
-    'msLate' => ['label' => 'Cutoff Mon-Sat Lates',       'dayHeaders' => ['Mon','Tue','Wed','Thu','Fri','Sat'], 'hasLate' => true],
-    'sfLate' => ['label' => 'Sat-Fri Lates',               'dayHeaders' => ['Sat','Mon','Tue','Wed','Thu','Fri'], 'hasLate' => true],
+    'msAtt'  => ['label' => 'Cutoff Mon-Sat Attendance', 'dayHeaders' => ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], 'hasLate' => false],
+    'sfAtt'  => ['label' => 'Cutoff Sat-Fri Attendance',  'dayHeaders' => ['Sat','Sun','Mon','Tue','Wed','Thu','Fri'], 'hasLate' => false],
+    'msLate' => ['label' => 'Cutoff Mon-Sat Lates',       'dayHeaders' => ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], 'hasLate' => true],
+    'sfLate' => ['label' => 'Sat-Fri Lates',               'dayHeaders' => ['Sat','Sun','Mon','Tue','Wed','Thu','Fri'], 'hasLate' => true],
 ];
 ?>
 
@@ -401,14 +523,70 @@ $wpTabs = [
 const DATA = <?= $jsRows ?>; // { msAtt:[...], sfAtt:[...], msLate:[...], sfLate:[...] }
 const PAGE_SIZE = 20;
 const TAB_META = {
-    msAtt:  { label: 'Cutoff Mon-Sat Attendance', hasLate: false },
-    sfAtt:  { label: 'Cutoff Sat-Fri Attendance',  hasLate: false },
-    msLate: { label: 'Cutoff Mon-Sat Lates',       hasLate: true  },
-    sfLate: { label: 'Sat-Fri Lates',               hasLate: true  },
+    msAtt:  { label: 'Cutoff Mon-Sat Attendance', hasLate: false, group: 'ms' },
+    sfAtt:  { label: 'Cutoff Sat-Fri Attendance',  hasLate: false, group: 'sf' },
+    msLate: { label: 'Cutoff Mon-Sat Lates',       hasLate: true,  group: 'ms' },
+    sfLate: { label: 'Sat-Fri Lates',               hasLate: true,  group: 'sf' },
+};
+// Day-column render order per group. ms: Day1..Day7 = Mon..Sun, shown
+// as-is. sf: Day1..Day6 = Sat,Mon,Tue,Wed,Thu,Fri and Day7 = Sun, but
+// displayed with Day7 moved right after Day1 so the header reads
+// Sat, Sun, Mon, Tue, Wed, Thu, Fri instead of the raw column order.
+const DAY_ORDER = {
+    ms: [1, 2, 3, 4, 5, 6, 7],
+    sf: [1, 2, 3, 4, 5, 6, 7],
 };
 const TAB_IDS = Object.keys(TAB_META);
+const MS_WEEKS = <?= json_encode($msWeekList) ?>;
+const SF_WEEKS = <?= json_encode($sfWeekList) ?>;
+const GROUP_WEEKS = { ms: MS_WEEKS, sf: SF_WEEKS };
+const GROUP_LABEL = { ms: 'Mon-Sat', sf: 'Sat-Fri' };
+let activeGroup = 'ms';
+
 const state = {};
-TAB_IDS.forEach(id => { state[id] = { filtered: DATA[id] || [], page: 1 }; });
+TAB_IDS.forEach(id => { state[id] = { filtered: DATA[id] || [], page: 1, weekDate: '', search: '' }; });
+
+// Rebuilds a tab's filtered rows from scratch (week + search combined)
+// so the two filters compose correctly instead of clobbering each other.
+function applyFilters(id) {
+    const s = state[id];
+    let rows = DATA[id] || [];
+    if (s.weekDate) { rows = rows.filter(r => (r.CutoffStart || '') === s.weekDate); }
+    if (s.search) {
+        const q = s.search;
+        rows = rows.filter(r => Object.values(r).some(v => String(v||'').toLowerCase().includes(q)));
+    }
+    s.filtered = rows;
+    s.page = 1;
+    renderTable(id);
+}
+
+// Swaps #weekFilter's options to the given group's week list and resets
+// both tabs in that group to "All Weeks" — called on load + tab switch.
+function loadWeekFilterForGroup(group) {
+    activeGroup = group;
+    const sel = document.getElementById('weekFilter');
+    const label = document.getElementById('weekGroupLabel');
+    if (label) label.textContent = '(' + GROUP_LABEL[group] + ')';
+    if (!sel) return;
+    const weeks = GROUP_WEEKS[group] || [];
+    sel.innerHTML = '<option value="0">— All Weeks —</option>' +
+        weeks.map(w => `<option value="${esc(w.date)}">${esc(w.label)}</option>`).join('');
+    sel.value = '0';
+    TAB_IDS.filter(id => TAB_META[id].group === group).forEach(id => {
+        state[id].weekDate = '';
+        applyFilters(id);
+    });
+}
+
+function weekFilterChange() {
+    const sel = document.getElementById('weekFilter');
+    const date = sel && sel.value !== '0' ? sel.value : '';
+    TAB_IDS.filter(id => TAB_META[id].group === activeGroup).forEach(id => {
+        state[id].weekDate = date;
+        applyFilters(id);
+    });
+}
 
 // Currently-selected filter values, for the print/export header block
 // (Department/Category/Payroll Group are dropped as table columns
@@ -468,7 +646,7 @@ function dayCell(raw) {
 
 function rowWp(r, id) {
     const meta = TAB_META[id];
-    const dayCells = [1,2,3,4,5,6].map(n => dayCell(r['Day' + n])).join('');
+    const dayCells = DAY_ORDER[meta.group].map(n => dayCell(r['Day' + n])).join('');
     let extraHead = '';
     let extraTail = '';
     if (meta.hasLate) {
@@ -552,12 +730,8 @@ function goPage(id, p) {
 }
 function tableSearch(id) {
     const q = (document.getElementById(id + 'Search')?.value || '').toLowerCase().trim();
-    const all = DATA[id] || [];
-    state[id].filtered = q ? all.filter(r =>
-        Object.values(r).some(v => String(v||'').toLowerCase().includes(q))
-    ) : all;
-    state[id].page = 1;
-    renderTable(id);
+    state[id].search = q;
+    applyFilters(id);
 }
 // Exports the on-screen grid (not raw JSON keys) to a real Excel file —
 // same day columns and A/HD/Present color-coding as the page, opened
@@ -663,9 +837,12 @@ function switchWpTab(id) {
         document.getElementById('wpTabBtn-' + other).classList.toggle('active', other === id);
         document.getElementById('wpPanel-' + other).classList.toggle('active', other === id);
     });
+    const group = TAB_META[id].group;
+    if (group !== activeGroup) { loadWeekFilterForGroup(group); }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    loadWeekFilterForGroup('ms');
     TAB_IDS.forEach(id => renderTable(id));
 });
 </script>

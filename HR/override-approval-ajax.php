@@ -96,10 +96,14 @@ if ($action === 'get_overrides') {
                 o.[Override_Type], o.[HR_Status], o.[HR_EmployeeID], o.[HR_Approved_DateTimeInput],
                 o.[UserInput], o.[DateTimeInput],
                 e.[FirstName], e.[MiddleName], e.[LastName], e.[Department],
-                t.[Type_Name], t.[Category] AS TypeCategory
+                t.[Type_Name], t.[Category] AS TypeCategory,
+                v.[MorningIn] AS OrigMorningIn, v.[MorningOut] AS OrigMorningOut,
+                v.[AfternoonIn] AS OrigAfternoonIn, v.[AfternoonOut] AS OrigAfternoonOut
             FROM [dbo].[TBL_Attendance_Override] o
             LEFT JOIN [dbo].[TBL_HREmployeeList] e ON e.[EmployeeID] = o.[EmployeeID]
             LEFT JOIN [dbo].[Tbl_Override_Type] t ON CAST(t.[TypeID] AS NVARCHAR(50)) = o.[Override_Type]
+            LEFT JOIN [dbo].[View_ATtendanceTimeInTimeOut2_Override] v
+                ON v.[EmployeeID] = o.[EmployeeID] AND CAST(v.[ADate] AS DATE) = CAST(o.[ADate] AS DATE)
             WHERE o.[HR_Status] = ?
             ORDER BY o.[DateTimeInput] DESC";
 
@@ -118,7 +122,25 @@ if ($action === 'get_overrides') {
         $mi   = $mid !== '' ? mb_substr($mid, 0, 1) . '. ' : '';
         $name = trim(($r['FirstName'] ?? '') . ' ' . $mi . ($r['LastName'] ?? ''));
 
-        $hasCorrection = trim($r['ShiftPart'] ?? '') !== '' || trim($r['Direction'] ?? '') !== '';
+        $origAmIn  = opa_fmt_time($r['OrigMorningIn']);
+        $origAmOut = opa_fmt_time($r['OrigMorningOut']);
+        $origPmIn  = opa_fmt_time($r['OrigAfternoonIn']);
+        $origPmOut = opa_fmt_time($r['OrigAfternoonOut']);
+        $atimeIn    = opa_fmt_time($r['AtimeIn']);
+        $atimeOutAM = opa_fmt_time($r['AtimeOutAM']);
+        $atimeInPM  = opa_fmt_time($r['AtimeInPM']);
+        $atimeOut   = opa_fmt_time($r['AtimeOut']);
+
+        $punchChecks = [
+            ['label' => 'AM In',  'orig' => $origAmIn,  'now' => $atimeIn],
+            ['label' => 'AM Out', 'orig' => $origAmOut, 'now' => $atimeOutAM],
+            ['label' => 'PM In',  'orig' => $origPmIn,  'now' => $atimeInPM],
+            ['label' => 'PM Out', 'orig' => $origPmOut, 'now' => $atimeOut],
+        ];
+        $hasCorrection = false;
+        foreach ($punchChecks as $c) {
+            if ($c['now'] !== '' && $c['now'] !== $c['orig']) { $hasCorrection = true; break; }
+        }
         $hasSchedule = $r['SetTime'] !== null || $r['SetTimeOutAM'] !== null
             || $r['SetTimeInPM'] !== null || $r['SetTimeOutPM'] !== null;
         $kind = $hasCorrection && $hasSchedule ? 'mixed' : ($hasCorrection ? 'time' : 'schedule');
@@ -147,6 +169,14 @@ if ($action === 'get_overrides') {
             'AtimeOut24'          => opa_fmt_time24($r['AtimeOut']),
             'AtimeOutAM24'        => opa_fmt_time24($r['AtimeOutAM']),
             'AtimeInPM24'         => opa_fmt_time24($r['AtimeInPM']),
+            'OrigAtimeIn'         => $origAmIn,
+            'OrigAtimeOutAM'      => $origAmOut,
+            'OrigAtimeInPM'       => $origPmIn,
+            'OrigAtimeOut'        => $origPmOut,
+            'AtimeInChanged'      => ($atimeIn    !== '' && $atimeIn    !== $origAmIn),
+            'AtimeOutAMChanged'   => ($atimeOutAM !== '' && $atimeOutAM !== $origAmOut),
+            'AtimeInPMChanged'    => ($atimeInPM  !== '' && $atimeInPM  !== $origPmIn),
+            'AtimeOutChanged'     => ($atimeOut   !== '' && $atimeOut   !== $origPmOut),
             'AMLate'                => $r['AMLate'] !== null ? trim((string)$r['AMLate']) : '',
             'PMLate'                => $r['PMLate'] !== null ? trim((string)$r['PMLate']) : '',
             'Late'                  => $r['Late'] !== null ? trim((string)$r['Late']) : '',
@@ -174,12 +204,16 @@ if ($action === 'get_overrides') {
         ];
 
         // Details summary — used by the list table's single "Details" column;
-        // a row may show a correction, a schedule, or both.
+        // shows only what was actually changed. A row where the user
+        // corrected multiple punches now lists all of them, not just one.
         $detailParts = [];
-        if ($hasCorrection) {
-            $detailParts[] = trim(($row['ShiftPart'] ?: '—') . ' ' . ($row['Direction'] ?: '') . ': '
-                . ($row['OriginalTime'] ?: '—') . ' → ' . ($row['CorrectedTime'] ?: '—'));
+        $corrBits = [];
+        foreach ($punchChecks as $c) {
+            if ($c['now'] !== '' && $c['now'] !== $c['orig']) {
+                $corrBits[] = $c['label'] . ': ' . ($c['orig'] ?: '—') . ' → ' . $c['now'];
+            }
         }
+        if ($corrBits) $detailParts[] = implode(', ', $corrBits);
         if ($hasSchedule) {
             $schedBits = [];
             if ($row['ScheduleAmIn'])  $schedBits[] = 'AM In ' . $row['ScheduleAmIn'];
@@ -188,13 +222,6 @@ if ($action === 'get_overrides') {
             if ($row['SchedulePmOut']) $schedBits[] = 'PM Out ' . $row['SchedulePmOut'];
             $detailParts[] = implode(', ', $schedBits);
         }
-        $manualBits = [];
-        if ($row['ManualStatus'] !== '') $manualBits[] = 'Status ' . $row['ManualStatus'];
-        if ($row['AMLate'] !== '') $manualBits[] = 'AM Late ' . $row['AMLate'];
-        if ($row['PMLate'] !== '') $manualBits[] = 'PM Late ' . $row['PMLate'];
-        if ($row['TotalHours'] !== '') $manualBits[] = 'Total Hrs ' . $row['TotalHours'];
-        if ($row['AttachmentUrl']) $manualBits[] = 'Has attachment';
-        if ($manualBits) $detailParts[] = implode(', ', $manualBits);
         $row['Details'] = $detailParts ? implode(' · ', $detailParts) : '—';
 
         $rows[] = $row;

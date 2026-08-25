@@ -73,7 +73,9 @@ $filterEmpStatusSafe = str_replace("'", "''", $filterEmpStatus);
 // the Generated Attendance tab's $categoryList below.
 $timeinoutCategoryList = [];
 if ($tab === 'timeinout') {
-    $tcStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS Category FROM View_ATtendanceTimeInTimeOut2 WHERE Category IS NOT NULL AND Category <> '' ORDER BY Category");
+    // DP (Delivery Personnel) has its own dedicated weekly attendance view,
+    // so it's excluded here to avoid duplicate/confusing entries in this tab.
+    $tcStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS Category FROM View_ATtendanceTimeInTimeOut2 WHERE Category IS NOT NULL AND Category <> '' AND RTRIM(Category) <> 'DP' ORDER BY Category");
     if ($tcStmt) { while ($tr = sqlsrv_fetch_array($tcStmt, SQLSRV_FETCH_ASSOC)) { $timeinoutCategoryList[] = $tr['Category']; } sqlsrv_free_stmt($tcStmt); }
 }
 
@@ -128,6 +130,8 @@ $debugLog = []; // tab => sqlsrv_errors() when a query fails, surfaced in an HTM
 if ($tab === 'timeinout') {
     $dc = dc($filterDeptSafe);
     $catFilter = $filterCategorySafe !== '' ? " AND RTRIM(Category) = '$filterCategorySafe'" : '';
+    // DP (Delivery Personnel) is excluded — they have a separate dedicated
+    // weekly attendance view, so they don't belong in this daily tab.
     $timeinoutStmt = sqlsrv_query($conn, "
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
@@ -135,6 +139,7 @@ if ($tab === 'timeinout') {
            MorningAfternoonTotal, TotalHours, Status
     FROM View_ATtendanceTimeInTimeOut2_Override
     WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
+          AND (Category IS NULL OR RTRIM(Category) <> 'DP')
     ORDER BY ADate DESC, MorningIn DESC
 ");
     if ($timeinoutStmt === false) { $debugLog['timeinout'] = sqlsrv_errors(); }

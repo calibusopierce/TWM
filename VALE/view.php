@@ -18,10 +18,10 @@ $sql = "SELECT
             ca.CashAdvanceID, ca.EmployeeID, ca.Amount, ca.Reason,
             ca.Department, ca.Branch, ca.Remarks, ca.RecommendRemarks, ca.Status,
             ca.RejectReason, ca.PaidAmount, ca.BalanceAmount,
-            CONVERT(varchar(10), ca.RequestDate,  107) AS RequestDate,
-            CONVERT(varchar(10), ca.ApprovedDate, 107) AS ApprovedDate,
-            CONVERT(varchar(10), ca.ReceivedDate, 107) AS ReceivedDate,
-            CONVERT(varchar(10), ca.RejectedDate, 107) AS RejectedDate,
+            CONVERT(varchar(20), ca.RequestDate,  107) AS RequestDate,
+            CONVERT(varchar(20), ca.ApprovedDate, 107) AS ApprovedDate,
+            CONVERT(varchar(20), ca.ReceivedDate, 107) AS ReceivedDate,
+            CONVERT(varchar(20), ca.RejectedDate, 107) AS RejectedDate,
             emp.FirstName  + ' ' + emp.LastName  AS EmployeeName,
             emp.Position_held,
             rec.FirstName  + ' ' + rec.LastName  AS RecommendByName,
@@ -33,7 +33,7 @@ $sql = "SELECT
         LEFT JOIN TBL_HrEmployeeList rec  ON rec.EmployeeID  = ca.RecommendByID
         LEFT JOIN TBL_HrEmployeeList appr ON appr.EmployeeID = ca.ApprovedByID
         LEFT JOIN TBL_HrEmployeeList rej  ON rej.EmployeeID  = ca.RejectedByID
-        LEFT JOIN TBL_HrEmployeeList apv  ON apv.EmployeeID  = ca.ApproverID
+        LEFT JOIN TBL_HrEmployeeList apv  ON apv.EmployeeID  = ca.AssignedApproverID
         WHERE ca.CashAdvanceID = ?" . (!$isAdmin ? " AND ca.EmployeeID = ?" : "");
 
 $params = $isAdmin ? [$id] : [$id, $EmployeeID];

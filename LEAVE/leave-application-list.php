@@ -215,6 +215,15 @@ function loadApprovals(page = 1) {
             }
 
             renderPagination(data.totalPages, page);
+        })
+        .catch(err => {
+            const tbody = document.getElementById('approvalTableBody');
+            const cols = currentMode === 'hr' ? 10 : 9;
+            tbody.innerHTML = `<tr><td colspan="${cols}" class="text-danger text-center py-3">
+                Failed to load applications. Please refresh and try again.
+            </td></tr>`;
+            document.getElementById('approvalPagination').innerHTML = '';
+            console.error('loadApprovals failed:', err);
         });
 }
 
@@ -239,8 +248,9 @@ function openApplication(id) {
                 return;
             }
             const r = d.row;
-            const canAct = (currentMode === 'supervisor' && r.SA_Status === 'Pending')
-                         || (currentMode === 'hr' && r.HR_Status === 'Pending');
+            const pendingStage = (currentMode === 'supervisor' && r.SA_Status === 'Pending')
+                               || (currentMode === 'hr' && r.HR_Status === 'Pending');
+            const canAct = pendingStage && r.CanApprove;
 
             document.getElementById('viewBody').innerHTML = `
                 <div class="row g-3">
@@ -271,6 +281,11 @@ function openApplication(id) {
                         <label class="form-label">Note ${currentMode === 'hr' || true ? '(required if rejecting)' : ''}</label>
                         <textarea id="actionNote" class="form-control" rows="2" placeholder="Optional remarks…"></textarea>
                     </div>` : ''}
+                    ${pendingStage && !r.CanApprove ? `
+                    <div class="col-12"><hr></div>
+                    <div class="col-12 text-muted small">
+                        <i class="bi bi-info-circle"></i> Only <strong>${escHtml(r.HRName || 'the assigned HR approver')}</strong> can act on this application.
+                    </div>` : ''}
                 </div>
             `;
 
@@ -284,6 +299,10 @@ function openApplication(id) {
             ` : `<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>`;
 
             new bootstrap.Modal(document.getElementById('viewModal')).show();
+        })
+        .catch(err => {
+            showAlert('Failed to load application. Please try again.', 'danger');
+            console.error('openApplication failed:', err);
         });
 }
 

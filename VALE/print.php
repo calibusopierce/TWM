@@ -40,7 +40,7 @@ if (!$r) die('Record not found or access denied.');
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vale Slip #<?= $r['CashAdvanceID'] ?> · Tradewell</title>
 <link rel="icon" href="<?= base_url('assets/img/logo.png') ?>">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link href="<?= base_url('assets/vendor/bootstrap-icons/bootstrap-icons.min.css') ?>" rel="stylesheet">
 <style>
   /* ── Page: half-bond 8.5 × 5.5 in ─────────────────────────── */
   @page {

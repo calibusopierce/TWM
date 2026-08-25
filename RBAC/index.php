@@ -623,7 +623,7 @@ $actionColors = [
     .hp-card-preview .prev-desc { font-size: .72rem; color: var(--w60); line-height: 1.45; }
 
     /* ══ SEARCH / FILTER ROW ═════════════════════════════════════════════════ */
-    .filter-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.25rem; animation: fadeUp .4s .15s ease both; }
+    .filter-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.25rem; animation: fadeUp .4s .15s ease both; position: relative; z-index: 20; }
     .search-box {
       display: flex; align-items: center; gap: .5rem;
       background: var(--surface); border: 1px solid var(--border2);
@@ -682,6 +682,27 @@ $actionColors = [
     .icon-sug-item { display: flex; align-items: center; gap: .6rem; padding: .45rem .8rem; cursor: pointer; font-size: .8rem; transition: background .1s; }
     .icon-sug-item:hover { background: rgba(255,255,255,.06); }
     .icon-sug-item i { font-size: 1rem; color: var(--accent2); width: 20px; text-align: center; }
+
+    /* ══ GLOBAL USER SEARCH ══════════════════════════════════════════════════ */
+    .gusearch-wrap { flex: 1.4; min-width: 260px; max-width: 420px; position: relative; z-index: 21; }
+    .gusearch-wrap .icon-suggestions { max-height: 320px; z-index: 21; box-shadow: 0 12px 28px rgba(0,0,0,.45); }
+    .gu-result-item {
+      display: flex; align-items: center; gap: .65rem;
+      padding: .5rem .8rem; cursor: pointer; transition: background .1s;
+      background: #0f1c3a;
+    }
+    .gu-result-item:hover { background: rgba(255,255,255,.06); }
+    .gu-result-avatar {
+      width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+      background: rgba(67,128,226,.18); color: var(--accent2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: .68rem; font-weight: 700; font-family: 'Sora', sans-serif;
+    }
+    .gu-result-info   { flex: 1; min-width: 0; }
+    .gu-result-name   { font-size: .8rem; font-weight: 600; color: var(--white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gu-result-meta   { font-size: .68rem; color: var(--w40); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gu-result-type   { font-size: .62rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--accent2); background: rgba(67,128,226,.12); padding: .12rem .45rem; border-radius: 5px; flex-shrink: 0; }
+    .gu-empty, .gu-loading { padding: .8rem; font-size: .76rem; color: var(--w40); text-align: center; }
 
     /* ══ CONFIRM OVERLAY ═════════════════════════════════════════════════════ */
     .confirm-overlay { display: none; position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.7); align-items: center; justify-content: center; }
@@ -972,6 +993,11 @@ $actionColors = [
   <!-- ══════════════════ TAB: USER TYPES ═══════════════════════════════════ -->
   <div class="tab-panel active" id="tab-roles">
     <div class="filter-row">
+      <div class="search-box gusearch-wrap" style="position:relative">
+        <i class="bi bi-person-lines-fill"></i>
+        <input type="text" id="globalUserSearch" placeholder="Search a user by name or username…" autocomplete="off">
+        <div class="icon-suggestions" id="gusearch_results"></div>
+      </div>
       <div class="search-box">
         <i class="bi bi-search"></i>
         <input type="text" id="roleSearch" placeholder="Search user type…">
@@ -987,14 +1013,6 @@ $actionColors = [
         $pct     = $modCount > 0 ? round($granted / $modCount * 100) : 0;
       ?>
       <div class="role-card" data-role="<?= htmlspecialchars($rn) ?>" data-total="<?= $total ?>">
-    <?php if (!$isViewOnly): ?>
-    <button class="role-card-del btn btn-sm btn-danger"
-            data-role="<?= htmlspecialchars($rn) ?>"
-            title="Delete user type"
-            onclick="event.stopPropagation()">
-      <i class="bi bi-trash3"></i>
-    </button>
-    <?php endif; ?>
     <div class="role-card-top">
       <div class="role-avatar"><?= strtoupper(substr($rn, 0, 2)) ?></div>
       <div class="role-card-info">
@@ -1546,6 +1564,12 @@ $actionColors = [
       <div class="form-hint" style="margin-bottom:.75rem">
         Controls which portal modules this user can access, independent of their legacy user type.
       </div>
+      <?php if (!$isViewOnly): ?>
+      <div style="display:flex;gap:.5rem;margin-bottom:.6rem">
+        <button class="btn btn-sm btn-success" id="ma_grantAll" type="button"><i class="bi bi-check-all"></i> Grant All</button>
+        <button class="btn btn-sm btn-danger"  id="ma_revokeAll" type="button"><i class="bi bi-x-lg"></i> Remove All</button>
+      </div>
+      <?php endif; ?>
       <div id="ma_rbac_list" style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;max-height:260px;overflow-y:auto;padding:.1rem 0"></div>
       <?php if (!$isViewOnly): ?>
       <div class="modal-footer" style="margin-top:1rem">
@@ -1741,6 +1765,78 @@ document.getElementById('roleSearch').addEventListener('input', function () {
   document.querySelectorAll('#rolesGrid .role-card').forEach(card => {
     card.style.display = (card.dataset.role || '').toLowerCase().includes(q) ? '' : 'none';
   });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GLOBAL USER SEARCH — find a user directly, no need to guess their user type
+// ══════════════════════════════════════════════════════════════════════════════
+
+const gu_input   = document.getElementById('globalUserSearch');
+const gu_results = document.getElementById('gusearch_results');
+let   gu_timer   = null;
+let   gu_seq     = 0; // guards against out-of-order responses when typing fast
+
+function gu_close() { gu_results.classList.remove('open'); gu_results.innerHTML = ''; }
+
+function gu_render(users) {
+  if (!users.length) {
+    gu_results.innerHTML = `<div class="gu-empty">No matching users.</div>`;
+    gu_results.classList.add('open');
+    return;
+  }
+  gu_results.innerHTML = users.map(u => {
+    const dn       = u.DisplayName || u.username;
+    const initials = dn.slice(0, 2).toUpperCase();
+    const dept     = u.Department || '—';
+    return `<div class="gu-result-item"
+                 data-id="${u.id}" data-displayname="${escHtml(dn)}"
+                 data-username="${escHtml(u.username)}" data-dept="${escHtml(u.Department || '')}"
+                 data-type="${escHtml(u.user_type || '')}">
+      <div class="gu-result-avatar">${escHtml(initials)}</div>
+      <div class="gu-result-info">
+        <div class="gu-result-name">${escHtml(dn)}</div>
+        <div class="gu-result-meta">${escHtml(u.username)}${dept !== '—' ? ' · ' + escHtml(dept) : ''}</div>
+      </div>
+      <span class="gu-result-type">${escHtml(u.user_type || '—')}</span>
+    </div>`;
+  }).join('');
+  gu_results.classList.add('open');
+}
+
+gu_input.addEventListener('input', function () {
+  const q = this.value.trim();
+  clearTimeout(gu_timer);
+
+  if (q.length < 2) { gu_close(); return; }
+
+  gu_results.innerHTML = `<div class="gu-loading">Searching…</div>`;
+  gu_results.classList.add('open');
+
+  gu_timer = setTimeout(async () => {
+    const mySeq = ++gu_seq;
+    try {
+      const res  = await fetch(ACTION_URL + '?action=search_users&q=' + encodeURIComponent(q));
+      const data = await res.json();
+      if (mySeq !== gu_seq) return; // a newer keystroke already fired another request
+      if (!data.ok) { gu_results.innerHTML = `<div class="gu-empty">Search failed.</div>`; return; }
+      gu_render(data.users || []);
+    } catch {
+      if (mySeq !== gu_seq) return;
+      gu_results.innerHTML = `<div class="gu-empty">Network error.</div>`;
+    }
+  }, 250);
+});
+
+gu_results.addEventListener('click', e => {
+  const item = e.target.closest('.gu-result-item');
+  if (!item) return;
+  openManageModal(item.dataset);
+  gu_close();
+  gu_input.value = '';
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.gusearch-wrap')) gu_close();
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3126,6 +3222,37 @@ document.getElementById('closeManageModal').addEventListener('click', e => {
 manageModal.addEventListener('click', e => { if (e.target === manageModal) manageModal.classList.remove('open'); });
 
 // Save RBAC module access (button only exists in DOM for full-access users)
+// Grant All / Remove All — bulk-set the dropdowns locally; existing
+// "Save Module Access" click still persists via assign_user_access,
+// same as manually setting each select then saving.
+// Recolor a dropdown immediately when manually changed — mirrors what
+// Grant All / Remove All already do, so a single manual edit gets the
+// same live visual feedback instead of keeping its stale color until Save.
+document.getElementById('ma_rbac_list').addEventListener('change', e => {
+  const sel = e.target;
+  if (!sel.classList.contains('perm-select')) return;
+  sel.classList.remove('is-none', 'is-view_only', 'is-full');
+  sel.classList.add('is-' + sel.value);
+});
+
+document.getElementById('ma_grantAll')?.addEventListener('click', () => {
+  if (IS_VIEW_ONLY) { toast('You have view-only access — changes are not allowed.', 'error'); return; }
+  document.querySelectorAll('#ma_rbac_list .perm-select').forEach(sel => {
+    sel.value = 'full';
+    sel.className = 'perm-select is-full';
+  });
+  toast('All modules set to Full Access — click Save to apply.');
+});
+
+document.getElementById('ma_revokeAll')?.addEventListener('click', () => {
+  if (IS_VIEW_ONLY) { toast('You have view-only access — changes are not allowed.', 'error'); return; }
+  document.querySelectorAll('#ma_rbac_list .perm-select').forEach(sel => {
+    sel.value = 'none';
+    sel.className = 'perm-select is-none';
+  });
+  toast('All modules set to No Access — click Save to apply.');
+});
+
 document.getElementById('ma_saveRbac')?.addEventListener('click', async () => {
   if (IS_VIEW_ONLY) { toast('You have view-only access — changes are not allowed.', 'error'); return; }
   const userId   = document.getElementById('ma_user_id').value;

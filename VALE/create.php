@@ -48,7 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sched_date'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $Amount           = trim($_POST['Amount']           ?? '');
     $Reason           = trim($_POST['Reason']           ?? '');
-    $ApproverID       = trim($_POST['ApproverID']       ?? '');
+    $AssignedApproverID = trim($_POST['ApproverID']       ?? '');
     $RecommendByID    = trim($_POST['RecommendByID']    ?? '');
     $RecommendRemarks = trim($_POST['RecommendRemarks'] ?? '');
     $Department       = trim($_POST['Department']       ?? $empDept);
@@ -69,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($Amount === '' || !is_numeric($Amount) || floatval($Amount) <= 0)
         $errors[] = 'Please enter a valid amount.';
-    if ($ApproverID === '')
+    if ($AssignedApproverID === '')
         $errors[] = 'Please select an approver.';
     // Recommended By is no longer required — the approver (one of the 4 bosses)
     // can approve/release directly, bypassing the recommendation step.
@@ -89,17 +89,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($errors)) {
         $sql = "INSERT INTO TBL_CashAdvance
                     (EmployeeID, Amount, Reason, RequestDate,
-                     ApproverID, RecommendByID, RecommendRemarks,
+                     AssignedApproverID, RecommendByID, RecommendRemarks,
                      Status, Department, Branch, Remarks,
-                     PaidAmount, BalanceAmount,
-                     CreatedBy, CreatedDate)
+                     PaidAmount, CreatedBy, CreatedDate)
                 OUTPUT INSERTED.CashAdvanceID
-                VALUES (?, ?, ?, GETDATE(), ?, ?, ?, 'Requested', ?, ?, ?, 0, ?, ?, GETDATE())";
+                VALUES (?, ?, ?, GETDATE(), ?, ?, ?, 'Requested', ?, ?, ?, 0, ?, GETDATE())";
         $params = [
             $EmployeeID, floatval($Amount), $Reason,
-            $ApproverID, ($RecommendByID !== '' ? $RecommendByID : null), $RecommendRemarks,
+            $AssignedApproverID, ($RecommendByID !== '' ? $RecommendByID : null), $RecommendRemarks,
             $Department, $Branch, $Remarks,
-            floatval($Amount), // BalanceAmount starts equal to the full requested amount
             $_SESSION['UserID']
         ];
         $stmt = sqlsrv_query($conn, $sql, $params);
@@ -119,7 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (!$schedOk) {
-                $errors[] = 'Request was created but the payment schedule failed to save. Please contact IT with request #' . $newId . '.';
+                $errors[] = 'Schedule insert failed: ' . print_r(sqlsrv_errors(), true);
             } else {
                 header("Location: my-request.php?submitted=1");
                 exit;

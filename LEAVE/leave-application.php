@@ -203,6 +203,7 @@ table.leave-table td.mono{ font-size:.85rem; }
                         <th>End</th>
                         <th>Days</th>
                         <th>Supervisor</th>
+                        <th>HR</th>
                         <th>SA Status</th>
                         <th>HR Status</th>
                         <th class="text-end">Action</th>
@@ -374,7 +375,7 @@ function loadApplications(page = 1) {
         .then(data => {
             const tbody = document.getElementById('leaveTableBody');
             if (!data.rows || data.rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9"><div class="empty-state"><i class="bi bi-inbox fs-2 d-block mb-2"></i>No leave applications found</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><i class="bi bi-inbox fs-2 d-block mb-2"></i>No leave applications found</div></td></tr>';
                 document.getElementById('leavePagination').innerHTML = '';
                 return;
             }
@@ -386,6 +387,7 @@ function loadApplications(page = 1) {
                     <td class="mono">${escHtml(r.Date_End)}</td>
                     <td class="mono">${escHtml(r.NumberOfDays)}${r.HalfDay == 1 ? ' (½)' : ''}</td>
                     <td>${r.SupervisorName ? escHtml(r.SupervisorName) : '-'}</td>
+                    <td>${r.HRName ? escHtml(r.HRName) : '-'}</td>
                     <td>${simpleBadge(r.SA_Status)}</td>
                     <td>${simpleBadge(r.HR_Status)}</td>
                     <td class="text-end">
@@ -405,7 +407,7 @@ function loadApplications(page = 1) {
         .catch(err => {
             console.error(err);
             document.getElementById('leaveTableBody').innerHTML =
-                '<tr><td colspan="9" class="text-danger text-center py-3">Failed to load applications.</td></tr>';
+                '<tr><td colspan="10" class="text-danger text-center py-3">Failed to load applications.</td></tr>';
         });
 }
 

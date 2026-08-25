@@ -198,19 +198,24 @@ if ($action === 'get_override_history') {
 
     // Shows the current user's own override submissions regardless of
     // review status, so they can see what's still pending HR. One row here
-    // = one submission, which may carry a Corrected Time, Shift Times, or
-    // both — the Details column summarizes whichever fields are present.
+    // = one submission, which may carry Actual Punch corrections (up to 4,
+    // diffed against the original system record below), Shift Times, or
+    // both — the Details column summarizes only what was actually changed.
     $sql = "SELECT TOP 50
-                [ADate], [OriginalTime], [ATime], [Direction], [ShiftPart],
-                [SetTime], [SetTimeOutAM], [SetTimeInPM], [SetTimeOutPM],
-                [AtimeIn], [AtimeOut], [AtimeOutAM], [AtimeInPM],
-                [AMLate], [PMLate], [Late], [MorningTotalHours], [AfternoonTotalHours],
-                [MorningAfternoonTotal], [TotalHours], [Status], [DayCount],
-                [PayrollGroup], [Aday], [Area], [AreaOut], [Attachment],
-                [Override_Type], [HR_Status], [DateTimeInput]
-            FROM [dbo].[TBL_Attendance_Override]
-            WHERE [EmployeeID] = ?
-            ORDER BY [DateTimeInput] DESC";
+                o.[ADate], o.[OriginalTime], o.[ATime], o.[Direction], o.[ShiftPart],
+                o.[SetTime], o.[SetTimeOutAM], o.[SetTimeInPM], o.[SetTimeOutPM],
+                o.[AtimeIn], o.[AtimeOut], o.[AtimeOutAM], o.[AtimeInPM],
+                o.[AMLate], o.[PMLate], o.[Late], o.[MorningTotalHours], o.[AfternoonTotalHours],
+                o.[MorningAfternoonTotal], o.[TotalHours], o.[Status], o.[DayCount],
+                o.[PayrollGroup], o.[Aday], o.[Area], o.[AreaOut], o.[Attachment],
+                o.[Override_Type], o.[HR_Status], o.[DateTimeInput],
+                v.[MorningIn] AS OrigMorningIn, v.[MorningOut] AS OrigMorningOut,
+                v.[AfternoonIn] AS OrigAfternoonIn, v.[AfternoonOut] AS OrigAfternoonOut
+            FROM [dbo].[TBL_Attendance_Override] o
+            LEFT JOIN [dbo].[View_ATtendanceTimeInTimeOut2_Override] v
+                ON v.[EmployeeID] = o.[EmployeeID] AND CAST(v.[ADate] AS DATE) = CAST(o.[ADate] AS DATE)
+            WHERE o.[EmployeeID] = ?
+            ORDER BY o.[DateTimeInput] DESC";
 
     $stmt = sqlsrv_query($conn, $sql, [$employeeId]);
 
@@ -225,18 +230,30 @@ if ($action === 'get_override_history') {
 
     $rows = [];
     while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-        $hasCorrection = trim($r['ShiftPart'] ?? '') !== '' || trim($r['Direction'] ?? '') !== '';
         $amIn  = oea_fmt_time($r['SetTime']);
         $amOut = oea_fmt_time($r['SetTimeOutAM']);
         $pmIn  = oea_fmt_time($r['SetTimeInPM']);
         $pmOut = oea_fmt_time($r['SetTimeOutPM']);
         $hasSchedule = $amIn !== '' || $amOut !== '' || $pmIn !== '' || $pmOut !== '';
 
-        $parts = [];
-        if ($hasCorrection) {
-            $parts[] = trim(($r['ShiftPart'] ?: '—') . ' ' . ($r['Direction'] ?: '') . ': '
-                . (oea_fmt_time($r['OriginalTime']) ?: '—') . ' → ' . (oea_fmt_time($r['ATime']) ?: '—'));
+        // Diff each of the 4 actual punches against the original system
+        // record (joined in via the view above) so a row where the user
+        // corrected MULTIPLE punches shows all of them, not just one.
+        $punchChecks = [
+            ['label' => 'AM In',  'orig' => oea_fmt_time($r['OrigMorningIn']),   'now' => oea_fmt_time($r['AtimeIn'])],
+            ['label' => 'AM Out', 'orig' => oea_fmt_time($r['OrigMorningOut']),  'now' => oea_fmt_time($r['AtimeOutAM'])],
+            ['label' => 'PM In',  'orig' => oea_fmt_time($r['OrigAfternoonIn']), 'now' => oea_fmt_time($r['AtimeInPM'])],
+            ['label' => 'PM Out', 'orig' => oea_fmt_time($r['OrigAfternoonOut']),'now' => oea_fmt_time($r['AtimeOut'])],
+        ];
+        $corrBits = [];
+        foreach ($punchChecks as $c) {
+            if ($c['now'] !== '' && $c['now'] !== $c['orig']) {
+                $corrBits[] = $c['label'] . ': ' . ($c['orig'] ?: '—') . ' → ' . $c['now'];
+            }
         }
+
+        $parts = [];
+        if ($corrBits) $parts[] = implode(', ', $corrBits);
         if ($hasSchedule) {
             $schedBits = [];
             if ($amIn)  $schedBits[] = 'AM In ' . $amIn;
@@ -245,16 +262,6 @@ if ($action === 'get_override_history') {
             if ($pmOut) $schedBits[] = 'PM Out ' . $pmOut;
             $parts[] = implode(', ', $schedBits);
         }
-
-        // Manual-entry fields (actual punches, lateness/totals, classification,
-        // area, attachment) — summarized the same way as the two groups above.
-        $manualBits = [];
-        if (trim($r['Status'] ?? '') !== '') $manualBits[] = 'Status ' . trim($r['Status']);
-        if ($r['AMLate'] !== null) $manualBits[] = 'AM Late ' . trim((string)$r['AMLate']);
-        if ($r['PMLate'] !== null) $manualBits[] = 'PM Late ' . trim((string)$r['PMLate']);
-        if ($r['TotalHours'] !== null) $manualBits[] = 'Total Hrs ' . trim((string)$r['TotalHours']);
-        if (trim($r['Attachment'] ?? '') !== '') $manualBits[] = 'Has attachment';
-        if ($manualBits) $parts[] = implode(', ', $manualBits);
 
         $rows[] = [
             'Date'          => oea_fmt_date($r['ADate']),

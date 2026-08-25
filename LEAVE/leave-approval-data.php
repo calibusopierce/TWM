@@ -61,42 +61,53 @@ if (isset($_GET['detail'])) {
                 la.EmployeeID, la.SA_EmployeeID, la.HR_EmployeeID,
                 lt.Type_Name,
                 emp.FirstName AS Emp_FirstName, emp.MiddleName AS Emp_MiddleName, emp.LastName AS Emp_LastName,
-                dept.DepartmentName,
+                emp.Department AS DepartmentName,
                 sup.FirstName AS Sup_FirstName, sup.MiddleName AS Sup_MiddleName, sup.LastName AS Sup_LastName,
                 hr.FirstName  AS HR_FirstName,  hr.MiddleName  AS HR_MiddleName,  hr.LastName  AS HR_LastName
             FROM dbo.Tbl_Leave_Application la
             LEFT JOIN dbo.Tbl_Leave_Type lt ON lt.ID = la.TypeID
             LEFT JOIN dbo.TBL_HREmployeeList emp ON emp.EmployeeID = la.EmployeeID
-            LEFT JOIN dbo.Tbl_Department dept ON dept.DepartmentID = emp.DepartmentID
             LEFT JOIN dbo.TBL_HREmployeeList sup ON sup.EmployeeID = la.SA_EmployeeID
             LEFT JOIN dbo.TBL_HREmployeeList hr  ON hr.EmployeeID  = la.HR_EmployeeID
             WHERE la.ID = :id";
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(['id' => $id]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['id' => $id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log('[leave-approval-data] detail query failed: ' . $e->getMessage());
+        echo json_encode(['success' => false, 'message' => 'A database error occurred while loading this application.']);
+        exit;
+    }
 
     if (!$row) {
         echo json_encode(['success' => false, 'message' => 'Application not found']);
         exit;
     }
 
-    $isSupervisor = ($row['SA_EmployeeID'] === $employeeID);
-    $isAssignedHr = false;
+    // Compare as trimmed strings, not strict ===. SQL Server CHAR(n) columns
+    // space-pad values to their fixed length (e.g. "1023     " vs "1023"),
+    // and SQL itself ignores that padding on comparison — but PHP's === does
+    // not, so a tagged user could show up correctly in the list query (SQL
+    // comparison) yet get rejected here (PHP comparison) for the exact same
+    // application. Trimming both sides neutralizes that regardless of the
+    // actual underlying column type.
+    $isSupervisor = (trim((string)($row['SA_EmployeeID'] ?? '')) === trim((string)$employeeID));
+    $isTaggedHr   = (trim((string)($row['HR_EmployeeID'] ?? '')) === trim((string)$employeeID));
 
-    if (!$isSupervisor && $row['HR_EmployeeID'] === $employeeID) {
-        try {
-            rbac_gate($pdo, 'leave_approval', 'hr');
-            $isAssignedHr = true;
-        } catch (Throwable $e) {
-            $isAssignedHr = false;
-        }
-    }
+    // Visibility: 'supervisor' mode is still tag-scoped (only your own team).
+    // 'hr' mode is RBAC-tier-scoped — rbac_gate($pdo, 'leave_approval', 'hr')
+    // already ran above for this whole request when $mode === 'hr', so any
+    // HR-tier user may view. Only $isTaggedHr may actually act (below).
+    $authorized = ($mode === 'supervisor') ? $isSupervisor : true;
 
-    if (!$isSupervisor && !$isAssignedHr) {
+    if (!$authorized) {
         echo json_encode(['success' => false, 'message' => 'You are not authorized to view this application.']);
         exit;
     }
+
+    $row['CanApprove'] = ($mode === 'supervisor') ? $isSupervisor : $isTaggedHr;
 
     foreach (['Date_Start', 'Date_End'] as $f) {
         if ($row[$f]) $row[$f] = date('M d, Y', strtotime($row[$f]));
@@ -123,13 +134,15 @@ $search   = trim($_GET['search'] ?? '');
 $baseSelect = "SELECT
             la.ID, la.ControlNo, la.NumberOfDays, la.HalfDay,
             la.Date_Start, la.Date_End, la.SA_Status, la.HR_Status,
+            la.HR_EmployeeID,
             lt.Type_Name,
             emp.FirstName AS Emp_FirstName, emp.MiddleName AS Emp_MiddleName, emp.LastName AS Emp_LastName,
-            dept.DepartmentName
+            emp.Department AS DepartmentName,
+            hr.FirstName AS HR_FirstName, hr.MiddleName AS HR_MiddleName, hr.LastName AS HR_LastName
         FROM dbo.Tbl_Leave_Application la
         LEFT JOIN dbo.Tbl_Leave_Type lt ON lt.ID = la.TypeID
         LEFT JOIN dbo.TBL_HREmployeeList emp ON emp.EmployeeID = la.EmployeeID
-        LEFT JOIN dbo.Tbl_Department dept ON dept.DepartmentID = emp.DepartmentID";
+        LEFT JOIN dbo.TBL_HREmployeeList hr ON hr.EmployeeID = la.HR_EmployeeID";
 
 $baseCount = "SELECT COUNT(*) AS Total
         FROM dbo.Tbl_Leave_Application la
@@ -141,8 +154,12 @@ if ($mode === 'supervisor') {
     $where = "WHERE la.SA_EmployeeID = :myId";
     $params['myId'] = $employeeID;
 } else {
-    $where = "WHERE la.HR_EmployeeID = :myId";
-    $params['myId'] = $employeeID;
+    // HR mode: visibility is now RBAC-tier-based, not tag-based — any user
+    // with 'hr' access on leave_approval (already rbac_gate()'d above) can
+    // see every department application. Only the specific HR_EmployeeID
+    // tagged on a row can actually act on it (enforced in
+    // leave-approval-action.php, unchanged).
+    $where = "WHERE 1=1";
 }
 
 if ($search !== '') {
@@ -152,19 +169,25 @@ if ($search !== '') {
     $params['search3'] = '%' . $search . '%';
 }
 
-$countStmt = $pdo->prepare("$baseCount $where");
-$countStmt->execute($params);
-$total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['Total'] ?? 0);
-$totalPages = max(1, (int)ceil($total / $pageSize));
+try {
+    $countStmt = $pdo->prepare("$baseCount $where");
+    $countStmt->execute($params);
+    $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['Total'] ?? 0);
+    $totalPages = max(1, (int)ceil($total / $pageSize));
 
-$sql = "$baseSelect $where ORDER BY la.DateTimeInput DESC OFFSET :offset ROWS FETCH NEXT :pageSize ROWS ONLY";
-$stmt = $pdo->prepare($sql);
-foreach ($params as $k => $v) {
-    $stmt->bindValue(':' . $k, $v);
+    $sql = "$baseSelect $where ORDER BY la.DateTimeInput DESC OFFSET :offset ROWS FETCH NEXT :pageSize ROWS ONLY";
+    $stmt = $pdo->prepare($sql);
+    foreach ($params as $k => $v) {
+        $stmt->bindValue(':' . $k, $v);
+    }
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->bindValue(':pageSize', $pageSize, PDO::PARAM_INT);
+    $stmt->execute();
+} catch (PDOException $e) {
+    error_log('[leave-approval-data] list query failed: ' . $e->getMessage());
+    echo json_encode(['success' => false, 'message' => 'A database error occurred while loading applications.']);
+    exit;
 }
-$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-$stmt->bindValue(':pageSize', $pageSize, PDO::PARAM_INT);
-$stmt->execute();
 
 $rows = [];
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -180,6 +203,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         'HalfDay'        => $row['HalfDay'],
         'SA_Status'      => leaveStatusLabel($row['SA_Status']),
         'HR_Status'      => leaveStatusLabel($row['HR_Status']),
+        'HRName'         => $mode === 'hr' ? buildName($row['HR_FirstName'], $row['HR_MiddleName'], $row['HR_LastName']) : null,
+        'CanApprove'     => $mode === 'supervisor' ? true : (trim((string)($row['HR_EmployeeID'] ?? '')) === trim((string)$employeeID)),
     ];
 }
 

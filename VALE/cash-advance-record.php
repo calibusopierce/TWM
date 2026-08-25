@@ -43,7 +43,7 @@ $sql = "SELECT
         LEFT JOIN TBL_HrEmployeeList emp  ON emp.EmployeeID  = ca.EmployeeID
         LEFT JOIN TBL_HrEmployeeList rec  ON rec.EmployeeID  = ca.RecommendByID
         LEFT JOIN TBL_HrEmployeeList appr ON appr.EmployeeID = ca.ApprovedByID
-        LEFT JOIN TBL_HrEmployeeList apv  ON apv.EmployeeID  = ca.ApproverID
+        LEFT JOIN TBL_HrEmployeeList apv  ON apv.EmployeeID  = ca.AssignedApproverID
         $whereClause
         ORDER BY
             CASE ca.Status WHEN 'Requested' THEN 0 WHEN 'Approved' THEN 1 ELSE 2 END,
@@ -91,7 +91,7 @@ function statusBadgeClass($status) {
 <link rel="stylesheet" href="<?= base_url('assets/fuel.css') ?>">
 <link href="<?= base_url('assets/css/admin.css') ?>" rel="stylesheet">
 <link href="<?= base_url('assets/css/topbar.css') ?>" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link href="<?= base_url('assets/vendor/bootstrap-icons/bootstrap-icons.min.css') ?>" rel="stylesheet">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
 <style>

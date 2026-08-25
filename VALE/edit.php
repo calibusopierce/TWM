@@ -75,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sched_date'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $Amount           = trim($_POST['Amount']           ?? '');
     $Reason           = trim($_POST['Reason']           ?? '');
-    $ApproverID       = trim($_POST['ApproverID']       ?? '');
+    $AssignedApproverID = trim($_POST['ApproverID']       ?? '');
     $RecommendRemarks = trim($_POST['RecommendRemarks'] ?? '');
     $Remarks          = trim($_POST['Remarks']          ?? '');
 
@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 
     if ($Amount === '' || !is_numeric($Amount) || floatval($Amount) <= 0)
         $errors[] = 'Please enter a valid amount.';
-    if ($ApproverID === '')
+    if ($AssignedApproverID === '')
         $errors[] = 'Please select an approver.';
     if (empty($schedule))
         $errors[] = 'At least one payment schedule date is required.';
@@ -116,12 +116,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     if (empty($errors)) {
         $upd = sqlsrv_query($conn, "
             UPDATE TBL_CashAdvance SET
-                Amount = ?, Reason = ?, ApproverID = ?, RecommendRemarks = ?, Remarks = ?,
-                BalanceAmount = ?,
+                Amount = ?, Reason = ?, AssignedApproverID = ?, RecommendRemarks = ?, Remarks = ?,
                 ModifiedBy = ?, ModifiedDate = GETDATE()
             WHERE CashAdvanceID = ?",
-            [floatval($Amount), $Reason, $ApproverID, $RecommendRemarks, $Remarks,
-             floatval($Amount), // BalanceAmount = new Amount (PaidAmount is 0 pre-Received)
+            [floatval($Amount), $Reason, $AssignedApproverID, $RecommendRemarks, $Remarks,
              $_SESSION['UserID'], $id]);
 
         if ($upd === false) {
@@ -144,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
                 // Refresh $ca for display after a successful save
                 $ca['Amount'] = floatval($Amount);
                 $ca['Reason'] = $Reason;
-                $ca['ApproverID'] = $ApproverID;
+                $ca['AssignedApproverID'] = $AssignedApproverID;
                 $ca['RecommendRemarks'] = $RecommendRemarks;
                 $ca['Remarks'] = $Remarks;
                 $schedRepop = $schedule;
@@ -263,7 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             <?php foreach ($approvers as $ap):
               $apName = trim($ap['FirstName'] . ' ' . $ap['LastName']);
               $apId   = $ap['EmployeeID'];
-              $current = $_POST['ApproverID'] ?? $ca['ApproverID'] ?? '';
+              $current = $_POST['ApproverID'] ?? $ca['AssignedApproverID'] ?? '';
               $sel    = ($current === $apId) ? 'selected' : '';
             ?>
               <option value="<?= htmlspecialchars($apId) ?>" <?= $sel ?>>

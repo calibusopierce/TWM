@@ -51,6 +51,24 @@ if (isset($_POST['ajax_action'])) {
             exit;
         }
 
+        // Confirm this statement row actually belongs to THIS cash advance,
+        // and isn't already paid. Without this, a stale/tampered statement_id
+        // (visible in the row's onclick attribute) could link a payment onto
+        // a different CashAdvanceID's schedule row, corrupting both records'
+        // balances — or double-pay the same row if clicked twice quickly.
+        $stmt_chk = sqlsrv_query($conn,
+            "SELECT PaymentID FROM TBL_CashAdvance_Statement WHERE StatementID = ? AND CashAdvanceID = ?",
+            [$stmt_id, $id]);
+        $stmt_row = $stmt_chk ? sqlsrv_fetch_array($stmt_chk, SQLSRV_FETCH_ASSOC) : null;
+        if (!$stmt_row) {
+            echo json_encode(['ok' => false, 'error' => 'That schedule row does not belong to this cash advance.']);
+            exit;
+        }
+        if (!empty($stmt_row['PaymentID'])) {
+            echo json_encode(['ok' => false, 'error' => 'This schedule row already has a payment recorded.']);
+            exit;
+        }
+
         // Insert payment
         $ins = "INSERT INTO TBL_CashAdvance_Payment
                     (PaymentDate, PaymentAmount, PaymentMethod, ReferenceNumber, UserInput, InputDateTime)
@@ -64,18 +82,17 @@ if (isset($_POST['ajax_action'])) {
         $row    = sqlsrv_fetch_array($res, SQLSRV_FETCH_ASSOC);
         $pay_id = $row['CashAdvancePaymentID'];
 
-        // Link to statement row
-        sqlsrv_query($conn, "UPDATE TBL_CashAdvance_Statement SET PaymentID = ? WHERE StatementID = ?",
-            [$pay_id, $stmt_id]);
+        // Link to statement row — scoped to this CashAdvanceID, not just StatementID
+        sqlsrv_query($conn, "UPDATE TBL_CashAdvance_Statement SET PaymentID = ? WHERE StatementID = ? AND CashAdvanceID = ?",
+            [$pay_id, $stmt_id, $id]);
 
         // Update cash advance paid/balance totals
         sqlsrv_query($conn, "
             UPDATE TBL_CashAdvance SET
                 PaidAmount    = ISNULL(PaidAmount, 0) + ?,
-                BalanceAmount = ISNULL(BalanceAmount, 0) - ?,
                 ModifiedBy    = ?, ModifiedDate = GETDATE()
             WHERE CashAdvanceID = ?",
-            [$pay_amt, $pay_amt, $user, $id]);
+            [$pay_amt, $user, $id]);
 
         // Auto-flip to Paid if balance <= 0
         sqlsrv_query($conn, "
@@ -91,22 +108,30 @@ if (isset($_POST['ajax_action'])) {
         $stmt_id = (int)$_POST['statement_id'];
         $pay_id  = (int)$_POST['payment_id'];
 
+        // Confirm the statement row belongs to this cash advance before touching it.
+        $own_chk = sqlsrv_query($conn,
+            "SELECT StatementID FROM TBL_CashAdvance_Statement WHERE StatementID = ? AND CashAdvanceID = ? AND PaymentID = ?",
+            [$stmt_id, $id, $pay_id]);
+        if (!$own_chk || !sqlsrv_fetch_array($own_chk, SQLSRV_FETCH_ASSOC)) {
+            echo json_encode(['ok' => false, 'error' => 'That payment does not belong to this cash advance.']);
+            exit;
+        }
+
         // Get payment amount first
         $pr   = sqlsrv_query($conn, "SELECT PaymentAmount FROM TBL_CashAdvance_Payment WHERE CashAdvancePaymentID = ?", [$pay_id]);
         $prow = $pr ? sqlsrv_fetch_array($pr, SQLSRV_FETCH_ASSOC) : null;
         $amt  = $prow ? (float)$prow['PaymentAmount'] : 0;
 
-        sqlsrv_query($conn, "UPDATE TBL_CashAdvance_Statement SET PaymentID = NULL WHERE StatementID = ?", [$stmt_id]);
+        sqlsrv_query($conn, "UPDATE TBL_CashAdvance_Statement SET PaymentID = NULL WHERE StatementID = ? AND CashAdvanceID = ?", [$stmt_id, $id]);
         sqlsrv_query($conn, "DELETE FROM TBL_CashAdvance_Payment WHERE CashAdvancePaymentID = ?", [$pay_id]);
 
         if ($amt > 0) {
             sqlsrv_query($conn, "
                 UPDATE TBL_CashAdvance SET
                     PaidAmount    = ISNULL(PaidAmount, 0) - ?,
-                    BalanceAmount = ISNULL(BalanceAmount, 0) + ?,
                     ModifiedBy    = ?, ModifiedDate = GETDATE()
                 WHERE CashAdvanceID = ?",
-                [$amt, $amt, $user, $id]);
+                [$amt, $user, $id]);
         }
 
         // Reverse an auto Paid flip if the balance is no longer fully covered.

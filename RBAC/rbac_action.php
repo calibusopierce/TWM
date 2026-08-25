@@ -22,6 +22,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 header('Content-Type: application/json');
 
+// ── GET: search users directly by name/username/email (any type) ────────────
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'search_users') {
+    $q = trim($_GET['q'] ?? '');
+    if ($q === '' || mb_strlen($q) < 2) {
+        echo json_encode(['ok' => true, 'users' => []]);
+        exit;
+    }
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, username, email, user_type, DisplayName,
+                   Department, Job_tittle, Position_held, Active
+            FROM   ViewUserLogIn
+            WHERE  Active = 1
+              AND  (DisplayName LIKE ? OR username LIKE ? OR email LIKE ?)
+            ORDER  BY DisplayName ASC
+        ");
+        $like = '%' . $q . '%';
+        $stmt->execute([$like, $like, $like]);
+        $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode(['ok' => true, 'users' => $users]);
+    } catch (PDOException $e) {
+        error_log('[RBAC] search_users: ' . $e->getMessage());
+        echo json_encode(['ok' => false, 'msg' => 'A database error occurred.']);
+    }
+    exit;
+}
+
 // ── GET: fetch users for a specific type ──────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'get_users_by_type') {
     $type = trim($_GET['type'] ?? '');

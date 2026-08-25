@@ -114,6 +114,8 @@ function h($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); }
 }
 .opa-field-2col { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; }
 @media (max-width:480px) { .opa-field-2col { grid-template-columns:1fr; } }
+.opa-orig-hint { display:block; margin-top:.25rem; font-size:.7rem; color:#94a3b8; }
+.opa-field input.opa-changed { border-color:#16a34a; background:#f0fdf4; }
 
 .opa-modal-note { font-size:.78rem; color:#b45309; background:#fef3c7; border-radius:8px; padding:.6rem .8rem; margin-bottom:1.1rem; display:flex; gap:.5rem; align-items:flex-start; }
 
@@ -251,10 +253,10 @@ require_once __DIR__ . '/hr_nav.php';
 
       <div class="opa-subhead"><i class="bi bi-fingerprint"></i> Actual Punch Times <small>optional</small></div>
       <div class="opa-quad-grid">
-        <div class="opa-quad"><h5>AM Time In (AtimeIn)</h5><div class="opa-field"><input type="time" id="mAtimeIn"></div></div>
-        <div class="opa-quad"><h5>AM Time Out (AtimeOutAM)</h5><div class="opa-field"><input type="time" id="mAtimeOutAM"></div></div>
-        <div class="opa-quad"><h5>PM Time In (AtimeInPM)</h5><div class="opa-field"><input type="time" id="mAtimeInPM"></div></div>
-        <div class="opa-quad"><h5>Time Out (AtimeOut)</h5><div class="opa-field"><input type="time" id="mAtimeOut"></div></div>
+        <div class="opa-quad"><h5>AM Time In (AtimeIn)</h5><div class="opa-field"><input type="time" id="mAtimeIn"><small class="opa-orig-hint" id="mOrigAtimeIn"></small></div></div>
+        <div class="opa-quad"><h5>AM Time Out (AtimeOutAM)</h5><div class="opa-field"><input type="time" id="mAtimeOutAM"><small class="opa-orig-hint" id="mOrigAtimeOutAM"></small></div></div>
+        <div class="opa-quad"><h5>PM Time In (AtimeInPM)</h5><div class="opa-field"><input type="time" id="mAtimeInPM"><small class="opa-orig-hint" id="mOrigAtimeInPM"></small></div></div>
+        <div class="opa-quad"><h5>Time Out (AtimeOut)</h5><div class="opa-field"><input type="time" id="mAtimeOut"><small class="opa-orig-hint" id="mOrigAtimeOut"></small></div></div>
       </div>
 
       <div class="opa-subhead"><i class="bi bi-exclamation-triangle"></i> Lateness &amp; Totals <small>optional</small></div>
@@ -341,6 +343,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const mAtimeOutAM      = document.getElementById('mAtimeOutAM');
     const mAtimeInPM       = document.getElementById('mAtimeInPM');
     const mAtimeOut        = document.getElementById('mAtimeOut');
+    const mOrigAtimeIn     = document.getElementById('mOrigAtimeIn');
+    const mOrigAtimeOutAM  = document.getElementById('mOrigAtimeOutAM');
+    const mOrigAtimeInPM   = document.getElementById('mOrigAtimeInPM');
+    const mOrigAtimeOut    = document.getElementById('mOrigAtimeOut');
     const mAMLate          = document.getElementById('mAMLate');
     const mPMLate          = document.getElementById('mPMLate');
     const mLate            = document.getElementById('mLate');
@@ -528,6 +534,20 @@ document.addEventListener('DOMContentLoaded', function () {
         mAtimeOutAM.value = row.AtimeOutAM24 || '';
         mAtimeInPM.value  = row.AtimeInPM24  || '';
         mAtimeOut.value   = row.AtimeOut24   || '';
+
+        // Show what each punch originally was, and highlight the ones that
+        // actually changed, so HR isn't left guessing which of the 4 to
+        // scrutinize on a multi-punch correction.
+        const punchPairs = [
+            [mAtimeIn,    mOrigAtimeIn,    row.OrigAtimeIn,    row.AtimeInChanged],
+            [mAtimeOutAM, mOrigAtimeOutAM, row.OrigAtimeOutAM, row.AtimeOutAMChanged],
+            [mAtimeInPM,  mOrigAtimeInPM,  row.OrigAtimeInPM,  row.AtimeInPMChanged],
+            [mAtimeOut,   mOrigAtimeOut,   row.OrigAtimeOut,   row.AtimeOutChanged],
+        ];
+        punchPairs.forEach(([input, hintEl, origVal, changed]) => {
+            hintEl.textContent = origVal ? `Original: ${origVal}` : '';
+            input.classList.toggle('opa-changed', !!changed);
+        });
         mAMLate.value          = row.AMLate ?? '';
         mPMLate.value          = row.PMLate ?? '';
         mLate.value            = row.Late ?? '';

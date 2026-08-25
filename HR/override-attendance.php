@@ -214,20 +214,20 @@ require_once __DIR__ . '/hr_nav.php';
             <h4><i class="bi bi-sunrise"></i> AM Schedule</h4>
             <div class="oea-field-row">
               <div class="oea-field"><label>Current Time In</label><input type="text" id="schedAmInCurrent" readonly></div>
-              <div class="oea-field oea-critical"><label>Override Time In</label><input type="time" id="schedAmIn" <?= $is_view_only ? 'disabled' : '' ?>></div>
+              <div class="oea-field"><label>Override Time In</label><input type="time" id="schedAmIn" disabled></div>
             </div>
             <div class="oea-field-row">
-              <div class="oea-field oea-critical"><label>Override Time Out</label><input type="time" id="schedAmOut" <?= $is_view_only ? 'disabled' : '' ?>></div>
+              <div class="oea-field"><label>Override Time Out</label><input type="time" id="schedAmOut" disabled></div>
             </div>
           </div>
           <div>
             <h4><i class="bi bi-sunset"></i> PM Schedule</h4>
             <div class="oea-field-row">
               <div class="oea-field"><label>Current Time In</label><input type="text" id="schedPmInCurrent" readonly></div>
-              <div class="oea-field oea-critical"><label>Override Time In</label><input type="time" id="schedPmIn" <?= $is_view_only ? 'disabled' : '' ?>></div>
+              <div class="oea-field"><label>Override Time In</label><input type="time" id="schedPmIn" disabled></div>
             </div>
             <div class="oea-field-row">
-              <div class="oea-field oea-critical"><label>Override Time Out</label><input type="time" id="schedPmOut" <?= $is_view_only ? 'disabled' : '' ?>></div>
+              <div class="oea-field"><label>Override Time Out</label><input type="time" id="schedPmOut" disabled></div>
             </div>
           </div>
         </div>

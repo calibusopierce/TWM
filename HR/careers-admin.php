@@ -308,7 +308,7 @@ foreach ($rows as $career) {
                 <div>
                   <label class="form-label">Job Title <span style="color:#ef4444;">*</span></label>
                   <input type="text" name="JobTitle" id="modalJobTitle" class="form-control"
-                         placeholder="e.g. Senior Software Engineer" required>
+                         placeholder="e.g. Salesman" required>
                 </div>
                 <div>
                   <label class="form-label">Status</label>
@@ -329,12 +329,12 @@ foreach ($rows as $career) {
                 <div>
                   <label class="form-label">Department <span style="color:#ef4444;">*</span></label>
                   <input type="text" name="Department" id="modalDepartment" class="form-control"
-                         placeholder="e.g. Engineering" required>
+                         placeholder="e.g. Century," required>
                 </div>
                 <div>
                   <label class="form-label">Location</label>
                   <input type="text" name="Location" id="modalLocation" class="form-control"
-                         placeholder="e.g. Cebu City, Philippines">
+                         placeholder="e.g. Lucena City">
                 </div>
               </div>
 

@@ -20,7 +20,9 @@ if ($filter_category > 0)    { $where .= " AND po.category_id = ?";        $para
 if ($filter_status !== '')    { $where .= " AND po.status = ?";              $params[] = $filter_status; }
 if ($filter_department !== '') { $where .= " AND po.department = ?";         $params[] = $filter_department; }
 if ($filter_search !== '') {
-    $where .= " AND (po.po_number LIKE ? OR po.vendor_company LIKE ? OR po.department LIKE ?)";
+    $where .= " AND (po.po_number LIKE ? OR po.vendor_company LIKE ? OR po.department LIKE ?
+                      OR EXISTS (SELECT 1 FROM po_item pi WHERE pi.po_id = po.po_id AND pi.description LIKE ?))";
+    $params[] = "%$filter_search%";
     $params[] = "%$filter_search%";
     $params[] = "%$filter_search%";
     $params[] = "%$filter_search%";
@@ -60,6 +62,24 @@ while ($r = sqlsrv_fetch_array($dept_q, SQLSRV_FETCH_ASSOC)) $departments[] = $r
 $rows_data = [];
 if ($stmt) while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $rows_data[] = $r;
 $rowCount = count($rows_data);
+
+// When the search matched via item description, surface which item(s)
+// matched right in the row — that's the whole point of item-level search,
+// so the clerk doesn't have to open every result to find the item.
+$matchedItems = [];
+if ($filter_search !== '' && !empty($rows_data)) {
+    $ids = array_column($rows_data, 'po_id');
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $sqlItems = "SELECT po_id, description FROM po_item WHERE po_id IN ($placeholders) AND description LIKE ?";
+    $paramsItems = $ids;
+    $paramsItems[] = "%$filter_search%";
+    $resItems = sqlsrv_query($conn, $sqlItems, $paramsItems);
+    if ($resItems) {
+        while ($ri = sqlsrv_fetch_array($resItems, SQLSRV_FETCH_ASSOC)) {
+            $matchedItems[$ri['po_id']][] = $ri['description'];
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -106,6 +126,7 @@ $rowCount = count($rows_data);
       border-radius:var(--radius); font-size:.84rem;
       background:var(--surface); color:var(--text-main); min-width:150px;
     }
+    .filter-bar input[name="search"] { min-width:230px; flex:1 1 230px; }
     .filter-bar input:focus, .filter-bar select:focus { outline:none; border-color:var(--primary); }
 
     .po-table { width:100%; border-collapse:collapse; font-size:.85rem; }
@@ -118,6 +139,13 @@ $rowCount = count($rows_data);
     .po-number { font-weight:700; color:var(--primary); font-size:.88rem; }
     .vendor-name    { font-weight:600; font-size:.88rem; }
     .vendor-contact { font-size:.74rem; color:var(--text-muted); margin-top:.1rem; }
+    .matched-item {
+      font-size:.73rem; color:#0891b2; margin-top:.25rem;
+      display:flex; align-items:center; gap:.3rem;
+      background:rgba(8,145,178,.08); border-radius:6px;
+      padding:.15rem .45rem; width:fit-content; max-width:100%;
+    }
+    .matched-item i { flex-shrink:0; font-size:.7rem; }
     .amount-cell    { text-align:right; font-weight:700; font-size:.9rem; }
 
     .badge-status {
@@ -208,7 +236,7 @@ $rowCount = count($rows_data);
 
       <!-- Filters -->
       <form method="GET" class="filter-bar">
-        <input type="text" name="search" placeholder="🔍  PO No. / Vendor…"
+        <input type="text" name="search" placeholder="🔍  PO No. / Vendor / Item…"
                value="<?= htmlspecialchars($filter_search) ?>">
         <select name="category">
           <option value="0">All Categories</option>
@@ -299,6 +327,15 @@ $rowCount = count($rows_data);
                 <div class="vendor-name"><?= htmlspecialchars($row['vendor_company']) ?></div>
                 <?php if (!empty($row['vendor_contact'])): ?>
                   <div class="vendor-contact"><?= htmlspecialchars($row['vendor_contact']) ?></div>
+                <?php endif; ?>
+                <?php if (!empty($matchedItems[$row['po_id']])): ?>
+                  <div class="matched-item">
+                    <i class="bi bi-box-seam-fill"></i>
+                    <?= htmlspecialchars(implode(', ', array_slice($matchedItems[$row['po_id']], 0, 3))) ?>
+                    <?php if (count($matchedItems[$row['po_id']]) > 3): ?>
+                      +<?= count($matchedItems[$row['po_id']]) - 3 ?> more
+                    <?php endif; ?>
+                  </div>
                 <?php endif; ?>
               </td>
               <td style="font-size:.84rem;"><?= htmlspecialchars($row['prepared_by'] ?? '—') ?></td>

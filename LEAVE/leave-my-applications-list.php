@@ -132,10 +132,12 @@ $sql = "SELECT
             la.ID, la.ControlNo, la.NumberOfDays, la.HalfDay,
             la.Date_Start, la.Date_End, la.SA_Status, la.HR_Status,
             lt.Type_Name,
-            sup.FirstName AS Sup_FirstName, sup.MiddleName AS Sup_MiddleName, sup.LastName AS Sup_LastName
+            sup.FirstName AS Sup_FirstName, sup.MiddleName AS Sup_MiddleName, sup.LastName AS Sup_LastName,
+            hr.FirstName AS HR_FirstName, hr.MiddleName AS HR_MiddleName, hr.LastName AS HR_LastName
         FROM dbo.Tbl_Leave_Application la
         LEFT JOIN dbo.Tbl_Leave_Type lt ON lt.ID = la.TypeID
         LEFT JOIN dbo.TBL_HREmployeeList sup ON sup.EmployeeID = la.SA_EmployeeID
+        LEFT JOIN dbo.TBL_HREmployeeList hr  ON hr.EmployeeID  = la.HR_EmployeeID
         $where
         ORDER BY la.DateTimeInput DESC
         OFFSET :offset ROWS FETCH NEXT :pageSize ROWS ONLY";
@@ -159,6 +161,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         'NumberOfDays'   => $row['NumberOfDays'],
         'HalfDay'        => $row['HalfDay'],
         'SupervisorName' => buildName($row['Sup_FirstName'], $row['Sup_MiddleName'], $row['Sup_LastName']),
+        'HRName'         => buildName($row['HR_FirstName'], $row['HR_MiddleName'], $row['HR_LastName']),
         'SA_Status'      => leaveStatusLabel($row['SA_Status']),
         'HR_Status'      => leaveStatusLabel($row['HR_Status']),
     ];

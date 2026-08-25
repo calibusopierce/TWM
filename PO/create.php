@@ -26,6 +26,29 @@ $cats_q     = sqlsrv_query($conn, "SELECT category_id, category_name FROM po_cat
 $categories = [];
 while ($r = sqlsrv_fetch_array($cats_q, SQLSRV_FETCH_ASSOC)) $categories[] = $r;
 
+// Suggested values for plain text fields — distinct past values, most
+// recently used first. Rendered as <datalist> options so the field stays
+// fully free-text/editable; this is a suggestion, never an enforced choice.
+function fetchSuggestions($conn, $column, $limit = 40) {
+    $sql = "SELECT TOP $limit val FROM (
+                SELECT $column AS val, MAX(po_date) AS last_used
+                FROM purchase_order
+                WHERE $column IS NOT NULL AND LTRIM(RTRIM($column)) <> ''
+                GROUP BY $column
+            ) x ORDER BY last_used DESC";
+    $res = sqlsrv_query($conn, $sql);
+    $out = [];
+    if ($res) while ($r = sqlsrv_fetch_array($res, SQLSRV_FETCH_ASSOC)) $out[] = $r['val'];
+    return $out;
+}
+
+$suggest_cols = [
+    'vendor_company', 'vendor_contact', 'vendor_address', 'vendor_phone',
+    'department', 'branch', 'prepared_by', 'prepared_title', 'approved_by', 'approved_title',
+];
+$suggestions = [];
+foreach ($suggest_cols as $col) $suggestions[$col] = fetchSuggestions($conn, $col);
+
 // Handle POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $po_number       = trim($_POST['po_number']);
@@ -218,7 +241,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
           <div class="form-group">
             <label>Category *</label>
-            <select name="category_id" required>
+            <select name="category_id" id="categorySelect" onchange="loadItemSuggestions(this.value)" required>
               <option value="">-- Select --</option>
               <?php foreach ($categories as $cat): ?>
                 <option value="<?= $cat['category_id'] ?>"><?= htmlspecialchars($cat['category_name']) ?></option>
@@ -235,11 +258,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
           <div class="form-group">
             <label>Department</label>
-            <input type="text" name="department" placeholder="e.g. Operations" required>
+            <input type="text" name="department" list="dl_department" placeholder="e.g. Operations" required>
           </div>
           <div class="form-group">
             <label>Branch</label>
-            <input type="text" name="branch" placeholder="e.g. Lucena Branch" required>
+            <input type="text" name="branch" list="dl_branch" placeholder="e.g. Lucena Branch" required>
           </div>
           <div class="form-group" style="grid-column:span 2;">
             <label>Remarks</label>
@@ -255,13 +278,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="form-card-header"><i class="bi bi-building"></i> Vendor</div>
         <div class="form-card-body" style="display:flex;flex-direction:column;gap:.85rem;">
           <div class="form-group"><label>Company Name *</label>
-            <input type="text" name="vendor_company" placeholder="e.g. Star Honda Inc." required></div>
+            <input type="text" name="vendor_company" list="dl_vendor_company" placeholder="e.g. Star Honda Inc." required></div>
           <div class="form-group"><label>Contact Person</label>
-            <input type="text" name="vendor_contact" placeholder="e.g. Mr. Angelo Supremo" required></div>
+            <input type="text" name="vendor_contact" list="dl_vendor_contact" placeholder="e.g. Mr. Angelo Supremo" required></div>
           <div class="form-group"><label>Address</label>
-            <input type="text" name="vendor_address" placeholder="Brgy., City" required></div>
+            <input type="text" name="vendor_address" list="dl_vendor_address" placeholder="Brgy., City" required></div>
           <div class="form-group"><label>Phone</label>
-            <input type="text" name="vendor_phone" placeholder="0950 930 7198" required></div>
+            <input type="text" name="vendor_phone" list="dl_vendor_phone" placeholder="0950 930 7198" required></div>
         </div>
       </div>
       <div class="form-card">
@@ -334,13 +357,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="form-card-body">
         <div class="form-grid-4">
           <div class="form-group"><label>Prepared By</label>
-            <input type="text" name="prepared_by" placeholder="Full Name" required></div>
+            <input type="text" name="prepared_by" list="dl_prepared_by" placeholder="Full Name" required></div>
           <div class="form-group"><label>Title / Position</label>
-            <input type="text" name="prepared_title" placeholder="e.g. Purchasing Officer" required></div>
+            <input type="text" name="prepared_title" list="dl_prepared_title" placeholder="e.g. Purchasing Officer" required></div>
           <div class="form-group"><label>Approved By</label>
-            <input type="text" name="approved_by" placeholder="Full Name" required></div>
+            <input type="text" name="approved_by" list="dl_approved_by" placeholder="Full Name" required></div>
           <div class="form-group"><label>Title / Position</label>
-            <input type="text" name="approved_title" placeholder="e.g. Corporate President" required></div>
+            <input type="text" name="approved_title" list="dl_approved_title" placeholder="e.g. Corporate President" required></div>
         </div>
       </div>
     </div>
@@ -355,12 +378,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </button>
     </div>
 
+    <!-- Suggestion datalists — populated from past PO history, purely
+         suggestive; every field they're attached to stays free-text. -->
+    <?php foreach ($suggestions as $col => $vals): ?>
+    <datalist id="dl_<?= $col ?>">
+      <?php foreach ($vals as $v): ?><option value="<?= htmlspecialchars($v) ?>"><?php endforeach; ?>
+    </datalist>
+    <?php endforeach; ?>
+    <datalist id="itemDescList"></datalist>
+
   </form>
 </div>
 
 <script src="<?= base_url('assets/vendor/bootstrap/js/bootstrap.bundle.min.js') ?>"></script>
 <script>
 let rowCount = 0;
+let itemPriceMap = {}; // { description: { cash_price, percent_price } } for the currently selected category
+
 function addRow(desc='', qty=1, cash=0, pct=0) {
   rowCount++;
   const n = rowCount;
@@ -369,7 +403,7 @@ function addRow(desc='', qty=1, cash=0, pct=0) {
   tr.id = 'row-' + n;
   tr.innerHTML = `
     <td style="text-align:center;color:var(--text-muted);font-size:.78rem;font-weight:600;">${n}</td>
-    <td><input type="text" name="item_desc[]" value="${desc}" placeholder="Item description" required></td>
+    <td><input type="text" name="item_desc[]" list="itemDescList" value="${desc}" placeholder="Item description" required></td>
     <td><input type="number" name="item_qty[]" value="${qty}" min="1" oninput="recalcRow(${n})" required></td>
     <td><input type="number" name="item_cash_price[]" value="${cash}" step="0.01" oninput="recalcRow(${n})" required></td>
     <td><input type="number" name="item_pct_price[]" value="${pct}" step="0.01" oninput="recalcRow(${n})" required></td>
@@ -403,7 +437,56 @@ function recalc() {
   document.getElementById('grand_total').value=fmt((sub+tax+ship+oth).toFixed(2));
 }
 function fmt(n){ return parseFloat(n).toLocaleString('en-PH',{minimumFractionDigits:2}); }
+
+// Fetches past item descriptions + last-used prices scoped to the selected
+// category, and refreshes the shared datalist all description fields read
+// from. Prices are only a suggestion — picking one just pre-fills the row,
+// the clerk can still edit either price field freely afterward.
+async function loadItemSuggestions(categoryId) {
+  itemPriceMap = {};
+  const dl = document.getElementById('itemDescList');
+  dl.innerHTML = '';
+  if (!categoryId) return;
+
+  try {
+    const res  = await fetch('po_item_suggest.php?category_id=' + encodeURIComponent(categoryId));
+    const data = await res.json();
+    if (!data.success) return;
+
+    data.items.forEach(it => {
+      itemPriceMap[it.description] = { cash: it.cash_price, pct: it.percent_price };
+      const opt = document.createElement('option');
+      opt.value = it.description;
+      dl.appendChild(opt);
+    });
+  } catch (err) {
+    console.error('loadItemSuggestions failed:', err);
+  }
+}
+
+// Delegated listener: when a description field's value exactly matches a
+// known suggestion (picked from the datalist, or typed to match), auto-fill
+// that row's Cash Price / % Price. Still fully editable after autofill.
+document.getElementById('items-body').addEventListener('input', e => {
+  const el = e.target;
+  if (el.name !== 'item_desc[]') return;
+  const match = itemPriceMap[el.value];
+  if (!match) return;
+
+  const row = el.closest('tr');
+  const n   = row.id.replace('row-', '');
+  row.querySelector('[name="item_cash_price[]"]').value = match.cash;
+  row.querySelector('[name="item_pct_price[]"]').value  = match.pct;
+  recalcRow(n);
+});
+
 for(let i=0;i<5;i++) addRow();
+
+// If the browser restored a previously-selected category on page reload,
+// load its suggestions immediately instead of waiting for a change event.
+if (document.getElementById('categorySelect').value) {
+  loadItemSuggestions(document.getElementById('categorySelect').value);
+}
 </script>
 </body>
 </html>

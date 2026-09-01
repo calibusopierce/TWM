@@ -16,6 +16,24 @@ $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 $errors  = [];
 $success = '';
 
+$categories = [];
+$catStmt = sqlsrv_query($conn, "SELECT CategoryID, CategoryName FROM TBL_Bulletin_Category WHERE IsActive = 1 ORDER BY CategoryName");
+if ($catStmt !== false) {
+    while ($row = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC)) { $categories[] = $row; }
+}
+
+$allDepartments = [];
+$deptStmt = sqlsrv_query($conn, "SELECT DISTINCT Department FROM TBL_HREmployeeList WHERE [Active] = 1 AND Department IS NOT NULL AND LTRIM(RTRIM(Department)) <> '' ORDER BY Department");
+if ($deptStmt !== false) {
+    while ($row = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) { $allDepartments[] = trim($row['Department']); }
+}
+
+$allBranches = [];
+$branchStmt = sqlsrv_query($conn, "SELECT DISTINCT Branch FROM TBL_HREmployeeList WHERE Branch IS NOT NULL AND LTRIM(RTRIM(Branch)) <> '' ORDER BY Branch");
+if ($branchStmt !== false) {
+    while ($row = sqlsrv_fetch_array($branchStmt, SQLSRV_FETCH_ASSOC)) { $allBranches[] = trim($row['Branch']); }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create') {
     if ($viewOnly) {
         $errors[] = "You don't have permission to post announcements.";
@@ -30,13 +48,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
         if (!$startDate || !$endDate) $errors[] = 'Both a start and end viewing date are required.';
         if ($startDate && $endDate && $startDate > $endDate) $errors[] = 'Start date must be on or before end date.';
 
+        $categoryID   = (int) ($_POST['category_id'] ?? 0) ?: null;
+        $targetDepts  = array_filter(array_map('trim', $_POST['departments'] ?? []));
+        $targetBranch = array_filter(array_map('trim', $_POST['branches'] ?? []));
+
         if (!$errors) {
-            $sql = "INSERT INTO TBL_Bulletin (Title, Message, StartDate, EndDate, CreatedByUserID, CreatedByName, IsActive)
-                    VALUES (?, ?, ?, ?, ?, ?, 1)";
-            $stmt = sqlsrv_query($conn, $sql, [$title, $message, $startDate, $endDate, $userID, $displayName]);
+            $sql = "INSERT INTO TBL_Bulletin (Title, Message, StartDate, EndDate, CreatedByUserID, CreatedByName, IsActive, CategoryID)
+                    OUTPUT INSERTED.BulletinID
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?)";
+            $stmt = sqlsrv_query($conn, $sql, [$title, $message, $startDate, $endDate, $userID, $displayName, $categoryID]);
             if ($stmt === false) {
                 $errors[] = 'Database error: ' . print_r(sqlsrv_errors(), true);
             } else {
+                $newRow = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+                $newID  = (int) $newRow['BulletinID'];
+                foreach ($targetDepts as $d) {
+                    sqlsrv_query($conn, "INSERT INTO TBL_Bulletin_TargetDepartment (BulletinID, Department) VALUES (?, ?)", [$newID, $d]);
+                }
+                foreach ($targetBranch as $br) {
+                    sqlsrv_query($conn, "INSERT INTO TBL_Bulletin_TargetBranch (BulletinID, Branch) VALUES (?, ?)", [$newID, $br]);
+                }
                 $success = 'Announcement posted.';
                 $_POST = []; // clear form on success
             }
@@ -69,32 +100,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit'
     if (!$startDate || !$endDate) $errors[] = 'Both a start and end viewing date are required.';
     if ($startDate && $endDate && $startDate > $endDate) $errors[] = 'Start date must be on or before end date.';
 
+    $categoryID   = (int) ($_POST['category_id'] ?? 0) ?: null;
+    $targetDepts  = array_filter(array_map('trim', $_POST['departments'] ?? []));
+    $targetBranch = array_filter(array_map('trim', $_POST['branches'] ?? []));
+
     if (!$errors) {
         // Ownership check lives in the WHERE clause — only the creator can edit their own post
-        $sql  = "UPDATE TBL_Bulletin SET Title = ?, Message = ?, StartDate = ?, EndDate = ?
+        $sql  = "UPDATE TBL_Bulletin SET Title = ?, Message = ?, StartDate = ?, EndDate = ?, CategoryID = ?
                  WHERE BulletinID = ? AND CreatedByUserID = ?";
-        $stmt = sqlsrv_query($conn, $sql, [$title, $message, $startDate, $endDate, $id, $userID]);
+        $stmt = sqlsrv_query($conn, $sql, [$title, $message, $startDate, $endDate, $categoryID, $id, $userID]);
         if ($stmt === false) {
             $errors[] = 'Database error: ' . print_r(sqlsrv_errors(), true);
         } elseif (sqlsrv_rows_affected($stmt) === 0) {
             $errors[] = "You can only edit announcements you created.";
         } else {
+            sqlsrv_query($conn, "DELETE FROM TBL_Bulletin_TargetDepartment WHERE BulletinID = ?", [$id]);
+            sqlsrv_query($conn, "DELETE FROM TBL_Bulletin_TargetBranch WHERE BulletinID = ?", [$id]);
+            foreach ($targetDepts as $d) {
+                sqlsrv_query($conn, "INSERT INTO TBL_Bulletin_TargetDepartment (BulletinID, Department) VALUES (?, ?)", [$id, $d]);
+            }
+            foreach ($targetBranch as $br) {
+                sqlsrv_query($conn, "INSERT INTO TBL_Bulletin_TargetBranch (BulletinID, Branch) VALUES (?, ?)", [$id, $br]);
+            }
             $success = 'Announcement updated.';
         }
     }
 }
 
 $bulletins = [];
-$stmt = sqlsrv_query($conn, "SELECT BulletinID, Title, Message, StartDate, EndDate, CreatedByUserID, CreatedByName, CreatedAt, IsActive
-                              FROM TBL_Bulletin
-                              WHERE IsActive = 1
-                              ORDER BY CreatedAt DESC");
+$stmt = sqlsrv_query($conn, "SELECT b.BulletinID, b.Title, b.Message, b.StartDate, b.EndDate, b.CreatedByUserID, b.CreatedByName, b.CreatedAt, b.IsActive, b.CategoryID, c.CategoryName
+                              FROM TBL_Bulletin b
+                              LEFT JOIN TBL_Bulletin_Category c ON c.CategoryID = b.CategoryID
+                              WHERE b.IsActive = 1
+                              ORDER BY b.CreatedAt DESC");
 if ($stmt !== false) {
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $bulletins[] = $row;
     }
 } else {
     $errors[] = 'Database error: ' . print_r(sqlsrv_errors(), true);
+}
+
+$deptScope = [];
+$dsStmt = sqlsrv_query($conn, "SELECT BulletinID, Department FROM TBL_Bulletin_TargetDepartment");
+if ($dsStmt !== false) {
+    while ($row = sqlsrv_fetch_array($dsStmt, SQLSRV_FETCH_ASSOC)) {
+        $deptScope[$row['BulletinID']][] = $row['Department'];
+    }
+}
+$branchScope = [];
+$bsStmt = sqlsrv_query($conn, "SELECT BulletinID, Branch FROM TBL_Bulletin_TargetBranch");
+if ($bsStmt !== false) {
+    while ($row = sqlsrv_fetch_array($bsStmt, SQLSRV_FETCH_ASSOC)) {
+        $branchScope[$row['BulletinID']][] = $row['Branch'];
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -166,6 +225,12 @@ if ($stmt !== false) {
     .modal-actions{display:flex;gap:.7rem;justify-content:flex-end;margin-top:1.1rem;}
     .btn-cancel{background:transparent;border:1px solid var(--w25);color:var(--white);}
     .btn-cancel:hover{background:var(--w10);}
+    .target-group{margin-top:.8rem;}
+    .target-all{display:flex;align-items:center;gap:.5rem;font-size:.85rem;font-weight:700;margin-bottom:.4rem;cursor:pointer;}
+    .target-checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.4rem .8rem;background:rgba(255,255,255,.06);border:1px solid var(--w15);border-radius:8px;padding:.7rem .8rem;}
+    .target-checks label{display:flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:500;margin:0;cursor:pointer;}
+    .scope-badge{display:inline-block;padding:.1rem .5rem;border-radius:6px;font-size:.68rem;font-weight:600;background:var(--w10);color:var(--w80);}
+  </style>
   </style>
 </head>
 <body>
@@ -197,6 +262,32 @@ if ($stmt !== false) {
           <input type="date" name="end_date" required value="<?= htmlspecialchars($_POST['end_date'] ?? date('Y-m-d')) ?>">
         </div>
       </div>
+
+      <label>Category</label>
+      <select name="category_id" required>
+        <?php foreach ($categories as $c): ?>
+          <option value="<?= (int) $c['CategoryID'] ?>" <?= (int) ($_POST['category_id'] ?? 0) === (int) $c['CategoryID'] ? 'selected' : '' ?>><?= htmlspecialchars($c['CategoryName']) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <label>Visible to</label>
+      <div class="target-group">
+        <label class="target-all"><input type="checkbox" class="all-toggle" data-target="dept-checks" checked> All Departments</label>
+        <div class="target-checks" id="dept-checks" style="display:none;">
+          <?php foreach ($allDepartments as $d): ?>
+            <label><input type="checkbox" name="departments[]" value="<?= htmlspecialchars($d) ?>" disabled> <?= htmlspecialchars($d) ?></label>
+          <?php endforeach; ?>
+        </div>
+      </div>
+      <div class="target-group">
+        <label class="target-all"><input type="checkbox" class="all-toggle" data-target="branch-checks" checked> All Branches</label>
+        <div class="target-checks" id="branch-checks" style="display:none;">
+          <?php foreach ($allBranches as $br): ?>
+            <label><input type="checkbox" name="branches[]" value="<?= htmlspecialchars($br) ?>" disabled> <?= htmlspecialchars($br) ?></label>
+          <?php endforeach; ?>
+        </div>
+      </div>
+
       <button type="submit"><i class="bi bi-send"></i> Post Announcement</button>
     </form>
   </div>
@@ -206,27 +297,35 @@ if ($stmt !== false) {
     <table>
       <thead>
         <tr>
-          <th>Title</th><th>Viewing Window</th><th>Posted By</th><th>Status</th>
+          <th>Title</th><th>Category</th><th>Visible To</th><th>Viewing Window</th><th>Posted By</th>
           <?php if (!$viewOnly): ?><th></th><?php endif; ?>
         </tr>
       </thead>
       <tbody>
       <?php foreach ($bulletins as $b): ?>
+        <?php
+          $bid    = (int) $b['BulletinID'];
+          $depts  = $deptScope[$bid]   ?? [];
+          $brnchs = $branchScope[$bid] ?? [];
+          $scopeText = (!$depts && !$brnchs) ? 'Everyone'
+                     : trim((implode(', ', $depts) ?: 'All Depts') . ' — ' . (implode(', ', $brnchs) ?: 'All Branches'));
+        ?>
         <tr>
           <td><?= htmlspecialchars($b['Title']) ?></td>
+          <td><span class="scope-badge"><?= htmlspecialchars($b['CategoryName'] ?? 'General Announcement') ?></span></td>
+          <td><?= htmlspecialchars($scopeText) ?></td>
           <td><?= htmlspecialchars($b['StartDate']->format('M j, Y')) ?> &ndash; <?= htmlspecialchars($b['EndDate']->format('M j, Y')) ?></td>
           <td><?= htmlspecialchars($b['CreatedByName'] ?? 'Unknown') ?></td>
-          <td><span class="badge badge-active">Active</span></td>
           <?php if (!$viewOnly): ?>
           <td>
             <?php if ((int) $b['CreatedByUserID'] === $userID): ?>
-            <button type="button" class="edit-btn" onclick='openEditModal(<?= (int) $b["BulletinID"] ?>, <?= json_encode($b["Title"]) ?>, <?= json_encode($b["Message"]) ?>, "<?= $b["StartDate"]->format("Y-m-d") ?>", "<?= $b["EndDate"]->format("Y-m-d") ?>")'>
+            <button type="button" class="edit-btn" onclick='openEditModal(<?= $bid ?>, <?= json_encode($b["Title"]) ?>, <?= json_encode($b["Message"]) ?>, "<?= $b["StartDate"]->format("Y-m-d") ?>", "<?= $b["EndDate"]->format("Y-m-d") ?>", <?= (int) ($b["CategoryID"] ?? 0) ?>, <?= json_encode($depts) ?>, <?= json_encode($brnchs) ?>)'>
               <i class="bi bi-pencil"></i> Edit
             </button>
             <?php endif; ?>
             <form method="post" style="display:inline" onsubmit="return confirm('Remove this announcement?');">
               <input type="hidden" name="action" value="deactivate">
-              <input type="hidden" name="bulletin_id" value="<?= (int) $b['BulletinID'] ?>">
+              <input type="hidden" name="bulletin_id" value="<?= $bid ?>">
               <button type="submit" class="del-btn">Remove</button>
             </form>
           </td>
@@ -234,7 +333,7 @@ if ($stmt !== false) {
         </tr>
       <?php endforeach; ?>
       <?php if (!$bulletins): ?>
-        <tr><td colspan="5">No active announcements right now.</td></tr>
+        <tr><td colspan="6">No active announcements right now.</td></tr>
       <?php endif; ?>
       </tbody>
     </table>
@@ -261,6 +360,32 @@ if ($stmt !== false) {
           <input type="date" name="end_date" id="edit_end_date" required>
         </div>
       </div>
+
+      <label>Category</label>
+      <select name="category_id" id="edit_category_id" required>
+        <?php foreach ($categories as $c): ?>
+          <option value="<?= (int) $c['CategoryID'] ?>"><?= htmlspecialchars($c['CategoryName']) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <label>Visible to</label>
+      <div class="target-group">
+        <label class="target-all"><input type="checkbox" id="edit_dept_all" class="all-toggle" data-target="edit-dept-checks"> All Departments</label>
+        <div class="target-checks" id="edit-dept-checks">
+          <?php foreach ($allDepartments as $d): ?>
+            <label><input type="checkbox" name="departments[]" value="<?= htmlspecialchars($d) ?>"> <?= htmlspecialchars($d) ?></label>
+          <?php endforeach; ?>
+        </div>
+      </div>
+      <div class="target-group">
+        <label class="target-all"><input type="checkbox" id="edit_branch_all" class="all-toggle" data-target="edit-branch-checks"> All Branches</label>
+        <div class="target-checks" id="edit-branch-checks">
+          <?php foreach ($allBranches as $br): ?>
+            <label><input type="checkbox" name="branches[]" value="<?= htmlspecialchars($br) ?>"> <?= htmlspecialchars($br) ?></label>
+          <?php endforeach; ?>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="btn-cancel" onclick="closeEditModal()">Cancel</button>
         <button type="submit"><i class="bi bi-check-lg"></i> Save Changes</button>

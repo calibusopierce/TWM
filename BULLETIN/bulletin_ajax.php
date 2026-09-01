@@ -19,12 +19,24 @@ if (!isset($_SESSION['bulletin_dismissed']) || !is_array($_SESSION['bulletin_dis
 }
 
 if ($action === 'list_active') {
-    $sql = "SELECT BulletinID, Title, Message, CreatedByName, CreatedAt
-            FROM TBL_Bulletin
-            WHERE IsActive = 1
-              AND CAST(GETDATE() AS DATE) BETWEEN StartDate AND EndDate
-            ORDER BY CreatedAt DESC";
-    $stmt = sqlsrv_query($conn, $sql);
+    $userDept   = $_SESSION['Department'] ?? '';
+    $userBranch = $_SESSION['Branch'] ?? '';
+
+    $sql = "SELECT b.BulletinID, b.Title, b.Message, b.CreatedByName, b.CreatedAt, c.CategoryName
+            FROM TBL_Bulletin b
+            LEFT JOIN TBL_Bulletin_Category c ON c.CategoryID = b.CategoryID
+            WHERE b.IsActive = 1
+              AND CAST(GETDATE() AS DATE) BETWEEN b.StartDate AND b.EndDate
+              AND (
+                    NOT EXISTS (SELECT 1 FROM TBL_Bulletin_TargetDepartment td WHERE td.BulletinID = b.BulletinID)
+                    OR EXISTS (SELECT 1 FROM TBL_Bulletin_TargetDepartment td WHERE td.BulletinID = b.BulletinID AND td.Department = ?)
+                  )
+              AND (
+                    NOT EXISTS (SELECT 1 FROM TBL_Bulletin_TargetBranch tb WHERE tb.BulletinID = b.BulletinID)
+                    OR EXISTS (SELECT 1 FROM TBL_Bulletin_TargetBranch tb WHERE tb.BulletinID = b.BulletinID AND tb.Branch = ?)
+                  )
+            ORDER BY b.CreatedAt DESC";
+    $stmt = sqlsrv_query($conn, $sql, [$userDept, $userBranch]);
 
     $out = [];
     if ($stmt !== false) {
@@ -34,11 +46,12 @@ if ($action === 'list_active') {
                 continue; // already dismissed this session
             }
             $out[] = [
-                'id'      => $id,
-                'title'   => $row['Title'],
-                'message' => $row['Message'],
-                'author'  => $row['CreatedByName'] ?? 'Unknown',
-                'date'    => $row['CreatedAt']->format('M j, Y'),
+                'id'       => $id,
+                'title'    => $row['Title'],
+                'message'  => $row['Message'],
+                'author'   => $row['CreatedByName'] ?? 'Unknown',
+                'date'     => $row['CreatedAt']->format('M j, Y'),
+                'category' => $row['CategoryName'] ?? 'General Announcement',
             ];
         }
     } else {

@@ -259,6 +259,51 @@ if (!$is_print_all) {
 }
 
 /* -----------------------------------------------------------
+   Group the current page's rows by customer.
+   NOTE: pagination above is per line-item, not per customer, so a
+   customer whose orders straddle a page boundary will show a partial
+   item list on each page. Fine for a quick "who ordered what" glance;
+   if that matters later, pagination would need to move to a
+   customer/SOID basis instead.
+----------------------------------------------------------- */
+$customer_groups = [];
+foreach ($rows as $r) {
+    $code = trim($r['CustomerCode'] ?? '');
+    if ($code === '') $code = '(no code)';
+    if (!isset($customer_groups[$code])) {
+        $customer_groups[$code] = [
+            'CustomerCode' => $code,
+            'CustomerName' => trim($r['CustomerName'] ?? ''),
+            'Area'         => trim($r['Area'] ?? ''),
+            'SOIDs'        => [],
+            'TotalQty'     => 0,
+            'TotalAmount'  => 0,
+            'items'        => [],
+        ];
+    }
+    $g =& $customer_groups[$code];
+    if (!in_array($r['SOID'], $g['SOIDs'], true)) $g['SOIDs'][] = $r['SOID'];
+    $g['TotalQty']    += (float)$r['Quantity'];
+    $g['TotalAmount'] += (float)$r['Sub_TotalPrice'];
+    $g['items'][] = [
+        'SOID'         => $r['SOID'],
+        'DateBook'     => so_fmt_date($r['DateBook']),
+        'ProductName'  => $r['ProductName'],
+        'ProductCode'  => trim($r['ProductCode'] ?? ''),
+        'UOM'          => trim($r['UOM'] ?? ''),
+        'Quantity'     => (float)$r['Quantity'],
+        'UnitPrice'    => (float)$r['Unit_Price'],
+        'SubTotal'     => (float)$r['Sub_TotalPrice'],
+        'Salesman'     => trim($r['SalesmanCode'] ?? ''),
+        'Department'   => trim($r['Department'] ?? ''),
+        'Branch'       => trim($r['Branch'] ?? ''),
+        'Status'       => trim($r['Status'] ?? ''),
+        'Remarks'      => $r['Remarks'],
+    ];
+    unset($g);
+}
+
+/* -----------------------------------------------------------
    Dropdown source lists (not needed for the print-all view)
 ----------------------------------------------------------- */
 $dept_list = $branch_list = $area_list = $salesman_list = $supplier_list = $customer_list = [];
@@ -761,7 +806,7 @@ if ($is_print_all) {
         <div class="table-card-title">
           <i class="bi bi-list-ul" style="color:var(--primary-light);"></i>
           Sales Orders
-          <span class="count-chip"><?= number_format($total_rows) ?> record<?= $total_rows !== 1 ? 's' : '' ?></span>
+          <span class="count-chip"><?= number_format(count($customer_groups)) ?> customer<?= count($customer_groups) !== 1 ? 's' : '' ?></span>
         </div>
       </div>
 
@@ -834,60 +879,31 @@ if ($is_print_all) {
       <table class="so-table">
         <thead>
           <tr>
-            <th>SOID</th>
-            <th>Date Book</th>
-            <th>Req. Delivery</th>
-            <th>Department</th>
-            <th>Branch</th>
-            <th>Area</th>
             <th>Customer Name</th>
-            <th>Terms</th>
-            <th>Salesman</th>
-            <th>Product</th>
-            <th>UOM</th>
-            <th style="text-align:right;">Qty</th>
-            <th style="text-align:right;">Unit Price</th>
-            <th style="text-align:right;">Sub Total (₱)</th>
-            <th>Supplier</th>
-            <th>Remarks</th>
+            <th>Area</th>
+            <th style="text-align:right;">Orders</th>
+            <th style="text-align:right;">Total Qty</th>
+            <th style="text-align:right;">Total Amount (₱)</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          <?php if (empty($rows)): ?>
+          <?php if (empty($customer_groups)): ?>
             <tr class="empty-row">
-              <td colspan="16">
+              <td colspan="6">
                 <i class="bi bi-inbox" style="font-size:2rem;display:block;margin-bottom:.5rem;opacity:.3;"></i>
                 No sales orders found for the selected filters.
               </td>
             </tr>
           <?php else: ?>
-            <?php foreach ($rows as $r): ?>
-            <tr>
-              <td><span class="so-number"><?= h($r['SOID']) ?></span></td>
-              <td style="color:var(--text-muted);font-size:.9rem;"><?= h(so_fmt_date($r['DateBook'])) ?></td>
-              <td style="color:var(--text-muted);font-size:.9rem;"><?= h(so_fmt_date($r['RequestDeliveryDate'])) ?></td>
-              <td>
-                <?php if (trim($r['Department'] ?? '') !== ''): ?>
-                  <span class="pill-chip"><?= h(trim($r['Department'])) ?></span>
-                <?php else: ?>
-                  <span style="color:var(--text-muted);font-size:.85rem;">—</span>
-                <?php endif; ?>
-              </td>
-              <td><?= h(trim($r['Branch'] ?? '')) ?: '—' ?></td>
-              <td><?= h(trim($r['Area'] ?? '')) ?: '—' ?></td>
-              <td><?= h(trim($r['CustomerName'] ?? '')) ?></td>
-              <td><?= h(trim($r['Terms'] ?? '')) ?: '—' ?></td>
-              <td><?= h(trim($r['SalesmanCode'] ?? '')) ?></td>
-              <td>
-                <div style="font-weight:600;"><?= h($r['ProductName']) ?></div>
-                <div style="font-size:.78rem;color:var(--text-muted);"><?= h(trim($r['ProductCode'] ?? '')) ?></div>
-              </td>
-              <td><?= h(trim($r['UOM'] ?? '')) ?></td>
-              <td class="qty-cell"><?= h(number_format((float)$r['Quantity'])) ?></td>
-              <td class="amount-cell">₱ <?= so_fmt_money($r['Unit_Price']) ?></td>
-              <td class="amount-cell">₱ <?= so_fmt_money($r['Sub_TotalPrice']) ?></td>
-              <td><?= h(trim($r['SupplierCode'] ?? '')) ?: '—' ?></td>
-              <td style="color:var(--text-muted);font-size:.9rem;"><?= h($r['Remarks']) ?></td>
+            <?php foreach ($customer_groups as $code => $g): ?>
+            <tr class="customer-row" style="cursor:pointer;" onclick="openCustomerOrderModal('<?= h(addslashes($code)) ?>')">
+              <td><?= h($g['CustomerName'] ?: $g['CustomerCode']) ?></td>
+              <td><?= h($g['Area']) ?: '—' ?></td>
+              <td class="qty-cell"><?= number_format(count($g['SOIDs'])) ?></td>
+              <td class="qty-cell"><?= number_format($g['TotalQty']) ?></td>
+              <td class="amount-cell">₱ <?= so_fmt_money($g['TotalAmount']) ?></td>
+              <td style="text-align:center;color:var(--text-muted);"><i class="bi bi-chevron-right"></i></td>
             </tr>
             <?php endforeach; ?>
           <?php endif; ?>
@@ -895,9 +911,82 @@ if ($is_print_all) {
       </table>
     </div>
 
+    <!-- Customer Order Items Modal (single, reused, filled via JS) -->
+    <div class="modal fade" id="customerOrderModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="customerOrderModalTitle"><i class="bi bi-receipt" style="color:var(--primary-light);"></i> Order Items</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <table class="customer-modal-table">
+              <thead>
+                <tr>
+                  <th>SOID</th>
+                  <th>Date Book</th>
+                  <th>Product</th>
+                  <th>UOM</th>
+                  <th style="text-align:right;">Qty</th>
+                  <th style="text-align:right;">Unit Price</th>
+                  <th style="text-align:right;">Sub Total (₱)</th>
+                  <th>Salesman</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="customerOrderModalBody"></tbody>
+            </table>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary-custom" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    // Grouped data for the current page only — matches $customer_groups above.
+    const soCustomerGroups = <?= json_encode($customer_groups, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+
+    function openCustomerOrderModal(code) {
+      const g = soCustomerGroups[code];
+      if (!g) return;
+
+      document.getElementById('customerOrderModalTitle').innerHTML =
+        '<i class="bi bi-receipt" style="color:var(--primary-light);"></i> ' +
+        (g.CustomerName || g.CustomerCode) +
+        ' <span class="count-chip">' + g.items.length + ' item' + (g.items.length !== 1 ? 's' : '') + '</span>';
+
+      const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[c]);
+      const money = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      const body = document.getElementById('customerOrderModalBody');
+      body.innerHTML = g.items.map(it => `
+        <tr>
+          <td><span class="so-number">${esc(it.SOID)}</span></td>
+          <td style="color:var(--text-muted);font-size:.9rem;">${esc(it.DateBook)}</td>
+          <td>
+            <div style="font-weight:600;">${esc(it.ProductName)}</div>
+            <div style="font-size:.78rem;color:var(--text-muted);">${esc(it.ProductCode)}</div>
+          </td>
+          <td>${esc(it.UOM)}</td>
+          <td class="qty-cell">${Number(it.Quantity || 0).toLocaleString()}</td>
+          <td class="amount-cell">₱ ${money(it.UnitPrice)}</td>
+          <td class="amount-cell">₱ ${money(it.SubTotal)}</td>
+          <td>${esc(it.Salesman)}</td>
+          <td>${esc(it.Status) || '—'}</td>
+        </tr>
+      `).join('');
+
+      new bootstrap.Modal(document.getElementById('customerOrderModal')).show();
+    }
+    </script>
+
     <?php if (!empty($rows)): ?>
     <div class="pagination-bar">
-      <div>Showing <?= count($rows) ?> of <?= number_format($total_rows) ?> records</div>
+      <div>Showing <?= number_format(count($customer_groups)) ?> customer<?= count($customer_groups) !== 1 ? 's' : '' ?> (<?= count($rows) ?> of <?= number_format($total_rows) ?> line items on this page)</div>
       <div>
         <?php
         $qs = $_GET;

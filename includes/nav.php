@@ -57,12 +57,13 @@ define('ROUTES', [
     'attendance_present'   => 'HR/attendance_present.php',
     'weekly_payroll'      => 'HR/weekly_payroll.php',
 
-    // ── Logistics Module
+    // ── Logistics and Warehouse Module
     'fuel_dashboard'       => 'LOGISTICS/fuel_dashboard.php',
     'graphs'               => 'LOGISTICS/graphs.php',
     'team_schedule'        => 'LOGISTICS/team_schedule.php',
     'fuel'                 => 'fuel/index.php',
     'maintenance_report'     => 'MaintenanceReport/index.php',
+    'inventory'            => 'Inventory/index.php',
 
     // ── PO Module
     'po_index'             => 'PO/index.php',
@@ -84,6 +85,9 @@ define('ROUTES', [
 
     // ── SALES Module
     'sales_order_report'   => 'SALES/sales_order_report.php',
+
+    // ── BULLETIN Module
+    'bulletin'          => 'BULLETIN/bulletin_manage.php',
 
     // ── TEST Module
     'message_user'         => 'TEST/messages.php',

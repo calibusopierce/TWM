@@ -53,11 +53,10 @@ $validTabs = ['timeinout', 'fieldstaff', 'devicelog', 'toplates', 'absents', 'ge
 $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] : 'timeinout';
 
 // ── Category filter ──────────────────────────────────────────
-// $filterCategory is shared across tabs: the Generated Attendance tab uses
-// it against View_AttendanceRecord (see $categoryList/$extraFilters below),
-// and the Time In/Out tab uses it against View_ATtendanceTimeInTimeOut2
-// (see $timeinoutCategoryList / $catFilter below). Cut off/Branch/Employee
-// Status remain 'generated'-tab-only.
+// $filterCategory (and Cut off/Branch/Employee Status) is 'generated'-tab-only
+// — used against View_AttendanceRecord (see $categoryList/$extraFilters below).
+// The Time In/Out tab is hardcoded to Category = 'OP' (see below) so it no
+// longer needs its own category filter/dropdown.
 $filterCutOff    = isset($_GET['cutoff'])    && $_GET['cutoff']    !== '' ? trim($_GET['cutoff'])    : '';
 $filterCategory  = isset($_GET['category'])  && $_GET['category']  !== '' ? trim($_GET['category'])  : '';
 $filterBranch    = isset($_GET['branch'])    && $_GET['branch']    !== '' ? trim($_GET['branch'])    : '';
@@ -67,17 +66,6 @@ $filterCutOffSafe    = str_replace("'", "''", $filterCutOff);
 $filterCategorySafe  = str_replace("'", "''", $filterCategory);
 $filterBranchSafe    = str_replace("'", "''", $filterBranch);
 $filterEmpStatusSafe = str_replace("'", "''", $filterEmpStatus);
-
-// Category dropdown for the Time In/Out tab — sourced from the same view
-// that tab's query uses (View_ATtendanceTimeInTimeOut2), independent of
-// the Generated Attendance tab's $categoryList below.
-$timeinoutCategoryList = [];
-if ($tab === 'timeinout') {
-    // DP (Delivery Personnel) has its own dedicated weekly attendance view,
-    // so it's excluded here to avoid duplicate/confusing entries in this tab.
-    $tcStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS Category FROM View_ATtendanceTimeInTimeOut2 WHERE Category IS NOT NULL AND Category <> '' AND RTRIM(Category) <> 'DP' ORDER BY Category");
-    if ($tcStmt) { while ($tr = sqlsrv_fetch_array($tcStmt, SQLSRV_FETCH_ASSOC)) { $timeinoutCategoryList[] = $tr['Category']; } sqlsrv_free_stmt($tcStmt); }
-}
 
 // Dropdown option lists — only queried when the tab is actually open,
 // same lazy pattern as $deptList above.
@@ -129,17 +117,18 @@ $debugLog = []; // tab => sqlsrv_errors() when a query fails, surfaced in an HTM
 
 if ($tab === 'timeinout') {
     $dc = dc($filterDeptSafe);
-    $catFilter = $filterCategorySafe !== '' ? " AND RTRIM(Category) = '$filterCategorySafe'" : '';
-    // DP (Delivery Personnel) is excluded — they have a separate dedicated
-    // weekly attendance view, so they don't belong in this daily tab.
+    // This tab is Office Personnel only — Field Staff (tab: fieldstaff) already
+    // covers every non-OP category via View_ATtendanceTimeInTimeOut_Field, and
+    // DP has its own dedicated weekly view, so Time In/Out is scoped to OP here
+    // to avoid the two tabs overlapping.
     $timeinoutStmt = sqlsrv_query($conn, "
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
            AMLate, PMLate, Late1, MorningTotalHours, AfternoonTotalHours,
            MorningAfternoonTotal, TotalHours, Status
     FROM View_ATtendanceTimeInTimeOut2_Override
-    WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc $catFilter
-          AND (Category IS NULL OR RTRIM(Category) <> 'DP')
+    WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
+          AND RTRIM(Category) = 'OP'
     ORDER BY ADate DESC, MorningIn DESC
 ");
     if ($timeinoutStmt === false) { $debugLog['timeinout'] = sqlsrv_errors(); }
@@ -519,6 +508,8 @@ $jsGenRows     = safeJsonEncode($genRows,     $jsonFlags, 'genRows',     $debugL
 #latesTable .late-row-warn:hover { background:#fef9c3; }
 #latesTable .late-row-danger { background:#fef2f2; }
 #latesTable .late-row-danger:hover { background:#fee2e2; }
+#latesTable .late-medal { font-size:1.4rem; display:inline-block; filter:drop-shadow(0 1px 1px rgba(0,0,0,.25)); animation:late-medal-pop .25s ease-out; }
+@keyframes late-medal-pop { from { transform:scale(.5); opacity:0; } to { transform:scale(1); opacity:1; } }
 .late-badge-big {
     font-size:.85rem !important;
     font-weight:800 !important;
@@ -671,17 +662,6 @@ require_once __DIR__ . '/hr_nav.php';
       <div style="display:flex;align-items:center;height:2.1rem;padding:0 .6rem;font-size:.82rem;color:var(--text-muted,#64748b);">
         <i class="bi bi-lock-fill" style="margin-right:.4rem;font-size:.75rem;"></i><?= htmlspecialchars($sessionDept) ?>
       </div>
-    </div>
-    <?php endif; ?>
-    <?php if ($tab === 'timeinout'): ?>
-    <div class="hr-filter-group">
-      <label>Category</label>
-      <select name="category" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:150px;">
-        <option value="">— All —</option>
-        <?php foreach ($timeinoutCategoryList as $c): ?>
-        <option value="<?= htmlspecialchars($c) ?>" <?= ($filterCategory === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-        <?php endforeach; ?>
-      </select>
     </div>
     <?php endif; ?>
     <?php if ($tab === 'generated'): ?>
@@ -1391,9 +1371,14 @@ function rowLates(r) {
     const rowClass  = isDanger ? 'late-row-danger' : 'late-row-warn';
     const badgeBg   = isDanger ? '#fee2e2' : '#fef9c3';
     const badgeText = isDanger ? '#dc2626' : '#a16207';
+    const rank      = parseInt(r.Rank) || 0;
+    const medals    = { 1: '🥇', 2: '🥈', 3: '🥉' };
+    const rankCell  = medals[rank]
+        ? `<span class="late-medal" title="Rank #${rank}">${medals[rank]}</span>`
+        : `#${esc(r.Rank||'—')}`;
 
     return `<tr class="${rowClass}">
-      <td style="font-weight:800;color:#dc2626;">#${esc(r.Rank||'—')}</td>
+      <td style="font-weight:800;color:#dc2626;">${rankCell}</td>
       <td>${fmtDate(r.ADate)}</td>
       <td class="mono" style="color:#7c3aed;font-weight:700">${esc(r.EmployeeID||'—')}</td>
       <td style="font-weight:600">${esc(r.EmployeeName||'—')}</td>

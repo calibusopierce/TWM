@@ -49,20 +49,20 @@ function eqOrAll(string $valSafe, string $col): string {
 // ── Dropdown option lists — dept-scoped for locked-department users ──
 $deptList = [];
 if ($canFilterDept) {
-    $dStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Department) AS Department FROM View_Payroll_Setup_DayCount WHERE Department IS NOT NULL AND Department <> '' ORDER BY Department");
+    $dStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Department) AS Department FROM View_Payroll_Setup_DayCount_Field WHERE Department IS NOT NULL AND Department <> '' ORDER BY Department");
     if ($dStmt) { while ($r = sqlsrv_fetch_array($dStmt, SQLSRV_FETCH_ASSOC)) { $deptList[] = $r['Department']; } sqlsrv_free_stmt($dStmt); }
 }
 
 $categoryList = [];
-$catStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS V FROM View_Payroll_Setup_DayCount WHERE Category IS NOT NULL AND Category <> '' " . dc($filterDeptSafe) . " ORDER BY V");
+$catStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(Category) AS V FROM View_Payroll_Setup_DayCount_Field WHERE Category IS NOT NULL AND Category <> '' " . dc($filterDeptSafe) . " ORDER BY V");
 if ($catStmt) { while ($r = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC)) { $categoryList[] = $r['V']; } sqlsrv_free_stmt($catStmt); }
 
 $pGroupList = [];
-$pgStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(PayrollGroup) AS V FROM View_Payroll_Setup_DayCount WHERE PayrollGroup IS NOT NULL AND PayrollGroup <> '' " . dc($filterDeptSafe) . " ORDER BY V");
+$pgStmt = sqlsrv_query($conn, "SELECT DISTINCT RTRIM(PayrollGroup) AS V FROM View_Payroll_Setup_DayCount_Field WHERE PayrollGroup IS NOT NULL AND PayrollGroup <> '' " . dc($filterDeptSafe) . " ORDER BY V");
 if ($pgStmt) { while ($r = sqlsrv_fetch_array($pgStmt, SQLSRV_FETCH_ASSOC)) { $pGroupList[] = $r['V']; } sqlsrv_free_stmt($pgStmt); }
 
 $yearList = [];
-$yStmt = sqlsrv_query($conn, "SELECT DISTINCT PayrollYear AS V FROM View_Payroll_Setup_DayCount WHERE PayrollYear IS NOT NULL " . dc($filterDeptSafe) . " ORDER BY V DESC");
+$yStmt = sqlsrv_query($conn, "SELECT DISTINCT PayrollYear AS V FROM View_Payroll_Setup_DayCount_Field WHERE PayrollYear IS NOT NULL " . dc($filterDeptSafe) . " ORDER BY V DESC");
 if ($yStmt) { while ($r = sqlsrv_fetch_array($yStmt, SQLSRV_FETCH_ASSOC)) { $yearList[] = $r['V']; } sqlsrv_free_stmt($yStmt); }
 
 $monthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
@@ -75,7 +75,7 @@ $debugLog = [];
 $sql = "
     SELECT Department, Category, PayrollGroup, EmployeeName, PayrollYear, PayrollMonth, CutoffName,
            $dayCols, TotalDays, Present, Absent, HalfDay
-    FROM View_Payroll_Setup_DayCount
+    FROM View_Payroll_Setup_DayCount_Field
     WHERE 1=1
           " . dc($filterDeptSafe) . "
           " . eqOrAll($filterCategorySafe, 'Category') . "

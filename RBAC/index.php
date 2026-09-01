@@ -1570,6 +1570,12 @@ $actionColors = [
         <button class="btn btn-sm btn-danger"  id="ma_revokeAll" type="button"><i class="bi bi-x-lg"></i> Remove All</button>
       </div>
       <?php endif; ?>
+            <div style="position:relative;margin-bottom:.6rem">
+        <i class="bi bi-search" style="position:absolute;left:.6rem;top:50%;transform:translateY(-50%);color:var(--w60);font-size:.8rem"></i>
+        <input type="text" id="ma_rbac_search" placeholder="Search modules..."
+               style="width:100%;padding:.4rem .6rem .4rem 1.9rem;border-radius:8px;border:1px solid var(--border);
+                      background:var(--surface);color:var(--w60);font-size:.8rem">
+      </div>
       <div id="ma_rbac_list" style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;max-height:260px;overflow-y:auto;padding:.1rem 0"></div>
       <?php if (!$isViewOnly): ?>
       <div class="modal-footer" style="margin-top:1rem">
@@ -3166,7 +3172,7 @@ function openManageModal(d) {
   // RBAC modules pane
   document.getElementById('ma_rbac_list').innerHTML = ALL_MODULES.map(mod => {
     const level = current[mod.module_key] || 'none';
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;
+    return `<div class="ma-module-row" data-name="${escHtml(mod.module_name.toLowerCase())}" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;
                         padding:.4rem .6rem;border-radius:8px;border:1px solid var(--border);
                         background:var(--surface);font-size:.8rem;">
       <span style="color:var(--w60)">${escHtml(mod.module_name)}</span>
@@ -3177,6 +3183,7 @@ function openManageModal(d) {
       </select>
     </div>`;
   }).join('');
+  document.getElementById('ma_rbac_search').value = '';
 
   // Department pane
   const currentDepts = deptAccessMap[id] || [];
@@ -3233,6 +3240,13 @@ document.getElementById('ma_rbac_list').addEventListener('change', e => {
   if (!sel.classList.contains('perm-select')) return;
   sel.classList.remove('is-none', 'is-view_only', 'is-full');
   sel.classList.add('is-' + sel.value);
+});
+
+document.getElementById('ma_rbac_search').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll('#ma_rbac_list .ma-module-row').forEach(row => {
+    row.style.display = row.dataset.name.includes(q) ? 'flex' : 'none';
+  });
 });
 
 document.getElementById('ma_grantAll')?.addEventListener('click', () => {

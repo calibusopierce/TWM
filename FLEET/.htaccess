@@ -1,0 +1,3 @@
+<Files "cartrack_config.php">
+    Require all denied
+</Files>

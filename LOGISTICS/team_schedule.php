@@ -489,6 +489,68 @@ $totalShortStocksCount   = count($shortStocksRows);
 $totalSdidCount          = count($sdidSummaries);
 $totalSdidBalance        = array_sum(array_column($sdidSummaries, 'TotalBalance'));
 
+// ── Individual Short Stocks — Payment History (audit view) ─
+// Per audit team request: show EVERY payment/installment record per
+// employee (not deduped to latest balance), grouped by employee, and
+// filter this tab specifically by DateGenerate (not DateSchedule) so
+// staff can back-check what was generated/paid within a date range.
+$empGenFrom = $dateActive ? $baseFrom : $monthFrom;
+$empGenTo   = $dateActive ? $baseTo   : $today;
+$empHistDeptWhere   = $sessionDept !== '' ? ' AND UPPER(RTRIM(LTRIM(Department))) IN (' . $deptInStr . ')' : '';
+$empHistDateWhere   = " AND DateGenerate BETWEEN '$empGenFrom' AND '$empGenTo'";
+$empHistAreaWhere   = $areaActive   ? " AND Area = '$_areaSafe'"                   : '';
+$empHistPlateWhere  = $plateActive  ? " AND PlateNumber = '$_plateSafe'"           : '';
+$empHistStatusWhere = $statusActive ? " AND RTRIM(StatusofShort) = '$_statusSafe'" : '';
+
+$empHistorySql = '
+SELECT
+     [SEID],[Position],[Status],[Amount],[SPPID]
+    ,[AmountDue],[PaidAmount],[Balance]
+    ,[DateGenerate],[SDID],[DID],[Department]
+    ,[DateSchedule],[PlateNumber],[Area],[Outlet]
+    ,[RefNo],[TotalAmount],[NumAccountable]
+    ,[AmountL],[StatusofShort],[Remarks],[IDS]
+    ,[EmployeeID],[EmployeeName],[DatePaid]
+    ,[TypeShort],[Category],[Employee_Status]
+    ,[Job_tittle],[Position_held]
+FROM [dbo].[View_ShortPaymentPaidDetails]
+WHERE 1=1
+' . $empHistDeptWhere . $empHistDateWhere . $empHistAreaWhere . $empHistPlateWhere . $empHistStatusWhere . '
+ORDER BY EmployeeName ASC, DateGenerate ASC
+';
+$empHistoryRows = runQuery($conn, $empHistorySql);
+
+$empGrouped = [];
+foreach ($empHistoryRows as $r) {
+    $eid = $r['EmployeeID'] ?? '';
+    if ($eid === '') continue;
+    if (!isset($empGrouped[$eid])) {
+        $empGrouped[$eid] = [
+            'EmployeeID'   => $eid,
+            'EmployeeName' => trim($r['EmployeeName'] ?? ''),
+            'Position'     => trim($r['Position'] ?? ($r['Job_tittle'] ?? '')),
+            'Department'   => trim($r['Department'] ?? ''),
+            'DetailId'     => 'emp-detail-' . preg_replace('/[^A-Za-z0-9]/', '', $eid),
+            'CaretId'      => 'emp-caret-'  . preg_replace('/[^A-Za-z0-9]/', '', $eid),
+            'records'      => [],
+            'TotalAmount'  => 0.0, // sum of Due across the filtered records
+            'TotalPaid'    => 0.0,
+            'TotalBalance' => 0.0,
+        ];
+    }
+    $empGrouped[$eid]['records'][]    = $r;
+    $empGrouped[$eid]['TotalAmount']  += (float)($r['AmountDue']  ?? 0);
+    $empGrouped[$eid]['TotalPaid']    += (float)($r['PaidAmount'] ?? 0);
+    $empGrouped[$eid]['TotalBalance'] += (float)($r['Balance']    ?? 0);
+}
+$empGrouped = array_values($empGrouped);
+usort($empGrouped, fn($a, $b) => strcasecmp($a['EmployeeName'], $b['EmployeeName']));
+
+$empTotalRecords      = count($empHistoryRows);
+$empGrandTotalAmt     = array_sum(array_column($empGrouped, 'TotalAmount'));
+$empGrandTotalPaid    = array_sum(array_column($empGrouped, 'TotalPaid'));
+$empGrandTotalBalance = array_sum(array_column($empGrouped, 'TotalBalance'));
+
 // NOTE: $conn is intentionally NOT closed here.
 // topbar.php (included later) calls get_employee_profile($conn).
 // Closing $conn here causes: "supplied resource is not a valid ss_sqlsrv_conn resource".
@@ -527,14 +589,16 @@ $totalTrucks = count($truckRows);
 
 $currentCount = match($selTab) {
     'shortstocks_sdid'=> count($sdidSummaries),
-    'shortstocks_emp' => count($shortStocksRows),
+    'shortstocks_emp' => count($empGrouped),
     default           => $totalTrucks,
 };
 $totalPages = max(1, (int)ceil($currentCount / $rowLimit));
 $curPage    = isset($_GET['page']) ? max(1, min($totalPages, (int)$_GET['page'])) : 1;
 $offset     = ($curPage - 1) * $rowLimit;
 
-$displayTrucks = array_slice($truckRows, $offset, $rowLimit);
+$displayTrucks       = array_slice($truckRows, $offset, $rowLimit);
+$displaySdidSummaries = array_slice($sdidSummaries, $offset, $rowLimit);
+$displayEmpGrouped    = array_slice($empGrouped, $offset, $rowLimit);
 
 function pageUrl(int $p): string {
     $params = $_GET; $params['page'] = $p;
@@ -1187,9 +1251,10 @@ function deptColor(string $d): string {
         $curPlateList = $isSS ? $ssPlateList : $plateList;
       ?>
 
-      <span class="filter-label"><i class="bi bi-calendar3"></i></span>
-      <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" title="Date From">
-      <input type="date" name="date_to"   value="<?= htmlspecialchars($dateTo) ?>"   title="Date To">
+      <?php $dateFilterLabel = $selTab === 'shortstocks_emp' ? 'Date Generated' : 'Date'; ?>
+      <span class="filter-label"><i class="bi bi-calendar3"></i><?= $selTab === 'shortstocks_emp' ? ' Generated' : '' ?></span>
+      <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" title="<?= $dateFilterLabel ?> From">
+      <input type="date" name="date_to"   value="<?= htmlspecialchars($dateTo) ?>"   title="<?= $dateFilterLabel ?> To">
       <div class="filter-sep"></div>
 
       <select name="area" title="Area">
@@ -1242,8 +1307,8 @@ function deptColor(string $d): string {
       <span class="tab-badge red"><?= number_format($totalSdidCount) ?></span>
     </a>
     <a href="<?= tabUrl('shortstocks_emp') ?>" class="<?= $selTab === 'shortstocks_emp' ? 'active-red' : '' ?>">
-      <i class="bi bi-person-exclamation"></i> Individual Short Stocks
-      <span class="tab-badge red"><?= number_format($totalShortStocksCount) ?></span>
+      <i class="bi bi-person-exclamation"></i> Individual Short Payment Paid
+      <span class="tab-badge red"><?= number_format(count($empGrouped)) ?></span>
     </a>
   </div>
 
@@ -1412,7 +1477,7 @@ function deptColor(string $d): string {
       <th onclick="sortSdidTable(10)">Invoice No. ⇅</th>
     </tr></thead>
     <tbody id="sdidTableBody">
-    <?php foreach ($sdidSummaries as $s):
+    <?php foreach ($displaySdidSummaries as $s):
       $sBal = (float)$s['TotalBalance'];
       $rowBg = $sBal >= 5000 ? 'background:#fff0f0;border-left:3px solid #ef4444;'
              : ($sBal >= 1000 ? 'background:#fffbeb;border-left:3px solid #eab308;' : '');
@@ -1560,166 +1625,119 @@ function deptColor(string $d): string {
   ════════════════════════════════════════════════════ -->
   <?php if ($selTab === 'shortstocks_emp'): ?>
 
-<?php
-    $empTotalBalance = array_sum(array_column($shortStocksRows, 'Balance'));
-    $empTotalAmt     = array_sum(array_column($shortStocksRows, 'TotalAmount'));
-    $empTotalPaid    = array_sum(array_column($shortStocksRows, 'PaidAmount'));
-?>
-
   <div class="section-toolbar">
     <div class="section-toolbar-left">
       <i class="bi bi-person-exclamation" style="color:var(--c-red);font-size:.9rem"></i>
-      <span style="font-weight:700;font-size:.82rem">Individual Short Stocks</span>
-      <span class="section-count" style="background:#fee2e2;color:#991b1b;border-color:#f87171"><?= count($shortStocksRows) ?> records</span>
-      <span style="font-size:.75rem;color:var(--c-dim)">Balance:
-        <b style="color:var(--c-red)"><?= peso($empTotalBalance) ?></b>
-        &nbsp;·&nbsp; Paid: <b style="color:var(--c-green)"><?= peso($empTotalPaid) ?></b>
+      <span style="font-weight:700;font-size:.82rem">Individual Short Payment Paid</span>
+      <span class="section-count" style="background:#fee2e2;color:#991b1b;border-color:#f87171"><?= count($empGrouped) ?> employees · <?= number_format($empTotalRecords) ?> records</span>
+      <span style="font-size:.75rem;color:var(--c-dim)">
+        Total: <b style="color:var(--c-ink)"><?= peso($empGrandTotalAmt) ?></b>
+        · Paid: <b style="color:var(--c-green)"><?= peso($empGrandTotalPaid) ?></b>
+        · Balance: <b style="color:var(--c-red)"><?= peso($empGrandTotalBalance) ?></b>
       </span>
     </div>
     <div class="search-input">
       <i class="bi bi-search"></i>
-      <input type="text" id="ssSearch" placeholder="Search employee, plate, area, ref…" oninput="searchSSTable(this.value)">
+      <input type="text" id="empHistSearch" placeholder="Search employee, ref no, outlet…" oninput="searchEmpHistory(this.value)">
     </div>
-    <button class="btn-sm green"  onclick="exportSSCSV()"><i class="bi bi-download"></i> CSV</button>
-    <button class="btn-sm blue"   onclick="exportSSExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
-    <button class="btn-sm violet" onclick="printSSTable()"><i class="bi bi-printer"></i> Print</button>
+    <button class="btn-sm green"  onclick="exportEmpHistoryCSV()"><i class="bi bi-download"></i> CSV</button>
+    <button class="btn-sm blue"   onclick="exportEmpHistoryExcel()"><i class="bi bi-file-earmark-excel"></i> Excel</button>
+    <button class="btn-sm violet" onclick="printEmpHistory()"><i class="bi bi-printer"></i> Print</button>
   </div>
 
-  <?php if (empty($shortStocksRows)): ?>
+  <?php if (empty($empGrouped)): ?>
     <div class="empty-state" style="border:1px solid var(--c-border);border-radius:10px;">
       <i class="bi bi-check-circle" style="color:var(--c-green);opacity:1;font-size:2rem"></i>
-      No outstanding short stock balances found. 🎉
+      No short stock payment records generated in the selected period.
     </div>
   <?php else: ?>
 
   <div class="table-scroll">
-  <table class="data-table" id="ssEmpTable">
-    <thead>
-      <tr>
-        <th></th>
-        <th onclick="sortSSTable(1)">Name ⇅</th>
-        <th onclick="sortSSTable(2)">Department ⇅</th>
-        <th onclick="sortSSTable(3)">Schedule ⇅</th>
-        <th onclick="sortSSTable(4)">Plate# ⇅</th>
-        <th onclick="sortSSTable(5)">Area ⇅</th>
-        <th onclick="sortSSTable(6)">Outlet ⇅</th>
-        <th class="r" onclick="sortSSTable(7)">Total ⇅</th>
-        <th class="r" onclick="sortSSTable(8)">Amount ⇅</th>
-        <th class="r" onclick="sortSSTable(9)">Paid ⇅</th>
-        <th class="r" onclick="sortSSTable(10)">Count ⇅</th>
-        <th class="r" onclick="sortSSTable(11)">Amt Due ⇅</th>
-        <th class="r" onclick="sortSSTable(12)">Balance ⇅</th>
-        <th onclick="sortSSTable(13)">Status ⇅</th>
-        <th onclick="sortSSTable(14)">Ref No ⇅</th>
-        <th onclick="sortSSTable(15)">Type ⇅</th>
+  <table class="data-table" id="empHistoryTable">
+    <thead><tr>
+      <th onclick="sortEmpTable(0)">Employee ⇅</th>
+      <th>Position</th>
+      <th>Department</th>
+      <th class="r" onclick="sortEmpTable(3)"># Records ⇅</th>
+      <th class="r" onclick="sortEmpTable(4)">Total Amount ⇅</th>
+      <th class="r" onclick="sortEmpTable(5)">Paid ⇅</th>
+      <th class="r" onclick="sortEmpTable(6)">Balance ⇅</th>
+    </tr></thead>
+    <tbody id="empHistoryTableBody">
+    <?php foreach ($displayEmpGrouped as $g):
+      $detailId  = $g['DetailId'];
+      $caretId   = $g['CaretId'];
+      $searchStr = strtolower($g['EmployeeName'] . ' ' . $g['Department'] . ' ' . $g['EmployeeID']);
+    ?>
+      <tr class="sdid-summary-row emp-summary-row" data-search="<?= htmlspecialchars($searchStr) ?>"
+          data-detail="<?= $detailId ?>"
+          onclick="toggleSdidDetail('<?= $detailId ?>', '<?= $caretId ?>')" style="cursor:pointer;" title="Click to expand payment history">
+        <td>
+          <span style="font-weight:700;font-size:.85rem"><?= htmlspecialchars($g['EmployeeName']) ?></span>
+          <i class="bi bi-chevron-down" id="<?= $caretId ?>" style="font-size:.65rem;color:var(--c-dim);margin-left:.3rem;transition:transform .2s"></i>
+        </td>
+        <td class="dim" style="font-size:.8rem"><?= htmlspecialchars($g['Position']) ?></td>
+        <td style="font-size:.8rem"><?= htmlspecialchars($g['Department']) ?></td>
+        <td class="r mono bold"><?= count($g['records']) ?></td>
+        <td class="r mono bold"><?= peso($g['TotalAmount']) ?></td>
+        <td class="r mono" style="color:var(--c-green)"><?= peso($g['TotalPaid']) ?></td>
+        <td class="r mono bold" style="color:<?= $g['TotalBalance'] > 0 ? 'var(--c-red)' : 'var(--c-green)' ?>">
+          <?= $g['TotalBalance'] > 0 ? '▼ ' . peso($g['TotalBalance']) : '✓ ' . peso(0) ?>
+        </td>
       </tr>
-    </thead>
-    <tbody id="ssEmpTableBody">
-    <?php foreach ($shortStocksRows as $r):
-      $balance  = (float)($r['Balance']        ?? 0);
-      $totalAmt = (float)($r['TotalAmount']    ?? 0);
-      $amtDue   = (float)($r['AmountDue']      ?? 0);
-      $paid     = (float)($r['PaidAmount']     ?? 0);
-      $amtL     = (float)($r['AmountL']        ?? $amtDue);
-      $count    = (int)  ($r['NumAccountable'] ?? 0);
-      $stLow    = strtolower(trim($r['StatusofShort'] ?? ''));
-      [$stBg, $stColor, $stBorder] = match(true) {
-          str_contains($stLow, 'confirmed') => ['#dcfce7','#166534','#86efac'],
-          str_contains($stLow, 'created')   => ['#fef9c3','#713f12','#fde047'],
-          str_contains($stLow, 'void')      => ['#fee2e2','#991b1b','#fca5a5'],
-          default                            => ['#f3f4f6','#374151','#d1d5db'],
-      };
-      $searchStr = strtolower(
-          ($r['EmployeeName']  ?? '') . ' ' .
-          ($r['Department']    ?? '') . ' ' .
-          ($r['PlateNumber']   ?? '') . ' ' .
-          ($r['Area']          ?? '') . ' ' .
-          ($r['Outlet']        ?? '') . ' ' .
-          ($r['RefNo']         ?? '') . ' ' .
-          ($r['TypeShort']     ?? '') . ' ' .
-          ($r['StatusofShort'] ?? '') . ' ' .
-          ($r['EmployeeID']    ?? '')
-      );
-      $ini = initials($r['EmployeeName'] ?? '');
-      $dc  = deptColor($r['Department'] ?? '');
-    ?>
-    <?php
-      $fullRow = null;
-      foreach ($shortStocksRawRows as $_rr) {
-          if (($_rr['EmployeeID'] ?? '') === ($r['EmployeeID'] ?? '')) {
-              $fullRow = $_rr; break;
-          }
-      }
-      $fullRow = $fullRow ?? $r;
-    ?>
-    <tr data-search="<?= htmlspecialchars($searchStr) ?>">
-      <td style="white-space:nowrap">
-        <button
-          onclick="openSsItems(
-            <?= (int)($fullRow['SEID'] ?? 0) ?>,
-            <?= htmlspecialchars(json_encode($fullRow['EmployeeName'] ?? '—')) ?>,
-            <?= htmlspecialchars(json_encode($fullRow['RefNo'] ?? '—')) ?>,
-            <?= htmlspecialchars(json_encode($fullRow['EmployeeID'] ?? '')) ?>,
-            <?= htmlspecialchars(json_encode($fullRow['SDID'] ?? '')) ?>
-          )"
-          style="padding:2px 10px;border-radius:6px;font-size:.75rem;font-weight:700;
-                 background:#fef9c3;color:#713f12;border:1.5px solid #fde047;
-                 cursor:pointer;white-space:nowrap;transition:all .12s;"
-          onmouseover="this.style.background='#fde047'"
-          onmouseout="this.style.background='#fef9c3'">
-          Details
-        </button>
-      </td>
-      <td style="white-space:nowrap">
-        <span style="display:inline-flex;align-items:center;gap:.3rem;">
-          <span style="width:24px;height:24px;border-radius:50%;background:rgba(124,58,237,.12);
-                       color:#7c3aed;font-size:.62rem;font-weight:800;
-                       display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">
-            <?= htmlspecialchars($ini) ?>
-          </span>
-          <span style="font-weight:700;font-size:.83rem"><?= htmlspecialchars($fullRow['EmployeeName'] ?? '—') ?></span>
-        </span>
-      </td>
-      <td style="font-size:.8rem">
-        <span style="display:inline-flex;align-items:center;gap:.25rem;">
-          <span style="width:7px;height:7px;border-radius:50%;background:<?= $dc ?>;flex-shrink:0;"></span>
-          <?= htmlspecialchars($fullRow['Department'] ?? '—') ?>
-        </span>
-      </td>
-      <td class="mono dim" style="font-size:.8rem;white-space:nowrap"><?= htmlspecialchars($fullRow['DateSchedule'] ?? $fullRow['DateGenerate'] ?? '—') ?></td>
-      <td><span class="plate-tag" style="font-size:.78rem"><?= htmlspecialchars($fullRow['PlateNumber'] ?? '—') ?></span></td>
-      <td class="dim" style="font-size:.8rem"><?= htmlspecialchars($fullRow['Area'] ?? '—') ?></td>
-      <td style="font-size:.8rem;max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
-          title="<?= htmlspecialchars($fullRow['Outlet'] ?? '') ?>"><?= htmlspecialchars($fullRow['Outlet'] ?? '—') ?></td>
-      <td class="r mono" style="font-weight:600"><?= number_format((float)($fullRow['TotalAmount'] ?? 0), 2) ?></td>
-      <td class="r mono" style="color:var(--c-yellow);font-weight:600"><?= number_format((float)($fullRow['AmountL'] ?? $fullRow['AmountDue'] ?? 0), 2) ?></td>
-      <td class="r mono" style="color:<?= (float)($fullRow['PaidAmount'] ?? 0) > 0 ? 'var(--c-green)' : 'var(--c-dim)' ?>;font-weight:<?= (float)($fullRow['PaidAmount'] ?? 0) > 0 ? '700' : '400' ?>"><?= number_format((float)($fullRow['PaidAmount'] ?? 0), 2) ?></td>
-      <td class="r mono dim"><?= (int)($fullRow['NumAccountable'] ?? 0) ?></td>
-      <td class="r mono" style="color:var(--c-yellow);font-weight:600"><?= number_format((float)($fullRow['AmountDue'] ?? 0), 2) ?></td>
-      <td class="r mono bold" style="color:<?= (float)($fullRow['Balance'] ?? 0) > 0 ? 'var(--c-red)' : 'var(--c-green)' ?>;font-size:.88rem"><?= number_format((float)($fullRow['Balance'] ?? 0), 2) ?></td>
-      <td>
-        <span style="background:<?= $stBg ?>;color:<?= $stColor ?>;border:1px solid <?= $stBorder ?>;
-                     border-radius:999px;padding:2px 9px;font-size:.72rem;font-weight:700;white-space:nowrap;">
-          <?= htmlspecialchars($fullRow['StatusofShort'] ?? '—') ?>
-        </span>
-      </td>
-      <td class="mono" style="font-size:.78rem;color:var(--c-purple);font-weight:700"><?= htmlspecialchars($fullRow['RefNo'] ?? '—') ?></td>
-      <td class="dim" style="font-size:.79rem"><?= htmlspecialchars($fullRow['TypeShort'] ?? '—') ?></td>
-    </tr>
+      <tr id="<?= $detailId ?>" class="sdid-detail-row" style="display:none;">
+        <td colspan="7" style="padding:0;background:#fffbeb;">
+          <div style="padding:.5rem .75rem .75rem;">
+            <table style="width:100%;border-collapse:collapse;font-size:.78rem;border:1px solid #fde68a;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr style="background:#fef3c7;">
+                  <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Schedule</th>
+                  <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Generate</th>
+                  <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">No.</th>
+                  <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Due</th>
+                  <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Paid</th>
+                  <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Balance</th>
+                  <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Ref / Outlet</th>
+                  <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#92400e;">Items</th>
+                </tr>
+              </thead>
+              <tbody>
+              <?php foreach ($g['records'] as $ri => $rec):
+                $recBg  = $ri % 2 === 0 ? '#fff' : '#fffdf5';
+                $recBal = (float)($rec['Balance'] ?? 0);
+              ?>
+                <tr style="background:<?= $recBg ?>;">
+                  <td style="padding:.32rem .6rem;font-family:monospace;color:var(--c-dim);font-size:.76rem;"><?= htmlspecialchars($rec['DateSchedule'] ?? '—') ?></td>
+                  <td style="padding:.32rem .6rem;font-family:monospace;font-size:.76rem;"><?= htmlspecialchars($rec['DateGenerate'] ?? '—') ?></td>
+                  <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;"><?= (int)($rec['NumAccountable'] ?? 0) ?></td>
+                  <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:600;"><?= peso((float)($rec['AmountDue'] ?? 0)) ?></td>
+                  <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;color:var(--c-green);font-weight:600;"><?= peso((float)($rec['PaidAmount'] ?? 0)) ?></td>
+                  <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:800;color:<?= $recBal > 0 ? 'var(--c-red)' : 'var(--c-green)' ?>;">
+                    <?= $recBal > 0 ? '▼ ' . peso($recBal) : '✓ ' . peso(0) ?>
+                  </td>
+                  <td style="padding:.32rem .6rem;font-size:.75rem;"><?= htmlspecialchars($rec['RefNo'] ?? '—') ?> <span class="dim">/ <?= htmlspecialchars($rec['Outlet'] ?: ($rec['Area'] ?? '—')) ?></span></td>
+                  <td style="padding:.32rem .6rem;text-align:center;">
+                    <button onclick="event.stopPropagation();openSsItems(<?= (int)($rec['SEID'] ?? 0) ?>, <?= htmlspecialchars(json_encode($rec['EmployeeName'] ?? '')) ?>, <?= htmlspecialchars(json_encode($rec['RefNo'] ?? '')) ?>, <?= htmlspecialchars(json_encode($rec['EmployeeID'] ?? '')) ?>, <?= htmlspecialchars(json_encode($rec['SDID'] ?? '')) ?>)" style="font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:6px;border:1.5px solid #fcd34d;background:#fef3c7;color:#92400e;cursor:pointer;white-space:nowrap;"><i class="bi bi-list-ul"></i> Items</button>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+              <tfoot>
+                <tr style="background:#fef3c7;">
+                  <td colspan="2" style="padding:.35rem .6rem;font-weight:700;font-size:.76rem;color:#92400e;"><?= count($g['records']) ?> record(s)</td>
+                  <td></td>
+                  <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;"><?= peso($g['TotalAmount']) ?></td>
+                  <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;color:var(--c-green);"><?= peso($g['TotalPaid']) ?></td>
+                  <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:800;color:var(--c-red);"><?= peso($g['TotalBalance']) ?></td>
+                  <td colspan="2"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </td>
+      </tr>
     <?php endforeach; ?>
     </tbody>
-    <tfoot>
-      <tr>
-        <td colspan="7" style="padding:.5rem .75rem;font-weight:700;font-size:.8rem;">TOTAL — <?= count($shortStocksRows) ?> employees</td>
-        <td class="r mono bold" style="padding:.5rem .75rem"><?= number_format($empTotalAmt, 2) ?></td>
-        <td class="r mono" style="padding:.5rem .75rem"></td>
-        <td class="r mono bold" style="padding:.5rem .75rem;color:var(--c-green)"><?= number_format($empTotalPaid, 2) ?></td>
-        <td class="r mono" style="padding:.5rem .75rem"></td>
-        <td class="r mono" style="padding:.5rem .75rem"></td>
-        <td class="r mono bold" style="padding:.5rem .75rem;color:var(--c-red)"><?= number_format($empTotalBalance, 2) ?></td>
-        <td colspan="3" style="padding:.5rem .75rem"></td>
-      </tr>
-    </tfoot>
   </table>
   </div>
 
@@ -1987,17 +2005,204 @@ function printTruck() {
     <table>${thead}<tbody>${rows}</tbody></table></body></html>`);
     win.document.close(); win.focus(); win.print(); win.close();
 }
-/* ── SDID tab search ───────────────────────────────────── */
+/* ── SDID tab search ── SEARCH ALL DATA (including paginated rows) ── */
 function searchSdid(q) {
     const term = q.trim().toLowerCase();
-    document.querySelectorAll('#sdidTableBody tr.sdid-summary-row').forEach(tr => {
-        const search = tr.dataset.search || tr.innerText.toLowerCase();
-        const sdid   = tr.dataset.sdid || '';
-        const detailRow = document.getElementById('sdid-detail-' + sdid);
-        const show   = !term || search.includes(term);
-        tr.style.display = show ? '' : 'none';
-        if (detailRow) detailRow.style.display = 'none'; // collapse on search
+    const tbody = document.getElementById('sdidTableBody');
+    if (!tbody) return;
+    
+    const totalGroups = <?= json_encode(count($sdidSummaries)) ?>;
+    const countEl = document.querySelector('.section-toolbar-left .section-count');
+    
+    // Get the full dataset from PHP
+    const allData = <?= json_encode(array_values($sdidSummaries)) ?>;
+    const allEmployees = <?= json_encode($sdidGrouped) ?>;
+    const rowLimit = 20;
+    
+    // If search is cleared, reload the page with current filters
+    if (!term) {
+        // Just reload the page to reset to default view
+        const params = new URLSearchParams(window.location.search);
+        params.delete('q');
+        window.location.href = '?' + params.toString();
+        return;
+    }
+    
+    // Filter the full dataset
+    const filtered = allData.filter(item => {
+        const searchStr = String(item.SDID + ' ' + 
+                               (item.Departments || '') + ' ' + 
+                               (item.Areas || '') + ' ' + 
+                               (item.PlateNumber || '') + ' ' + 
+                               (item.RefNo || '')).toLowerCase();
+        return searchStr.includes(term);
     });
+    
+    // Clear the table body (keep thead and tfoot)
+    const thead = tbody.closest('table').querySelector('thead');
+    const tfoot = tbody.closest('table').querySelector('tfoot');
+    tbody.innerHTML = '';
+    
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state"><i class="bi bi-search"></i>No matching groups found for "${escHtml(term)}".</div></td></tr>`;
+        if (countEl) {
+            countEl.textContent = `0 / ${totalGroups} groups (filtered)`;
+            countEl.style.background = '#fee2e2';
+            countEl.style.color = '#991b1b';
+            countEl.style.borderColor = '#f87171';
+        }
+        // Hide pagination
+        const pager = document.getElementById('teamPager');
+        if (pager) pager.style.display = 'none';
+        return;
+    }
+    
+    // Build rows for filtered data (show ALL matches, no pagination)
+    let html = '';
+    filtered.forEach((s, index) => {
+        const sBal = parseFloat(s.TotalBalance || 0);
+        const rowBg = sBal >= 5000 ? 'background:#fff0f0;border-left:3px solid #ef4444;'
+                     : (sBal >= 1000 ? 'background:#fffbeb;border-left:3px solid #eab308;' : '');
+        const s1 = String(s.Status1 || '').toUpperCase();
+        let s1bg, s1color, s1border, s1icon;
+        if (s1 === 'CONFIRMED') {
+            s1bg = '#dcfce7'; s1color = '#166534'; s1border = '#4ade80'; s1icon = '✓';
+        } else if (s1 === 'CREATED') {
+            s1bg = '#fef9c3'; s1color = '#713f12'; s1border = '#fde047'; s1icon = '🕐';
+        } else if (s1 === 'VOID') {
+            s1bg = '#fee2e2'; s1color = '#991b1b'; s1border = '#f87171'; s1icon = '✕';
+        } else {
+            s1bg = '#f3f4f6'; s1color = '#374151'; s1border = '#d1d5db'; s1icon = '•';
+        }
+        const searchStr = String(s.SDID + ' ' + (s.Departments || '') + ' ' + (s.Areas || '') + ' ' + (s.PlateNumber || '') + ' ' + (s.RefNo || '')).toLowerCase();
+        const sdidKey = String(s.SDID || '');
+        const empRows = allEmployees[sdidKey] || [];
+        
+        html += `<tr style="${rowBg}cursor:pointer;" data-search="${escHtml(searchStr)}" data-sdid="${escHtml(sdidKey)}" class="sdid-summary-row" onclick="toggleSdidDetail('sdid-detail-${escHtml(sdidKey)}', 'sdid-caret-${escHtml(sdidKey)}')" title="Click to expand employees">
+            <td><span style="font-weight:800;font-family:monospace;color:var(--c-purple);font-size:.9rem">${escHtml(sdidKey)}</span>
+                <i class="bi bi-chevron-down" id="sdid-caret-${escHtml(sdidKey)}" style="font-size:.65rem;color:var(--c-dim);margin-left:.3rem;transition:transform .2s"></i>
+            </td>
+            <td class="r mono bold"><span style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:999px;padding:2px 10px;font-size:.78rem;font-weight:700;">${Number(s.RowCount || 0).toLocaleString()}</span></td>
+            <td style="font-size:.8rem">${escHtml(s.Departments || '—')}</td>
+            <td class="dim" style="font-size:.8rem">${escHtml(s.Areas || '—')}</td>
+            <td><span class="plate-tag" style="font-size:.75rem">${escHtml(s.PlateNumber || '—')}</span></td>
+            <td class="mono dim" style="font-size:.8rem">${escHtml(s.LatestDate || '—')}</td>
+            <td class="r mono bold" style="color:var(--c-green)">${pesoFmt(s.TotalAmount || 0)}</td>
+            <td class="r mono" style="color:var(--c-green)">${pesoFmt(s.TotalPaid || 0)}</td>
+            <td class="r mono bold" style="color:${sBal > 0 ? 'var(--c-red)' : 'var(--c-dim)'};font-size:.95rem">${sBal > 0 ? '▼ ' + pesoFmt(sBal) : '—'}</td>
+            <td><span style="background:${s1bg};color:${s1color};border:1px solid ${s1border};border-radius:999px;padding:2px 9px;font-size:.73rem;font-weight:700;white-space:nowrap;">${s1icon} ${escHtml(s.Status1 || '—')}</span></td>
+            <td class="mono" style="font-size:.78rem;color:var(--c-purple);font-weight:700">${escHtml(s.RefNo || '—')}</td>
+        </tr>`;
+        
+        // Detail row
+        html += `<tr id="sdid-detail-${escHtml(sdidKey)}" class="sdid-detail-row" style="display:none;">
+            <td colspan="12" style="padding:0;background:#f9f5ff;">
+                <div style="padding:.5rem .75rem .75rem;">
+                    <table style="width:100%;border-collapse:collapse;font-size:.78rem;border:1px solid #ddd6fe;border-radius:8px;overflow:hidden;">
+                        <thead><tr style="background:#ede9fe;">
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Employee ID</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Name</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Position</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Type</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Outlet / Area</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Total Amt</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Paid</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Balance</th>
+                            <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Items</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Date Paid</th>
+                            <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#5b21b6;border-bottom:1px solid #ddd6fe;">Settled</th>
+                        </tr></thead>
+                        <tbody>`;
+        
+        empRows.forEach((emp, ei) => {
+            const empBal = parseFloat(emp.Balance || 0);
+            const empPaid = parseFloat(emp.PaidAmount || 0);
+            const empAmt = parseFloat(emp.AmountDue || 0);
+            const empBg2 = ei % 2 === 0 ? '#fff' : '#faf5ff';
+            const hasPaid = empPaid > 0;
+            const datePaid = emp.DatePaid || '';
+            const empId = String(emp.EmployeeID || '');
+            const empName = String(emp.EmployeeName || '—');
+            const sdidVal = String(sdidKey);
+            
+            html += `<tr style="background:${empBg2};">
+                <td style="padding:.32rem .6rem;font-family:monospace;color:var(--c-dim);font-size:.77rem;">${escHtml(emp.EmployeeID || '—')}</td>
+                <td style="padding:.32rem .6rem;font-weight:700;font-size:.8rem;">
+                    <span style="display:inline-flex;align-items:center;gap:.3rem;">
+                        <span style="width:22px;height:22px;border-radius:50%;background:rgba(124,58,237,.12);color:#7c3aed;font-size:.63rem;font-weight:800;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">${escHtml(empName.substring(0,2).toUpperCase())}</span>
+                        ${escHtml(empName)}
+                    </span>
+                </td>
+                <td style="padding:.32rem .6rem;font-size:.77rem;color:var(--c-dim);">${escHtml(emp.Position || '—')}</td>
+                <td style="padding:.32rem .6rem;font-size:.77rem;">${escHtml(emp.TypeShort || '—')}</td>
+                <td style="padding:.32rem .6rem;font-size:.77rem;color:var(--c-dim);">${escHtml((emp.Outlet || '') ? emp.Outlet : (emp.Area || '—'))}</td>
+                <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:600;">${pesoFmt(empAmt)}</td>
+                <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;color:${hasPaid ? 'var(--c-green)' : 'var(--c-dim)'};font-weight:${hasPaid ? '700' : '400'};">
+                    ${hasPaid ? pesoFmt(empPaid) + '<i class="bi bi-check-circle-fill" style="font-size:.68rem;color:var(--c-green);margin-left:.2rem;"></i>' : '<span style="color:#d1d5db">—</span>'}
+                </td>
+                <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:800;color:${empBal > 0 ? 'var(--c-red)' : 'var(--c-green)'};">${empBal > 0 ? '&#9660; ' + pesoFmt(empBal) : '<span style="color:var(--c-green)">&#10003; Settled</span>'}</td>
+                <td style="padding:.32rem .6rem;text-align:center;">
+                    <button onclick="event.stopPropagation();openSsItems(${Number(emp.SEID || 0)}, '${escHtml(emp.EmployeeName || '')}', '${escHtml(emp.RefNo || '')}', '${escHtml(emp.EmployeeID || '')}', '${escHtml(sdidVal)}')" style="font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:6px;border:1.5px solid #fca5a5;background:#fee2e2;color:#991b1b;cursor:pointer;white-space:nowrap;"><i class="bi bi-list-ul"></i> Items</button>
+                </td>
+                <td style="padding:.32rem .6rem;font-size:.77rem;font-family:monospace;">
+                    ${datePaid && empBal <= 0 ? '<span style="color:var(--c-green);font-weight:600;"><i class="bi bi-calendar-check" style="font-size:.7rem"></i> ' + escHtml(datePaid) + '</span>' : 
+                      hasPaid ? '<span style="color:#f59e0b;font-weight:600;"><i class="bi bi-clock-history" style="font-size:.7rem"></i> Partially paid</span>' : 
+                      '<span style="color:#d1d5db">Not yet paid</span>'}
+                </td>
+                <td style="padding:.32rem .6rem;text-align:center;">
+                    ${empBal <= 0 ? 
+                      `<button onclick="event.stopPropagation();openPayHistory('${escHtml(emp.EmployeeID || '')}', '${escHtml(sdidVal)}', '${escHtml(emp.EmployeeName || '')}')" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;cursor:pointer;"><i class="bi bi-check-circle-fill"></i> Settled</button>` :
+                      hasPaid ? 
+                      `<button onclick="event.stopPropagation();openPayHistory('${escHtml(emp.EmployeeID || '')}', '${escHtml(sdidVal)}', '${escHtml(emp.EmployeeName || '')}')" style="background:#fef3c7;color:#b45309;border:1px solid #fcd34d;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;cursor:pointer;"><i class="bi bi-hourglass-split"></i> Partial</button>` :
+                      `<span style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:999px;padding:2px 10px;font-size:.72rem;font-weight:700;white-space:nowrap;"><i class="bi bi-x-circle-fill"></i> Unpaid</span>`
+                    }
+                </td>
+            </tr>`;
+        });
+        
+        html += `</tbody>
+                <tfoot>
+                    <tr style="background:#ede9fe;">
+                        <td colspan="5" style="padding:.35rem .6rem;font-weight:700;font-size:.76rem;color:#5b21b6;">${empRows.length} employee(s)</td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;">${pesoFmt(s.TotalAmount || 0)}</td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;color:var(--c-green);">${pesoFmt(s.TotalPaid || 0)}</td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:800;color:var(--c-red);">&#9660; ${pesoFmt(s.TotalBalance || 0)}</td>
+                        <td colspan="2"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </td>
+</tr>`;
+    });
+    
+    tbody.innerHTML = html;
+    
+    // Update count
+    if (countEl) {
+        countEl.textContent = `${filtered.length} / ${totalGroups} groups (filtered)`;
+        countEl.style.background = '#fef3c7';
+        countEl.style.color = '#92400e';
+        countEl.style.borderColor = '#fcd34d';
+    }
+    
+    // Hide pagination when searching
+    const pager = document.getElementById('teamPager');
+    if (pager) pager.style.display = 'none';
+    
+    // Also update the tfoot totals
+    if (tfoot) {
+        const totalAmt = filtered.reduce((sum, s) => sum + parseFloat(s.TotalAmount || 0), 0);
+        const totalPaid = filtered.reduce((sum, s) => sum + parseFloat(s.TotalPaid || 0), 0);
+        const totalBal = filtered.reduce((sum, s) => sum + parseFloat(s.TotalBalance || 0), 0);
+        tfoot.innerHTML = `<tr>
+            <td colspan="6" style="padding:.5rem .75rem;font-weight:700;font-size:.8rem;">TOTAL — ${filtered.length} SDID groups (filtered)</td>
+            <td class="r mono bold" style="color:var(--c-green);padding:.5rem .75rem">${pesoFmt(totalAmt)}</td>
+            <td class="r mono" style="padding:.5rem .75rem">${pesoFmt(totalPaid)}</td>
+            <td class="r mono bold" style="color:${totalBal > 0 ? 'var(--c-red)' : 'var(--c-dim)'};padding:.5rem .75rem">${totalBal > 0 ? '▼ ' + pesoFmt(totalBal) : '—'}</td>
+            <td style="padding:.5rem .75rem"></td>
+        </tr>`;
+    }
 }
 
 /* ── SDID table sort ───────────────────────────────────── */
@@ -2053,50 +2258,206 @@ function exportSdidExcel() {
     XLSX.writeFile(wb, `short_stocks_sdid_<?= date('Ymd') ?>.xlsx`);
 }
 
-/* ── Short Stocks tab JS ───────────────────────────────── */
-const SS_ROWS = <?= json_encode($shortStocksRows ?? []) ?>;
+/* ── Individual Short Stocks tab JS (payment-history view) ─ */
+const EMP_HISTORY_ROWS = <?= json_encode($empHistoryRows ?? []) ?>;
+const EMP_GROUPED_DATA = <?= json_encode(array_values($empGrouped)) ?>;
 
-function searchSSTable(q) {
+function searchEmpHistory(q) {
     const term = q.trim().toLowerCase();
-    document.querySelectorAll('#ssEmpTableBody tr').forEach(tr => {
-        tr.style.display = (!term || (tr.dataset.search || '').includes(term)) ? '' : 'none';
+    const tbody = document.getElementById('empHistoryTableBody');
+    if (!tbody) return;
+    
+    const totalEmployees = <?= json_encode(count($empGrouped)) ?>;
+    const countEl = document.querySelector('.section-toolbar-left .section-count');
+    
+    // If search is cleared, reload the page
+    if (!term) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('q');
+        window.location.href = '?' + params.toString();
+        return;
+    }
+    
+    // Filter the full dataset
+    const filtered = EMP_GROUPED_DATA.filter(item => {
+        const searchStr = String(item.EmployeeName + ' ' + 
+                               item.Department + ' ' + 
+                               item.EmployeeID).toLowerCase();
+        return searchStr.includes(term);
     });
+    
+    // Clear the table body
+    tbody.innerHTML = '';
+    
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><i class="bi bi-search"></i>No matching employees found for "${escHtml(term)}".</div></td></tr>`;
+        if (countEl) {
+            countEl.textContent = `0 / ${totalEmployees} employees (filtered)`;
+            countEl.style.background = '#fee2e2';
+            countEl.style.color = '#991b1b';
+            countEl.style.borderColor = '#f87171';
+        }
+        const pager = document.getElementById('teamPager');
+        if (pager) pager.style.display = 'none';
+        return;
+    }
+    
+    // Build rows for filtered data
+    let html = '';
+    filtered.forEach((g) => {
+        const detailId = g.DetailId || 'emp-detail-' + Math.random().toString(36).substr(2, 9);
+        const caretId = g.CaretId || 'emp-caret-' + Math.random().toString(36).substr(2, 9);
+        const searchStr = String(g.EmployeeName + ' ' + g.Department + ' ' + g.EmployeeID).toLowerCase();
+        
+        html += `<tr class="sdid-summary-row emp-summary-row" data-search="${escHtml(searchStr)}" data-detail="${detailId}" onclick="toggleSdidDetail('${detailId}', '${caretId}')" style="cursor:pointer;" title="Click to expand payment history">
+            <td><span style="font-weight:700;font-size:.85rem">${escHtml(g.EmployeeName)}</span>
+                <i class="bi bi-chevron-down" id="${caretId}" style="font-size:.65rem;color:var(--c-dim);margin-left:.3rem;transition:transform .2s"></i>
+            </td>
+            <td class="dim" style="font-size:.8rem">${escHtml(g.Position || '—')}</td>
+            <td style="font-size:.8rem">${escHtml(g.Department || '—')}</td>
+            <td class="r mono bold">${g.records ? g.records.length : 0}</td>
+            <td class="r mono bold">${pesoFmt(g.TotalAmount || 0)}</td>
+            <td class="r mono" style="color:var(--c-green)">${pesoFmt(g.TotalPaid || 0)}</td>
+            <td class="r mono bold" style="color:${g.TotalBalance > 0 ? 'var(--c-red)' : 'var(--c-green)'}">${g.TotalBalance > 0 ? '▼ ' + pesoFmt(g.TotalBalance) : '✓ ' + pesoFmt(0)}</td>
+        </tr>`;
+        
+        // Detail row
+        html += `<tr id="${detailId}" class="sdid-detail-row" style="display:none;">
+            <td colspan="7" style="padding:0;background:#fffbeb;">
+                <div style="padding:.5rem .75rem .75rem;">
+                    <table style="width:100%;border-collapse:collapse;font-size:.78rem;border:1px solid #fde68a;border-radius:8px;overflow:hidden;">
+                        <thead><tr style="background:#fef3c7;">
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Schedule</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Generate</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">No.</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Due</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Paid</th>
+                            <th style="padding:.3rem .6rem;text-align:right;font-size:.67rem;text-transform:uppercase;color:#92400e;">Balance</th>
+                            <th style="padding:.3rem .6rem;text-align:left;font-size:.67rem;text-transform:uppercase;color:#92400e;">Ref / Outlet</th>
+                            <th style="padding:.3rem .6rem;text-align:center;font-size:.67rem;text-transform:uppercase;color:#92400e;">Items</th>
+                        </tr></thead>
+                        <tbody>`;
+        
+        if (g.records) {
+            g.records.forEach((rec, ri) => {
+                const recBg = ri % 2 === 0 ? '#fff' : '#fffdf5';
+                const recBal = parseFloat(rec.Balance || 0);
+                html += `<tr style="background:${recBg};">
+                    <td style="padding:.32rem .6rem;font-family:monospace;color:var(--c-dim);font-size:.76rem;">${escHtml(rec.DateSchedule || '—')}</td>
+                    <td style="padding:.32rem .6rem;font-family:monospace;font-size:.76rem;">${escHtml(rec.DateGenerate || '—')}</td>
+                    <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;">${Number(rec.NumAccountable || 0)}</td>
+                    <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:600;">${pesoFmt(rec.AmountDue || 0)}</td>
+                    <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;color:var(--c-green);font-weight:600;">${pesoFmt(rec.PaidAmount || 0)}</td>
+                    <td style="padding:.32rem .6rem;text-align:right;font-family:monospace;font-weight:800;color:${recBal > 0 ? 'var(--c-red)' : 'var(--c-green)'};">${recBal > 0 ? '▼ ' + pesoFmt(recBal) : '✓ ' + pesoFmt(0)}</td>
+                    <td style="padding:.32rem .6rem;font-size:.75rem;">${escHtml(rec.RefNo || '—')} <span class="dim">/ ${escHtml(rec.Outlet || rec.Area || '—')}</span></td>
+                    <td style="padding:.32rem .6rem;text-align:center;">
+                        <button onclick="event.stopPropagation();openSsItems(${Number(rec.SEID || 0)}, '${escHtml(rec.EmployeeName || '')}', '${escHtml(rec.RefNo || '')}', '${escHtml(rec.EmployeeID || '')}', '${escHtml(rec.SDID || '')}')" style="font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:6px;border:1.5px solid #fcd34d;background:#fef3c7;color:#92400e;cursor:pointer;white-space:nowrap;"><i class="bi bi-list-ul"></i> Items</button>
+                    </td>
+                </tr>`;
+            });
+        }
+        
+        html += `</tbody>
+                <tfoot>
+                    <tr style="background:#fef3c7;">
+                        <td colspan="2" style="padding:.35rem .6rem;font-weight:700;font-size:.76rem;color:#92400e;">${g.records ? g.records.length : 0} record(s)</td>
+                        <td></td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;">${pesoFmt(g.TotalAmount || 0)}</td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:700;color:var(--c-green);">${pesoFmt(g.TotalPaid || 0)}</td>
+                        <td style="text-align:right;padding:.35rem .6rem;font-family:monospace;font-weight:800;color:var(--c-red);">${pesoFmt(g.TotalBalance || 0)}</td>
+                        <td colspan="2"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </td>
+</tr>`;
+    });
+    
+    tbody.innerHTML = html;
+    
+    // Update count
+    if (countEl) {
+        countEl.textContent = `${filtered.length} / ${totalEmployees} employees (filtered)`;
+        countEl.style.background = '#fef3c7';
+        countEl.style.color = '#92400e';
+        countEl.style.borderColor = '#fcd34d';
+    }
+    
+    // Hide pagination
+    const pager = document.getElementById('teamPager');
+    if (pager) pager.style.display = 'none';
 }
 
-let _ssSortDir = {};
-function sortSSTable(col) {
-    const tbody = document.querySelector('#ssEmpTableBody');
+let _empSortDir = {};
+function sortEmpTable(col) {
+    const tbody = document.querySelector('#empHistoryTableBody');
     if (!tbody) return;
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    _ssSortDir[col] = !_ssSortDir[col];
+    const rows = Array.from(tbody.querySelectorAll('tr.emp-summary-row'));
+    _empSortDir[col] = !_empSortDir[col];
     rows.sort((a, b) => {
         const va = (a.cells[col]?.innerText || '').replace(/[₱,▼✓ ]/g, '').trim();
         const vb = (b.cells[col]?.innerText || '').replace(/[₱,▼✓ ]/g, '').trim();
         const na = parseFloat(va), nb = parseFloat(vb);
         const res = isNaN(na) || isNaN(nb) ? va.localeCompare(vb) : na - nb;
-        return _ssSortDir[col] ? res : -res;
+        return _empSortDir[col] ? res : -res;
     });
-    rows.forEach(r => tbody.appendChild(r));
+    rows.forEach(row => {
+        const detail = document.getElementById(row.dataset.detail);
+        tbody.appendChild(row);
+        if (detail) tbody.appendChild(detail);
+    });
 }
 
-function printSSTable() {
-    const tbl = document.getElementById('ssEmpTable');
-    if (!tbl) return;
+function exportEmpHistoryCSV() {
+    if (!EMP_HISTORY_ROWS.length) return alert('No data to export.');
+    const keys = ['EmployeeID','EmployeeName','Job_tittle','Position_held','Employee_Status',
+                  'Department','PlateNumber','Area','Outlet','DateSchedule','DateGenerate','DatePaid',
+                  'RefNo','TypeShort','Category','TotalAmount','AmountDue','PaidAmount',
+                  'Balance','StatusofShort','Remarks'];
+    const rows = [keys, ...EMP_HISTORY_ROWS.map(r => keys.map(k => r[k] ?? ''))];
+    const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a    = document.createElement('a');
+    a.href     = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
+    a.download = `short_stocks_history_<?= date('Ymd') ?>.csv`; a.click();
+}
+
+function exportEmpHistoryExcel() {
+    if (!EMP_HISTORY_ROWS.length) return alert('No data to export.');
+    const ws = XLSX.utils.json_to_sheet(EMP_HISTORY_ROWS);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Short Stocks History');
+    XLSX.writeFile(wb, `short_stocks_history_<?= date('Ymd') ?>.xlsx`);
+}
+
+function printEmpHistory() {
+    if (!EMP_HISTORY_ROWS.length) return alert('No data to print.');
+    const sorted = [...EMP_HISTORY_ROWS].sort((a, b) => {
+        const n = (a.EmployeeName || '').localeCompare(b.EmployeeName || '');
+        return n !== 0 ? n : (a.DateGenerate || '').localeCompare(b.DateGenerate || '');
+    });
+    let rows = '', lastEmp = null;
+    sorted.forEach((r, i) => {
+        if (r.EmployeeName !== lastEmp) {
+            rows += `<tr style="background:#f3f4f6"><td colspan="9" style="font-weight:700;padding:4px 6px;">${r.EmployeeName || '—'} <span style="font-weight:400;color:#666">(${r.EmployeeID || ''})</span></td></tr>`;
+            lastEmp = r.EmployeeName;
+        }
+        rows += `<tr style="background:${i % 2 === 0 ? '#fff' : '#fafafa'}">
+          <td>${r.DateSchedule ?? ''}</td><td>${r.DateGenerate ?? ''}</td>
+          <td style="text-align:right">${parseFloat(r.TotalAmount||0).toFixed(2)}</td>
+          <td style="text-align:right">${r.NumAccountable ?? 0}</td>
+          <td style="text-align:right">${parseFloat(r.AmountDue||0).toFixed(2)}</td>
+          <td style="text-align:right">${parseFloat(r.PaidAmount||0).toFixed(2)}</td>
+          <td style="text-align:right;font-weight:700">${parseFloat(r.Balance||0).toFixed(2)}</td>
+          <td>${r.RefNo ?? ''}</td><td>${r.Outlet || r.Area || ''}</td></tr>`;
+    });
+    const headers = ['Schedule','Generate','Total Amt','No.','Due','Paid','Balance','Ref No','Outlet'];
+    const thead = '<thead><tr>' + headers.map(h => `<th style="padding:3px 7px;border:1px solid #ccc;background:#f3f4f6;white-space:nowrap">${h}</th>`).join('') + '</tr></thead>';
     const win = window.open('', '_blank', 'width=1200,height=800');
-    win.document.write(`<!DOCTYPE html><html><head><title>Individual Short Stocks</title>
-    <style>
-      body{font-family:Arial,sans-serif;font-size:10px;margin:14px;color:#111}
-      h3{margin:0 0 4px;font-size:13px}p{margin:0 0 8px;color:#666;font-size:10px}
-      table{width:100%;border-collapse:collapse}
-      th,td{padding:3px 6px;border:1px solid #ddd;white-space:nowrap}
-      thead th{background:#f3f4f6;font-weight:700}
-      tbody tr:nth-child(even) td{background:#fafafa}
-      @media print{body{margin:0}}
-    </style></head><body>
-    <h3>Individual Short Stocks</h3>
-    <p>Exported: ${new Date().toLocaleString()} · ${SS_ROWS.length} records</p>
-    ${tbl.outerHTML}
-    </body></html>`);
+    win.document.write(`<!DOCTYPE html><html><head><title>Individual Short Payment Paid</title>
+    <style>body{font-family:Arial,sans-serif;font-size:10px;margin:14px;color:#111}h3{margin:0 0 4px;font-size:13px}p{margin:0 0 8px;color:#666;font-size:10px}table{width:100%;border-collapse:collapse}td{padding:2px 7px;border:1px solid #ddd}@media print{body{margin:0}}</style>
+    </head><body><h3>Individual Short Payment Paid</h3><p>Generated between: <?= htmlspecialchars($empGenFrom) ?> → <?= htmlspecialchars($empGenTo) ?> · Exported: ${new Date().toLocaleString()} · ${sorted.length} records</p>
+    <table>${thead}<tbody>${rows}</tbody></table></body></html>`);
     win.document.close(); win.focus(); win.print(); win.close();
 }
 

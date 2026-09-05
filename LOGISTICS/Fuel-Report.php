@@ -28,9 +28,10 @@ $data = runQuery($conn, "
         f.Requested AS [Driver],
         f.ORnumber AS [INV #],
         f.Supplier AS [Supplier],
+        f.EncodedBy AS [Encoded By],
         COALESCE(NULLIF(f.Department,''), ts.Department) AS [Department],
         v.Vehicletype AS [Vehicle Type]
-    FROM [dbo].[Tbl_fuel] f
+    FROM [dbo].[View_Fuel] f
     LEFT JOIN [dbo].[TruckSchedule] ts ON ts.PlateNumber = f.PlateNumber AND ts.ScheduleDate = f.Fueldate
     LEFT JOIN (
         SELECT PlateNumber, Vehicletype FROM (
@@ -41,7 +42,7 @@ $data = runQuery($conn, "
             FROM [dbo].[Vehicle]) ranked WHERE rn = 1
     ) v ON v.PlateNumber = f.PlateNumber
     WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
-      $deptWhereF $vtypeWhereF $filterSQL $areaWhereR
+      $deptWhereFuel $vtypeWhereF $filterSQL $areaWhereR
     ORDER BY f.Fueldate DESC");
 
 $rowLimit    = 20;
@@ -136,10 +137,11 @@ $nextUrl = $curPage < $totalPages ? pageUrl($curPage + 1) : '';
         <th onclick="sortTable(9)">Driver <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable(10)">INV # <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable(11)">Supplier <span class="sort-icon">⇅</span></th>
+        <th onclick="sortTable(12)">Encoded By <span class="sort-icon">⇅</span></th>
       </tr></thead>
       <tbody>
       <?php if (empty($displayData)): ?>
-        <tr><td colspan="12"><div class="empty-state"><span class="icon">📭</span><p>No records found. Try adjusting the filters.</p></div></td></tr>
+        <tr><td colspan="13"><div class="empty-state"><span class="icon">📭</span><p>No records found. Try adjusting the filters.</p></div></td></tr>
       <?php else: foreach ($displayData as $row): ?>
         <tr>
           <td><span class="plate"><?= htmlspecialchars($row['Plate Number'] ?? '—') ?></span></td>
@@ -154,6 +156,7 @@ $nextUrl = $curPage < $totalPages ? pageUrl($curPage + 1) : '';
           <td class="dim"><?= htmlspecialchars($row['Driver']   ?? '—') ?></td>
           <td class="mono dim"><?= htmlspecialchars($row['INV #']   ?? '—') ?></td>
           <td class="dim"><?= htmlspecialchars($row['Supplier'] ?? '—') ?></td>
+          <td class="dim"><?= htmlspecialchars($row['Encoded By'] ?? '—') ?></td>
         </tr>
       <?php endforeach; endif; ?>
       </tbody>

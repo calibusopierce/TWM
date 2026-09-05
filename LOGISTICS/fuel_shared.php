@@ -60,7 +60,7 @@ if ($dateActive) {
 // ============================================================
 // DEPARTMENT FILTER
 // ============================================================
-$selDept    = isset($_GET['dept']) && $_GET['dept'] !== '' ? trim($_GET['dept']) : ($_SESSION['Department'] ?? '');
+$selDept    = isset($_GET['dept']) ? trim($_GET['dept']) : ($_SESSION['Department'] ?? '');
 $deptActive = ($selDept !== '');
 $_selDeptSafe = str_replace("'", "''", $selDept);
 $deptWhere  = $deptActive ? "AND v.Department = '$_selDeptSafe'" : '';
@@ -199,7 +199,7 @@ function loadStatCards($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhereFue
             ROUND(SUM(f.Liters),2)        AS TotalLiters,
             ROUND(SUM(f.Amount),2)        AS TotalAmount,
             COUNT(f.FuelID)               AS TotalRefuels
-        FROM [dbo].[Tbl_fuel] f
+        FROM [dbo].[View_Fuel] f
         LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
         WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
           $modeVtypeWhere $deptWhereFuel $filterSQL");
@@ -217,7 +217,7 @@ function loadAnomalyCount($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhere
         WITH DateRange AS (SELECT DATEDIFF(DAY,'$baseFrom','$baseTo') + 1 AS TotalDays),
         AllRecords AS (
             SELECT f.FuelID, f.PlateNumber, f.Fueldate, f.Area, ROUND(f.Liters,2) AS Liters
-            FROM [dbo].[Tbl_fuel] f
+            FROM [dbo].[View_Fuel] f
             LEFT JOIN [dbo].[TruckSchedule] ts ON ts.PlateNumber = f.PlateNumber AND ts.ScheduleDate = f.Fueldate
             LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
             WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
@@ -261,13 +261,13 @@ function loadLookups($conn, $selVtype, $_selVtypeSafe) {
 
     if ($selVtype !== '') {
         $plateList = runQuery($conn, "
-            SELECT DISTINCT f.PlateNumber FROM [dbo].[Tbl_fuel] f
+            SELECT DISTINCT f.PlateNumber FROM [dbo].[View_Fuel] f
             LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
             WHERE v.Vehicletype = '$_selVtypeSafe' AND f.PlateNumber IS NOT NULL AND f.PlateNumber <> ''
             ORDER BY f.PlateNumber");
     } else {
         $plateList = runQuery($conn, "
-            SELECT DISTINCT PlateNumber FROM [dbo].[Tbl_fuel]
+            SELECT DISTINCT PlateNumber FROM [dbo].[View_Fuel]
             WHERE PlateNumber IS NOT NULL AND PlateNumber <> ''
             ORDER BY PlateNumber");
     }
@@ -306,7 +306,7 @@ function tabUrl(string $tab, string $dateFrom, string $dateTo, int $selYear, int
     unset($params['page'], $params['mode']);
     if ($dateFrom  !== '') $params['date_from'] = $dateFrom; else unset($params['date_from']);
     if ($dateTo    !== '') $params['date_to']   = $dateTo;   else unset($params['date_to']);
-    if ($selDept   !== '') $params['dept']       = $selDept;  else unset($params['dept']);
+    $params['dept'] = $selDept;
     if ($selVtype  !== '') $params['vtype']      = $selVtype; else unset($params['vtype']);
     if ($selPlate  !== '') $params['plate']      = $selPlate; else unset($params['plate']);
     if ($selDriver !== '') $params['driver']     = $selDriver; else unset($params['driver']);

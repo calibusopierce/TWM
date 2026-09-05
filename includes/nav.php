@@ -62,8 +62,9 @@ define('ROUTES', [
     'graphs'               => 'LOGISTICS/graphs.php',
     'team_schedule'        => 'LOGISTICS/team_schedule.php',
     'fuel'                 => 'fuel/index.php',
-    'maintenance_report'     => 'MaintenanceReport/index.php',
+    'maintenance_report'   => 'MaintenanceReport/index.php',
     'inventory'            => 'Inventory/index.php',
+    'fleet_tracking'       => '/FLEET/vehicle_status.php',
 
     // ── PO Module
     'po_index'             => 'PO/index.php',
@@ -82,9 +83,11 @@ define('ROUTES', [
     'invoice_monitoring'   => 'FINANCE/invoice_monitoring.php',
     'check_information'    => 'FINANCE/check_information.php',
     'deduction_records'    => 'FINANCE/deduction_records.php',
+    'other_payment_details'=> 'FINANCE/other_payment_details.php',
 
     // ── SALES Module
     'sales_order_report'   => 'SALES/sales_order_report.php',
+    'gps_location_map'     => 'SALES/gps_location_map.php',
 
     // ── BULLETIN Module
     'bulletin'          => 'BULLETIN/bulletin_manage.php',

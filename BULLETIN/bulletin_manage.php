@@ -15,12 +15,7 @@ $displayName = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'User';
 
 $errors  = [];
 $success = '';
-
-$categories = [];
-$catStmt = sqlsrv_query($conn, "SELECT CategoryID, CategoryName FROM TBL_Bulletin_Category WHERE IsActive = 1 ORDER BY CategoryName");
-if ($catStmt !== false) {
-    while ($row = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC)) { $categories[] = $row; }
-}
+$categoryAction = false;
 
 $allDepartments = [];
 $deptStmt = sqlsrv_query($conn, "SELECT DISTINCT Department FROM TBL_HREmployeeList WHERE [Active] = 1 AND Department IS NOT NULL AND LTRIM(RTRIM(Department)) <> '' ORDER BY Department");
@@ -127,6 +122,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit'
     }
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_category') {
+    $categoryAction = true;
+    if ($viewOnly) {
+        $errors[] = "You don't have permission to manage categories.";
+    } else {
+        $catName = trim($_POST['category_name'] ?? '');
+        if ($catName === '') {
+            $errors[] = 'Category name is required.';
+        } else {
+            $dupStmt = sqlsrv_query($conn, "SELECT CategoryID FROM TBL_Bulletin_Category WHERE CategoryName = ? AND IsActive = 1", [$catName]);
+            $dup = $dupStmt !== false ? sqlsrv_fetch_array($dupStmt, SQLSRV_FETCH_ASSOC) : null;
+            if ($dup) {
+                $errors[] = 'A category with that name already exists.';
+            } else {
+                $stmt = sqlsrv_query($conn, "INSERT INTO TBL_Bulletin_Category (CategoryName, IsActive) VALUES (?, 1)", [$catName]);
+                if ($stmt === false) {
+                    $errors[] = 'Database error: ' . print_r(sqlsrv_errors(), true);
+                } else {
+                    $success = 'Category added.';
+                }
+            }
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_category') {
+    $categoryAction = true;
+    if ($viewOnly) {
+        $errors[] = "You don't have permission to manage categories.";
+    } else {
+        $catId   = (int) ($_POST['category_id'] ?? 0);
+        $catName = trim($_POST['category_name'] ?? '');
+        if ($catId <= 0)      $errors[] = 'Invalid category.';
+        if ($catName === '')  $errors[] = 'Category name is required.';
+        if (!$errors) {
+            $dupStmt = sqlsrv_query($conn, "SELECT CategoryID FROM TBL_Bulletin_Category WHERE CategoryName = ? AND IsActive = 1 AND CategoryID <> ?", [$catName, $catId]);
+            $dup = $dupStmt !== false ? sqlsrv_fetch_array($dupStmt, SQLSRV_FETCH_ASSOC) : null;
+            if ($dup) {
+                $errors[] = 'A category with that name already exists.';
+            } else {
+                $stmt = sqlsrv_query($conn, "UPDATE TBL_Bulletin_Category SET CategoryName = ? WHERE CategoryID = ?", [$catName, $catId]);
+                if ($stmt === false) {
+                    $errors[] = 'Database error: ' . print_r(sqlsrv_errors(), true);
+                } else {
+                    $success = 'Category updated.';
+                }
+            }
+        }
+    }
+}
+
+$categories = [];
+$catStmt = sqlsrv_query($conn, "SELECT CategoryID, CategoryName FROM TBL_Bulletin_Category WHERE IsActive = 1 ORDER BY CategoryName");
+if ($catStmt !== false) {
+    while ($row = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC)) { $categories[] = $row; }
+}
+
 $bulletins = [];
 $stmt = sqlsrv_query($conn, "SELECT b.BulletinID, b.Title, b.Message, b.StartDate, b.EndDate, b.CreatedByUserID, b.CreatedByName, b.CreatedAt, b.IsActive, b.CategoryID, c.CategoryName
                               FROM TBL_Bulletin b
@@ -230,6 +282,12 @@ if ($bsStmt !== false) {
     .target-checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.4rem .8rem;background:rgba(255,255,255,.06);border:1px solid var(--w15);border-radius:8px;padding:.7rem .8rem;}
     .target-checks label{display:flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:500;margin:0;cursor:pointer;}
     .scope-badge{display:inline-block;padding:.1rem .5rem;border-radius:6px;font-size:.68rem;font-weight:600;background:var(--w10);color:var(--w80);}
+    .cat-list{display:flex;flex-direction:column;gap:.5rem;margin-top:.9rem;max-height:260px;overflow-y:auto;}
+    .cat-row{display:flex;gap:.5rem;align-items:center;}
+    .cat-row input[type=text]{margin:0;}
+    .cat-row button{margin:0;padding:.5rem .7rem;flex-shrink:0;}
+    .cat-add{margin-top:1.2rem;padding-top:1rem;border-top:1px solid var(--w15);}
+    .cat-add label{margin-top:0;}
   </style>
   </style>
 </head>
@@ -238,7 +296,12 @@ if ($bsStmt !== false) {
   <a href="../home.php" class="back">&larr; Back to Home</a>
   <div class="view-toggle">
     <h1><i class="bi bi-megaphone"></i> Bulletin Board</h1>
-    <a href="bulletin_list.php" class="btn-toggle"><i class="bi bi-archive"></i> View Past / Removed</a>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;">
+      <?php if (!$viewOnly): ?>
+      <a href="#" class="btn-toggle" onclick="openCategoryModal(); return false;"><i class="bi bi-tags"></i> Manage Categories</a>
+      <?php endif; ?>
+      <a href="bulletin_list.php" class="btn-toggle"><i class="bi bi-archive"></i> View Past / Removed</a>
+    </div>
   </div>
 
   <?php if ($success): ?><div class="msg-ok"><?= htmlspecialchars($success) ?></div><?php endif; ?>
@@ -394,7 +457,45 @@ if ($bsStmt !== false) {
   </div>
 </div>
 
+<div id="categoryModalOverlay" class="modal-overlay" style="display:none;">
+  <div class="modal-box">
+    <h2><i class="bi bi-tags"></i> Manage Categories</h2>
+    <div class="cat-list">
+      <?php foreach ($categories as $c): ?>
+        <form method="post" class="cat-row">
+          <input type="hidden" name="action" value="edit_category">
+          <input type="hidden" name="category_id" value="<?= (int) $c['CategoryID'] ?>">
+          <input type="text" name="category_name" maxlength="100" required value="<?= htmlspecialchars($c['CategoryName']) ?>">
+          <button type="submit" title="Save"><i class="bi bi-check-lg"></i></button>
+        </form>
+      <?php endforeach; ?>
+      <?php if (!$categories): ?><p style="color:var(--w60);font-size:.85rem;">No categories yet.</p><?php endif; ?>
+    </div>
+    <div class="cat-add">
+      <form method="post">
+        <input type="hidden" name="action" value="add_category">
+        <label>New category</label>
+        <input type="text" name="category_name" maxlength="100" required placeholder="e.g. Safety Advisory">
+        <button type="submit"><i class="bi bi-plus-lg"></i> Add Category</button>
+      </form>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-cancel" onclick="closeCategoryModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
+function openCategoryModal() {
+  document.getElementById('categoryModalOverlay').style.display = 'flex';
+}
+function closeCategoryModal() {
+  document.getElementById('categoryModalOverlay').style.display = 'none';
+}
+<?php if ($categoryAction): ?>
+document.addEventListener('DOMContentLoaded', openCategoryModal);
+<?php endif; ?>
+
 function openEditModal(id, title, message, startDate, endDate, categoryId, depts, branches) {
   document.getElementById('edit_bulletin_id').value = id;
   document.getElementById('edit_title').value = title;

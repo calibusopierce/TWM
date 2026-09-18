@@ -22,6 +22,8 @@ if ($action === 'list_active') {
     $userDept   = $_SESSION['Department'] ?? '';
     $userBranch = $_SESSION['Branch'] ?? '';
 
+    $ignoreDismissed = !empty($_POST['ignore_dismissed']);
+
     $sql = "SELECT b.BulletinID, b.Title, b.Message, b.CreatedByName, b.CreatedAt, c.CategoryName
             FROM TBL_Bulletin b
             LEFT JOIN TBL_Bulletin_Category c ON c.CategoryID = b.CategoryID
@@ -42,7 +44,7 @@ if ($action === 'list_active') {
     if ($stmt !== false) {
         while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
             $id = (int) $row['BulletinID'];
-            if (in_array($id, $_SESSION['bulletin_dismissed'], true)) {
+            if (!$ignoreDismissed && in_array($id, $_SESSION['bulletin_dismissed'], true)) {
                 continue; // already dismissed this session
             }
             $out[] = [

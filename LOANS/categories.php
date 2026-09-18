@@ -182,7 +182,7 @@ $rowCount = count($rows);
       <div class="page-title">Loan Types</div>
       <div class="page-subtitle">Manage loan type classifications for employee loans</div>
     </div>
-    <a href="<?= base_url('EMPLOYEE/index.php') ?>" class="btn btn-secondary-custom">
+    <a href="<?= base_url('LOANS/index.php') ?>" class="btn btn-secondary-custom">
       <i class="bi bi-arrow-left"></i> Back to Loans
     </a>
   </div>

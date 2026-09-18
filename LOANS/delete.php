@@ -9,23 +9,23 @@ rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 
 $isAdmin = in_array($_SESSION['UserType'] ?? '', ['Admin', 'Administrator']);
 if (!$isAdmin) {
-    header("Location: " . base_url('EMPLOYEE/index.php?error=unauthorized'));
+    header("Location: " . base_url('LOANS/index.php?error=unauthorized'));
     exit;
 }
 
 if (rbac_is_view_only('employee_loans')) {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
 $loan_id = (int)($_POST['loan_id'] ?? 0);
 if (!$loan_id) {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
@@ -34,7 +34,7 @@ $chk = sqlsrv_query($conn, "SELECT LoanID, ReferenceNumber, Status FROM TBL_Loan
 $loan = $chk ? sqlsrv_fetch_array($chk, SQLSRV_FETCH_ASSOC) : null;
 
 if (!$loan) {
-    header("Location: " . base_url('EMPLOYEE/index.php?error=not_found'));
+    header("Location: " . base_url('LOANS/index.php?error=not_found'));
     exit;
 }
 
@@ -43,7 +43,7 @@ if (!$loan) {
 // it has payments yet. This supersedes the old "has payments" check, since
 // Approved loans can't be deleted at all now, payments or not.
 if (trim($loan['Status'] ?? '') !== 'Proposal') {
-    header("Location: " . base_url('EMPLOYEE/index.php?error=locked'));
+    header("Location: " . base_url('LOANS/index.php?error=locked'));
     exit;
 }
 
@@ -51,5 +51,5 @@ if (trim($loan['Status'] ?? '') !== 'Proposal') {
 sqlsrv_query($conn, "DELETE FROM TBL_Loan_Statement WHERE LoanID = ?", [$loan_id]);
 sqlsrv_query($conn, "DELETE FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
 
-header("Location: " . base_url('EMPLOYEE/index.php?deleted=1'));
+header("Location: " . base_url('LOANS/index.php?deleted=1'));
 exit;

@@ -381,7 +381,7 @@ $rowCount = count($rows_data);
               <i class="bi bi-funnel-fill"></i> Filter
             </button>
             <?php if ($filter_search || $filter_type || $filter_status): ?>
-              <a href="<?= base_url('EMPLOYEE/my_loans.php') ?>" class="btn btn-secondary-custom"
+              <a href="<?= base_url('LOANS/my_loans.php') ?>" class="btn btn-secondary-custom"
                  style="padding:.42rem .9rem;font-size:.84rem;white-space:nowrap;">
                 <i class="bi bi-x-lg"></i> Reset
               </a>
@@ -430,7 +430,7 @@ $rowCount = count($rows_data);
             <tr>
               <td style="color:var(--text-muted);font-size:.78rem;font-weight:600;"><?= $i + 1 ?></td>
               <td>
-                <a href="<?= base_url('EMPLOYEE/view.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
+                <a href="<?= base_url('LOANS/view.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
                    style="text-decoration:none;">
                   <span class="ref-number"><?= htmlspecialchars($row['ReferenceNumber'] ?? '—') ?></span>
                 </a>
@@ -458,9 +458,9 @@ $rowCount = count($rows_data);
               </td>
               <td>
                 <div class="action-wrap">
-                  <a href="<?= base_url('EMPLOYEE/view.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
+                  <a href="<?= base_url('LOANS/view.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
                      class="btn-icon view" title="View Details"><i class="bi bi-eye-fill"></i></a>
-                  <a href="<?= base_url('EMPLOYEE/print.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
+                  <a href="<?= base_url('LOANS/print.php?id=' . $row['LoanID'] . '&readonly=1') ?>"
                      class="btn-icon print" title="Print SOA" target="_blank">
                     <i class="bi bi-printer-fill"></i>
                   </a>

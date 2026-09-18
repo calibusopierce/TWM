@@ -28,7 +28,7 @@ if ($is_readonly && !$is_admin) {
     $own_chk = sqlsrv_query($conn, "SELECT EmployeeID FROM TBL_Loan WHERE LoanID = ?", [(int)($_GET['id'] ?? 0)]);
     $own_row = $own_chk ? sqlsrv_fetch_array($own_chk, SQLSRV_FETCH_ASSOC) : null;
     if (!$own_row || $own_row['EmployeeID'] !== $my_emp_id) {
-        header("Location: " . base_url('EMPLOYEE/my_loans.php'));
+        header("Location: " . base_url('LOANS/my_loans.php'));
         exit;
     }
 }
@@ -173,11 +173,11 @@ $pct_paid = $loan_amt > 0 ? min(100, round($paid_amt / $loan_amt * 100)) : 0;
       </div>
     </div>
     <div style="display:flex;gap:.6rem;">
-      <a href="<?= base_url($is_readonly ? 'EMPLOYEE/my_loans.php' : 'EMPLOYEE/index.php') ?>" class="btn btn-secondary-custom">
+      <a href="<?= base_url($is_readonly ? 'LOANS/my_loans.php' : 'LOANS/index.php') ?>" class="btn btn-secondary-custom">
         <i class="bi bi-arrow-left"></i> Back
       </a>
       <?php if (!$isViewOnly && !$is_readonly && ($loan['Status'] ?? '') === 'Proposal'): ?>
-      <a href="<?= base_url('EMPLOYEE/edit.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
+      <a href="<?= base_url('LOANS/edit.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
         <i class="bi bi-pencil-fill"></i> Edit
       </a>
       <button type="button" class="btn btn-add" onclick="openApproveModal()">
@@ -185,14 +185,14 @@ $pct_paid = $loan_amt > 0 ? min(100, round($paid_amt / $loan_amt * 100)) : 0;
       </button>
       <?php endif; ?>
       <?php if (!$isViewOnly && !$is_readonly && ($loan['Status'] ?? '') === 'Approved'): ?>
-      <a href="<?= base_url('EMPLOYEE/payments.php?id=' . $loan_id) ?>" class="btn btn-add">
+      <a href="<?= base_url('LOANS/payments.php?id=' . $loan_id) ?>" class="btn btn-add">
         <i class="bi bi-cash-coin"></i> Payments
       </a>
       <?php endif; ?>
-      <a href="<?= base_url('EMPLOYEE/print.php?id=' . $loan_id . ($is_readonly ? '&readonly=1' : '')) ?>" class="btn btn-add" target="_blank">
+      <a href="<?= base_url('LOANS/print.php?id=' . $loan_id . ($is_readonly ? '&readonly=1' : '')) ?>" class="btn btn-add" target="_blank">
         <i class="bi bi-printer-fill"></i> Print SOA
       </a>
-      <a href="<?= base_url('EMPLOYEE/payment_schedule.php?id=' . $loan_id . ($is_readonly ? '&readonly=1' : '')) ?>" class="btn btn-add" target="_blank">
+      <a href="<?= base_url('LOANS/payment_schedule.php?id=' . $loan_id . ($is_readonly ? '&readonly=1' : '')) ?>" class="btn btn-add" target="_blank">
         <i class="bi bi-calendar3"></i> Payment Schedule
       </a>
     </div>
@@ -371,7 +371,7 @@ $pct_paid = $loan_amt > 0 ? min(100, round($paid_amt / $loan_amt * 100)) : 0;
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary-custom" data-bs-dismiss="modal">Cancel</button>
-        <form method="POST" action="<?= base_url('EMPLOYEE/approve.php') ?>" style="display:inline;">
+        <form method="POST" action="<?= base_url('LOANS/approve.php') ?>" style="display:inline;">
           <input type="hidden" name="loan_id" value="<?= $loan_id ?>">
           <input type="hidden" name="return" value="view">
           <button type="submit" class="btn btn-add">

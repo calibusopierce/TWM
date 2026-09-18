@@ -24,7 +24,7 @@ if (!$is_admin) {
     $own_chk = sqlsrv_query($conn, "SELECT EmployeeID FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
     $own_row = $own_chk ? sqlsrv_fetch_array($own_chk, SQLSRV_FETCH_ASSOC) : null;
     if (!$own_row || $own_row['EmployeeID'] !== $my_emp_id) {
-        header("Location: " . base_url('EMPLOYEE/my_loans.php'));
+        header("Location: " . base_url('LOANS/my_loans.php'));
         exit;
     }
 }

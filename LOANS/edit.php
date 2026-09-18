@@ -23,7 +23,7 @@ if (!$loan) { echo "Loan not found."; exit; }
 // Approved / Fully Paid / Cancelled, the record is locked — send the
 // user to the read-only detail view instead.
 if (trim($loan['Status'] ?? '') !== 'Proposal') {
-    header("Location: " . base_url('EMPLOYEE/view.php?id=' . $loan_id . '&error=locked'));
+    header("Location: " . base_url('LOANS/view.php?id=' . $loan_id . '&error=locked'));
     exit;
 }
 
@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $cur_chk = sqlsrv_query($conn, "SELECT Status FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
     $cur_row = $cur_chk ? sqlsrv_fetch_array($cur_chk, SQLSRV_FETCH_ASSOC) : null;
     if (!$cur_row || trim($cur_row['Status'] ?? '') !== 'Proposal') {
-        header("Location: " . base_url('EMPLOYEE/view.php?id=' . $loan_id . '&error=locked'));
+        header("Location: " . base_url('LOANS/view.php?id=' . $loan_id . '&error=locked'));
         exit;
     }
 
@@ -136,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $cur_chk = sqlsrv_query($conn, "SELECT Status FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
     $cur_row = $cur_chk ? sqlsrv_fetch_array($cur_chk, SQLSRV_FETCH_ASSOC) : null;
     if (!$cur_row || trim($cur_row['Status'] ?? '') !== 'Proposal') {
-        header("Location: " . base_url('EMPLOYEE/view.php?id=' . $loan_id . '&error=locked'));
+        header("Location: " . base_url('LOANS/view.php?id=' . $loan_id . '&error=locked'));
         exit;
     }
 
@@ -250,7 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
       <div class="page-title">Edit: <?= htmlspecialchars($loan['ReferenceNumber'] ?? 'Loan') ?></div>
       <div class="page-subtitle">Update loan details and schedule · Payments are recorded on the Payments page</div>
     </div>
-    <a href="<?= base_url('EMPLOYEE/view.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
+    <a href="<?= base_url('LOANS/view.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
       <i class="bi bi-arrow-left"></i> Cancel
     </a>
   </div>
@@ -369,7 +369,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     </div>
 
     <div style="display:flex;justify-content:flex-end;gap:.75rem;margin-bottom:1.25rem;">
-      <a href="<?= base_url('EMPLOYEE/view.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
+      <a href="<?= base_url('LOANS/view.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
         <i class="bi bi-x-lg"></i> Cancel
       </a>
       <button type="submit" class="btn btn-add">

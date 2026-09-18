@@ -7,7 +7,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 rbac_gate($pdo, 'employee_loans');
 rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 if (rbac_is_view_only('employee_loans')) {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
@@ -291,7 +291,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="page-title">New Employee Loan</div>
       <div class="page-subtitle">Fill in the details below to create a new loan record</div>
     </div>
-    <a href="<?= base_url('EMPLOYEE/index.php') ?>" class="btn btn-secondary-custom">
+    <a href="<?= base_url('LOANS/index.php') ?>" class="btn btn-secondary-custom">
       <i class="bi bi-arrow-left"></i> Back to List
     </a>
   </div>
@@ -485,7 +485,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <!-- Actions -->
     <div style="display:flex; justify-content:flex-end; gap:.75rem; margin-bottom:2rem;">
-      <a href="<?= base_url('EMPLOYEE/index.php') ?>" class="btn btn-secondary-custom">
+      <a href="<?= base_url('LOANS/index.php') ?>" class="btn btn-secondary-custom">
         <i class="bi bi-x-lg"></i> Cancel
       </a>
       <button type="submit" class="btn btn-add">

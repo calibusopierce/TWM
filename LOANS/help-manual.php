@@ -249,7 +249,7 @@ $isAdmin = in_array($_SESSION['UserType'] ?? '', ['Admin', 'Administrator']);
       <div class="page-title">Help Manual</div>
       <div class="page-subtitle">Employee Loans Module — complete guide</div>
     </div>
-    <a href="<?= base_url($hasAdminAccess ? 'EMPLOYEE/index.php' : 'EMPLOYEE/my_loans.php') ?>" class="btn btn-secondary-custom">
+    <a href="<?= base_url($hasAdminAccess ? 'LOANS/index.php' : 'LOANS/my_loans.php') ?>" class="btn btn-secondary-custom">
       <i class="bi bi-arrow-left"></i> Back to Loans
     </a>
   </div>
@@ -321,18 +321,18 @@ $isAdmin = in_array($_SESSION['UserType'] ?? '', ['Admin', 'Administrator']);
             <thead><tr><th>Page</th><th>URL</th><th>Purpose</th></tr></thead>
             <tbody>
               <?php if ($hasAdminAccess): ?>
-              <tr><td><strong>Loan List</strong></td><td><code>EMPLOYEE/index.php</code></td><td>Master list of all loans with stat cards, filters, and quick actions.</td></tr>
-              <tr><td><strong>Create Loan</strong></td><td><code>EMPLOYEE/create.php</code></td><td>New loan form with employee lookup, schedule builder, and noted/approved-by fields.</td></tr>
-              <tr><td><strong>View Loan</strong></td><td><code>EMPLOYEE/view.php?id=…</code></td><td>Full loan detail: header info, amortization table, payment history, and action buttons.</td></tr>
-              <tr><td><strong>Edit Loan</strong></td><td><code>EMPLOYEE/edit.php?id=…</code></td><td>Edit a loan that is still in <em>Proposal</em> status.</td></tr>
-              <tr><td><strong>Payments</strong></td><td><code>EMPLOYEE/payments.php?id=…</code></td><td>Record payments against individual schedule rows for an <em>Approved</em> loan.</td></tr>
-              <tr><td><strong>Print</strong></td><td><code>EMPLOYEE/print.php?id=…</code></td><td>Printable amortization slip / voucher.</td></tr>
-              <tr><td><strong>Loan Types</strong></td><td><code>EMPLOYEE/categories.php</code></td><td>Manage loan type categories (e.g. SSS, HDMF, Company).</td></tr>
+              <tr><td><strong>Loan List</strong></td><td><code>LOANS/index.php</code></td><td>Master list of all loans with stat cards, filters, and quick actions.</td></tr>
+              <tr><td><strong>Create Loan</strong></td><td><code>LOANS/create.php</code></td><td>New loan form with employee lookup, schedule builder, and noted/approved-by fields.</td></tr>
+              <tr><td><strong>View Loan</strong></td><td><code>LOANS/view.php?id=…</code></td><td>Full loan detail: header info, amortization table, payment history, and action buttons.</td></tr>
+              <tr><td><strong>Edit Loan</strong></td><td><code>LOANS/edit.php?id=…</code></td><td>Edit a loan that is still in <em>Proposal</em> status.</td></tr>
+              <tr><td><strong>Payments</strong></td><td><code>LOANS/payments.php?id=…</code></td><td>Record payments against individual schedule rows for an <em>Approved</em> loan.</td></tr>
+              <tr><td><strong>Print</strong></td><td><code>LOANS/print.php?id=…</code></td><td>Printable amortization slip / voucher.</td></tr>
+              <tr><td><strong>Loan Types</strong></td><td><code>LOANS/categories.php</code></td><td>Manage loan type categories (e.g. SSS, HDMF, Company).</td></tr>
               <?php endif; ?>
               <?php if ($hasMyLoans): ?>
-              <tr><td><strong>My Loans</strong></td><td><code>EMPLOYEE/my_loans.php</code></td><td>Employee self-service view — shows only your own loan records.</td></tr>
+              <tr><td><strong>My Loans</strong></td><td><code>LOANS/my_loans.php</code></td><td>Employee self-service view — shows only your own loan records.</td></tr>
               <?php endif; ?>
-              <tr><td><strong>Help Manual</strong></td><td><code>EMPLOYEE/help-manual.php</code></td><td>This page.</td></tr>
+              <tr><td><strong>Help Manual</strong></td><td><code>LOANS/help-manual.php</code></td><td>This page.</td></tr>
             </tbody>
           </table>
         </div>
@@ -693,7 +693,7 @@ $isAdmin = in_array($_SESSION['UserType'] ?? '', ['Admin', 'Administrator']);
         </div>
         <div class="help-section-body">
           <p>
-            <strong>My Loans</strong> (<code>EMPLOYEE/my_loans.php</code>) is the self-service view for employees.
+            <strong>My Loans</strong> (<code>LOANS/my_loans.php</code>) is the self-service view for employees.
             It shows only <em>your own</em> loan records — you cannot see or modify other employees' loans here.
           </p>
           <ul class="bullet-list">

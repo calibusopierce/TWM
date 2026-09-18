@@ -7,7 +7,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
 rbac_gate($pdo, 'employee_loans');
 rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 if (rbac_is_view_only('employee_loans')) {
-    header("Location: " . base_url('EMPLOYEE/view.php?id=' . (int)($_GET['id'] ?? 0)));
+    header("Location: " . base_url('LOANS/view.php?id=' . (int)($_GET['id'] ?? 0)));
     exit;
 }
 
@@ -21,7 +21,7 @@ if (!isset($_POST['ajax_action'])) {
     $page_status_chk = sqlsrv_query($conn, "SELECT Status FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
     $page_status_row = $page_status_chk ? sqlsrv_fetch_array($page_status_chk, SQLSRV_FETCH_ASSOC) : null;
     if (!$page_status_row || trim($page_status_row['Status'] ?? '') !== 'Approved') {
-        header("Location: " . base_url('EMPLOYEE/view.php?id=' . $loan_id . '&error=not_approved'));
+        header("Location: " . base_url('LOANS/view.php?id=' . $loan_id . '&error=not_approved'));
         exit;
     }
 }
@@ -204,7 +204,7 @@ $bal_amt  = (float)($loan['BalanceAmount'] ?? 0);
       <div class="page-title">Payments: <?= htmlspecialchars($loan['ReferenceNumber'] ?? 'Loan') ?></div>
       <div class="page-subtitle"><?= htmlspecialchars($full_name) ?></div>
     </div>
-    <a href="<?= base_url('EMPLOYEE/index.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
+    <a href="<?= base_url('LOANS/index.php?id=' . $loan_id) ?>" class="btn btn-secondary-custom">
       <i class="bi bi-arrow-left"></i> Back to Home
     </a>
   </div>

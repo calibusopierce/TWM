@@ -293,10 +293,10 @@ $rowCount = count($rows_data);
     </div>
     <div style="display:flex; gap:.6rem;">
       <?php if (!$isViewOnly): ?>
-      <a href="<?= base_url('EMPLOYEE/categories.php') ?>" class="btn btn-secondary-custom">
+      <a href="<?= base_url('LOANS/categories.php') ?>" class="btn btn-secondary-custom">
         <i class="bi bi-tags-fill"></i> Loan Types
       </a>
-      <a href="<?= base_url('EMPLOYEE/create.php') ?>" class="btn btn-add">
+      <a href="<?= base_url('LOANS/create.php') ?>" class="btn btn-add">
         <i class="bi bi-plus-lg"></i> New Loan
       </a>
       <?php endif; ?>
@@ -447,7 +447,7 @@ $rowCount = count($rows_data);
               <i class="bi bi-funnel-fill"></i> Filter
             </button>
             <?php if ($filter_search || $filter_type || $filter_status || $filter_department || $filter_branch): ?>
-              <a href="<?= base_url('EMPLOYEE/index.php') ?>" class="btn btn-secondary-custom"
+              <a href="<?= base_url('LOANS/index.php') ?>" class="btn btn-secondary-custom"
                  style="padding:.42rem .9rem;font-size:.84rem;white-space:nowrap;">
                 <i class="bi bi-x-lg"></i> Reset
               </a>
@@ -496,7 +496,7 @@ $rowCount = count($rows_data);
             <tr>
               <td style="color:var(--text-muted);font-size:.78rem;font-weight:600;"><?= $i + 1 ?></td>
               <td>
-                <a href="<?= base_url('EMPLOYEE/view.php?id=' . $row['LoanID']) ?>"
+                <a href="<?= base_url('LOANS/view.php?id=' . $row['LoanID']) ?>"
                    style="text-decoration:none;">
                   <span class="ref-number"><?= htmlspecialchars($row['ReferenceNumber'] ?? '—') ?></span>
                 </a>
@@ -523,7 +523,7 @@ $rowCount = count($rows_data);
               </td>
               <td>
                 <div class="action-wrap">
-                  <a href="<?= base_url('EMPLOYEE/view.php?id=' . $row['LoanID']) ?>"
+                  <a href="<?= base_url('LOANS/view.php?id=' . $row['LoanID']) ?>"
                      class="btn-icon view" title="View / Edit"><i class="bi bi-eye-fill"></i></a>
                   <?php if (!$isViewOnly && $row['Status'] === 'Proposal'): ?>
                   <button type="button" class="btn-icon approve" title="Approve"
@@ -532,10 +532,10 @@ $rowCount = count($rows_data);
                   </button>
                   <?php endif; ?>
                   <?php if (!$isViewOnly && $row['Status'] === 'Approved'): ?>
-                  <a href="<?= base_url('EMPLOYEE/payments.php?id=' . $row['LoanID']) ?>"
+                  <a href="<?= base_url('LOANS/payments.php?id=' . $row['LoanID']) ?>"
                      class="btn-icon pay" title="Payments"><i class="bi bi-cash-coin"></i></a>
                   <?php endif; ?>
-                  <a href="<?= base_url('EMPLOYEE/print.php?id=' . $row['LoanID']) ?>"
+                  <a href="<?= base_url('LOANS/print.php?id=' . $row['LoanID']) ?>"
                      class="btn-icon print" title="Print SOA" target="_blank">
                      <i class="bi bi-printer-fill"></i></a>
                   <?php if ($isAdmin && $row['Status'] === 'Proposal'): ?>
@@ -564,7 +564,7 @@ $rowCount = count($rows_data);
     <h5><i class="bi bi-check-circle-fill me-2" style="color:#10b981;"></i>Approve Loan</h5>
     <p>Once approved, this loan can no longer be edited or deleted — only payments can be recorded against it.</p>
     <div class="ref-tag" id="approveRefDisplay"></div>
-    <form method="POST" action="<?= base_url('EMPLOYEE/approve.php') ?>" id="approveForm">
+    <form method="POST" action="<?= base_url('LOANS/approve.php') ?>" id="approveForm">
       <input type="hidden" name="loan_id" id="approveLoanId">
       <div class="del-modal-actions">
         <button type="button" class="btn btn-secondary-custom" onclick="closeApproveModal()">
@@ -584,7 +584,7 @@ $rowCount = count($rows_data);
     <h5><i class="bi bi-exclamation-triangle-fill me-2"></i>Delete Loan Record</h5>
     <p>This action is permanent and cannot be undone. Type the reference number below to confirm.</p>
     <div class="ref-tag" id="delRefDisplay"></div>
-    <form method="POST" action="<?= base_url('EMPLOYEE/delete.php') ?>" id="delForm">
+    <form method="POST" action="<?= base_url('LOANS/delete.php') ?>" id="delForm">
       <input type="hidden" name="loan_id" id="delLoanId">
       <label>Type reference number to confirm</label>
       <input type="text" id="delConfirmInput" placeholder="e.g. CA-2026-0001" autocomplete="off">

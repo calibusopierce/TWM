@@ -8,32 +8,32 @@ rbac_gate($pdo, 'employee_loans');
 rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
 
 if (rbac_is_view_only('employee_loans')) {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    header("Location: " . base_url('EMPLOYEE/index.php'));
+    header("Location: " . base_url('LOANS/index.php'));
     exit;
 }
 
 $loan_id = (int)($_POST['loan_id'] ?? 0);
 if (!$loan_id) {
-    header("Location: " . base_url('EMPLOYEE/index.php?error=invalid'));
+    header("Location: " . base_url('LOANS/index.php?error=invalid'));
     exit;
 }
 
 // Where to send the user back to (view.php sends ?return=view, index.php has no param -> defaults to index)
 $return_to = ($_POST['return'] ?? '') === 'view'
-    ? base_url('EMPLOYEE/view.php?id=' . $loan_id)
-    : base_url('EMPLOYEE/index.php');
+    ? base_url('LOANS/view.php?id=' . $loan_id)
+    : base_url('LOANS/index.php');
 
 // ── Fetch current status — approval is ONLY valid from Proposal ────────────
 $chk = sqlsrv_query($conn, "SELECT LoanID, ReferenceNumber, Status, ApprovedByID FROM TBL_Loan WHERE LoanID = ?", [$loan_id]);
 $loan = $chk ? sqlsrv_fetch_array($chk, SQLSRV_FETCH_ASSOC) : null;
 
 if (!$loan) {
-    header("Location: " . base_url('EMPLOYEE/index.php?error=not_found'));
+    header("Location: " . base_url('LOANS/index.php?error=not_found'));
     exit;
 }
 

@@ -65,6 +65,7 @@ define('ROUTES', [
     'maintenance_report'   => 'MaintenanceReport/index.php',
     'inventory'            => 'Inventory/index.php',
     'fleet_tracking'       => '/FLEET/vehicle_status.php',
+    'employee_gps_history' => '/FLEET/employee_gps_history.php',
 
     // ── PO Module
     'po_index'             => 'PO/index.php',
@@ -76,6 +77,7 @@ define('ROUTES', [
     // ── Customer Module
     'customer_list'        => 'CUSTOMERS/customer-list.php',
     'customer_detail'      => 'CUSTOMERS/customer-detail.php',
+    'customer_qr'          => 'CUSTOMERS/customer_qr.php',
 
     // ── FINANCE Module
     'delivery_remittance'  => 'FINANCE/delivery_remittance.php',
@@ -84,16 +86,21 @@ define('ROUTES', [
     'check_information'    => 'FINANCE/check_information.php',
     'deduction_records'    => 'FINANCE/deduction_records.php',
     'other_payment_details'=> 'FINANCE/other_payment_details.php',
+    'cheques'              => 'FINANCE/cheques.php',
 
     // ── SALES Module
     'sales_order_report'   => 'SALES/sales_order_report.php',
     'gps_location_map'     => 'SALES/gps_location_map.php',
+    'qr_scan_log'          => 'SALES/qr_scan_log.php',
 
     // ── BULLETIN Module
     'bulletin'          => 'BULLETIN/bulletin_manage.php',
 
     // ── TEST Module
     'message_user'         => 'TEST/messages.php',
+    // ── FACE RECOGNITION Module
+    'face_recognition' => 'face_recognition/index.php',
+    'face_recognition_devices' => 'face_recognition/device_registry.php',
 
     // ── Forms
     'awards'               => 'forms/awards.php',

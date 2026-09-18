@@ -112,42 +112,58 @@ $areaList = lookupList($conn,
 );
 
 // ── Customer list query — Delivery + AR combined via UNION ALL ──
-// One round trip instead of three (main query + 2 count queries).
-// GROUP BY Customer + Department — one row per customer, MAX()
-// picks the latest Branch/Area/Salesman/ModeOfPayment. A 'Source'
-// discriminator lets PHP split the combined result back out by tab.
-$deliverySql = "SELECT
-                'delivery'          AS Source,
-                Customer,
-                Department,
-                MAX(Branch)         AS Branch,
-                MAX(Area)           AS Area,
-                MAX(Salesman)       AS Salesman,
-                MAX(Remarks)        AS ModeOfPayments,
-                SUM(NetAmount)      AS TotalAmount
-            FROM [dbo].[View_RemittanceCollectionSlip2]
-            WHERE Customer IS NOT NULL AND Customer <> '' {$commonWhereDelivery}
-              AND ISNULL(RRID, 0) > 0
-              AND Remarks IN ('CASH', 'CHECK', 'CREDIT')
-            GROUP BY Customer, Department";
-
-$arSql = "SELECT
-                'ar'                 AS Source,
-                CustomerName1        AS Customer,
-                Department,
-                MAX(Branch)          AS Branch,
-                MAX(ARArea)          AS Area,
-                MAX(Salesman)        AS Salesman,
-                MAX(RemitRemarks)    AS ModeOfPayments,
-                SUM(InvoiceAmount)   AS TotalAmount
-            FROM [dbo].[View_ARForCollectionDetails]
-            WHERE CustomerName1 IS NOT NULL AND CustomerName1 <> ''
-              AND ISNULL(RRID, 0) > 0
-              AND RemitRemarks IN ('CASH', 'CHECK', 'RETURN')
-              {$commonWhereAR}
-            GROUP BY CustomerName1, Department";
-
-$combinedSql = "{$deliverySql}\nUNION ALL\n{$arSql}\nORDER BY TotalAmount DESC";
+// Two CTEs first aggregate to Customer+Department+MOP (one row per
+// payment type actually used), then the outer query rolls those up
+// to one row per customer: SUM() gives the true combined total,
+// STRING_AGG() lists every MOP that contributed to it (e.g. "CASH,
+// CREDIT") instead of falsely attributing the whole total to one.
+// A 'Source' discriminator lets PHP split the result back out by tab.
+$combinedSql = "
+WITH DeliveryByMop AS (
+    SELECT
+        Customer,
+        Department,
+        MAX(Branch)    AS Branch,
+        MAX(Area)      AS Area,
+        MAX(Salesman)  AS Salesman,
+        Remarks        AS ModeOfPayment,
+        SUM(NetAmount) AS MopAmount
+    FROM [dbo].[View_RemittanceCollectionSlip2]
+    WHERE Customer IS NOT NULL AND Customer <> '' {$commonWhereDelivery}
+      AND ISNULL(RRID, 0) > 0
+      AND Remarks IN ('CASH', 'CHECK', 'CREDIT')
+    GROUP BY Customer, Department, Remarks
+),
+ArByMop AS (
+    SELECT
+        CustomerName1      AS Customer,
+        Department,
+        MAX(Branch)        AS Branch,
+        MAX(ARArea)        AS Area,
+        MAX(Salesman)      AS Salesman,
+        RemitRemarks       AS ModeOfPayment,
+        SUM(InvoiceAmount) AS MopAmount
+    FROM [dbo].[View_ARForCollectionDetails]
+    WHERE CustomerName1 IS NOT NULL AND CustomerName1 <> ''
+      AND ISNULL(RRID, 0) > 0
+      AND RemitRemarks IN ('CASH', 'CHECK', 'RETURN')
+      {$commonWhereAR}
+    GROUP BY CustomerName1, Department, RemitRemarks
+)
+SELECT 'delivery' AS Source, Customer, Department,
+       MAX(Branch) AS Branch, MAX(Area) AS Area, MAX(Salesman) AS Salesman,
+       STRING_AGG(ModeOfPayment, ', ') WITHIN GROUP (ORDER BY ModeOfPayment) AS ModeOfPayments,
+       SUM(MopAmount) AS TotalAmount
+FROM DeliveryByMop
+GROUP BY Customer, Department
+UNION ALL
+SELECT 'ar' AS Source, Customer, Department,
+       MAX(Branch) AS Branch, MAX(Area) AS Area, MAX(Salesman) AS Salesman,
+       STRING_AGG(ModeOfPayment, ', ') WITHIN GROUP (ORDER BY ModeOfPayment) AS ModeOfPayments,
+       SUM(MopAmount) AS TotalAmount
+FROM ArByMop
+GROUP BY Customer, Department
+ORDER BY TotalAmount DESC";
 
 $allData = runQuery($conn, $combinedSql);
 
@@ -579,6 +595,8 @@ function peso($v): string { return '₱ ' . number_format((float)($v ?? 0), 2); 
                   'customer'   => $custName,
                   'source'     => $tab,
                   'department' => $row['Department'] ?? '',
+                  'date_from'  => $dateFrom,
+                  'date_to'    => $dateTo,
               ]);
             ?>
             <tr>
@@ -625,8 +643,10 @@ function peso($v): string { return '₱ ' . number_format((float)($v ?? 0), 2); 
 
 <script>
 // ── Full dataset for export/print (not paginated) ────────────
-const ALL_DATA = <?= json_encode(array_values($exportData), JSON_UNESCAPED_UNICODE) ?>;
-const TAB      = '<?= $tab ?>';
+const ALL_DATA  = <?= json_encode(array_values($exportData), JSON_UNESCAPED_UNICODE) ?>;
+const TAB       = '<?= $tab ?>';
+const DATE_FROM = '<?= htmlspecialchars($dateFrom) ?>';
+const DATE_TO   = '<?= htmlspecialchars($dateTo) ?>';
 
 // ── Filter panel toggle ────────────────────────────────────────
 function toggleFilter() {
@@ -690,11 +710,12 @@ function renderSearchResults(rows) {
         const mop       = String(row.ModeOfPayments ?? '').trim() || '—';
         const amt       = parseFloat(row.TotalAmount ?? 0);
         const amtFmt    = '₱ ' + amt.toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
-
         const detailUrl = 'customer-detail.php?' + new URLSearchParams({
             customer:   custName === '—' ? '' : custName,
             source:     TAB,
             department: dept,
+            date_from:  DATE_FROM,
+            date_to:    DATE_TO,
         }).toString();
 
         return `<tr>

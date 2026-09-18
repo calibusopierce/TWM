@@ -48,7 +48,7 @@ function rbac_module_urls(): array {
         'RBAC' => '/TWM/RBAC/index.php',
         // ── Accounting ───────────────────────────────────────────────────────
         'short_stocks_paid' => '/TWM/ACCOUNTING/short_stocks_paid.php',
-
+        'face_recognition' => '/TWM/face_recognition/index.php',
         // ── Add more overrides here as needed ───────────────────────────────
         // 'payroll'        => '/TWM/Finance/payroll/index.php',
         // 'fleet_tracking' => '/TWM/Fleet/tracking/index.php',

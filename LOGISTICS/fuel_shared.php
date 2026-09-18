@@ -213,16 +213,24 @@ function loadStatCards($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhereFue
 }
 
 function loadAnomalyCount($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhereFuel, $filterSQL) {
+    // Baseline is a rolling 90-day window ending at $baseTo — avoids scanning
+    // full history (was the main cost driver: ~900s CPU per unfiltered call).
+    $blTo   = $baseTo;
+    $blFrom = date('Y-m-d', strtotime("$baseTo -90 days"));
+
     $row = runQuery($conn, "
-        WITH DateRange AS (SELECT DATEDIFF(DAY,'$baseFrom','$baseTo') + 1 AS TotalDays),
+        WITH DateRange AS (SELECT DATEDIFF(DAY,'$blFrom','$blTo') + 1 AS TotalDays),
         AllRecords AS (
             SELECT f.FuelID, f.PlateNumber, f.Fueldate, f.Area, ROUND(f.Liters,2) AS Liters
             FROM [dbo].[View_Fuel] f
             LEFT JOIN [dbo].[TruckSchedule] ts ON ts.PlateNumber = f.PlateNumber AND ts.ScheduleDate = f.Fueldate
             LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
-            WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
+            WHERE f.Fueldate BETWEEN '$blFrom' AND '$blTo'
               AND f.Area IS NOT NULL AND f.Liters IS NOT NULL
-              $modeVtypeWhere $deptWhereFuel $filterSQL
+              $modeVtypeWhere $deptWhereFuel
+        ),
+        ScopedRecords AS (
+            SELECT * FROM AllRecords WHERE 1=1 $filterSQL
         ),
         TruckBaseline AS (
             SELECT PlateNumber, Area, COUNT(FuelID) AS TotalRefuels, ROUND(AVG(Liters),2) AS TruckAvgLiters
@@ -240,7 +248,7 @@ function loadAnomalyCount($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhere
             FROM TruckBracket tb GROUP BY tb.Area, tb.FreqBracket
         )
         SELECT COUNT(*) AS cnt
-        FROM AllRecords ar
+        FROM ScopedRecords ar
         INNER JOIN TruckBracket tb ON tb.PlateNumber = ar.PlateNumber AND tb.Area = ar.Area
         INNER JOIN BracketAreaAvg ba ON ba.Area = ar.Area AND ba.FreqBracket = tb.FreqBracket
         WHERE ((ar.Liters-tb.TruckAvgLiters)/NULLIF(tb.TruckAvgLiters,0))>0.5

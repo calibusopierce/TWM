@@ -174,6 +174,65 @@ if (isset($vehicleStatus['error'])) {
 $vehicleApiError = isset($vehicleStatus['error']);
 $vehicles = $vehicleApiError ? [] : ($vehicleStatus['data'] ?? []);
 
+// --- Vehicle master data (dbo.View_Vehicle) — keyed by PlateNumber so we can match
+// against Cartrack's 'registration' and pull Department (for pin color-coding, same
+// scheme as employees/customers) plus the full spec sheet for the details modal.
+// Cartrack's registration and TWM's PlateNumber aren't guaranteed to be formatted
+// identically (spaces/dashes may differ), so the key strips everything but
+// alphanumerics before matching, not just trim+uppercase.
+function gm_normalize_plate($plate) {
+    return preg_replace('/[^A-Z0-9]/', '', strtoupper(trim((string)$plate)));
+}
+
+// Resolve a vehicle Picture value the same way employee photos are resolved —
+// TWM stores these under uploads/vehicle/filename.jpg (forward slash), so the
+// resolver just needs its own subdirectory, not the employee_pics one.
+function gm_resolve_vehicle_picture_paths($rawPic) {
+    $rawPic = trim((string)$rawPic);
+    if ($rawPic === '') return ['', ''];
+    $normPic = str_replace('\\', '/', $rawPic);
+    $picFile = basename($normPic);
+    if ($picFile === '') return ['', ''];
+        // Some filenames on disk contain literal spaces (e.g. "RDX 417.jpg"), which
+    // break unencoded inside an <img src="..."> attribute. Always build the final
+    // path from the encoded filename — never from the raw $normPic — regardless
+    // of which subdirectory shape the raw value came in.
+    $picFileEncoded = rawurlencode($picFile);
+    // Legacy vehicle photos live directly under tradewellportal/vehicle/ (NOT
+    // tradewellportal/uploads/ — confirmed against the actual folder on disk).
+    $twmPic = '/TWM/uploads/vehicle/' . $picFileEncoded;
+    $legacyPic = '/tradewellportal/vehicle/' . $picFileEncoded;
+    return [$twmPic, $legacyPic];
+}
+
+$vehicleDetailsByPlate = [];
+$vdSql = "
+    SELECT [VehicleID],[Department],[PlateNumber],[Description],[Vehicletype],
+           [Capacityweight],[Tiresize],[Active],[Picture],[FuelType],[Brand],
+           [Model],[Year],[Transmission],[Wheeler],[Category]
+    FROM [dbo].[View_Vehicle]
+";
+$vdStmt = sqlsrv_query($conn, $vdSql);
+if ($vdStmt === false) {
+    error_log('View_Vehicle query error: ' . print_r(sqlsrv_errors(), true));
+} else {
+    while ($row = sqlsrv_fetch_array($vdStmt, SQLSRV_FETCH_ASSOC)) {
+        $plateKey = gm_normalize_plate($row['PlateNumber'] ?? '');
+        if ($plateKey === '') continue;
+        // Some plates have duplicate rows in View_Vehicle (data-quality issue,
+        // e.g. placeholder plates like "0"/"UTC" shared across vehicles). Don't
+        // let a blank-Department duplicate silently overwrite a good one —
+        // only overwrite if we don't have this plate yet, or the existing
+        // entry has no Department but this row does.
+        $existing = $vehicleDetailsByPlate[$plateKey] ?? null;
+        $existingHasDept = $existing && trim((string)($existing['Department'] ?? '')) !== '';
+        $newHasDept = trim((string)($row['Department'] ?? '')) !== '';
+        if ($existing === null || (!$existingHasDept && $newHasDept)) {
+            $vehicleDetailsByPlate[$plateKey] = $row;
+        }
+    }
+}
+
 foreach ($vehicles as &$v) {
     $moving = ($v['speed'] ?? 0) > 0;
     $ignition = $v['ignition'] ?? false;
@@ -184,11 +243,80 @@ foreach ($vehicles as &$v) {
     $v['_lastUpdateTs'] = strtotime($v['_lastUpdate'] ?? '') ?: 0;
     $v['_isStale'] = $v['_lastUpdateTs'] > 0 && $v['_lastUpdateTs'] < (time() - 86400); // 24hr threshold
     $v['_geofenceIds'] = $v['location']['geofence_ids'] ?? [];
+
+    $plateKey = gm_normalize_plate($v['registration'] ?? '');
+    $vd = $vehicleDetailsByPlate[$plateKey] ?? null;
+    $v['_department'] = $vd['Department'] ?? '';
+    $v['_pinColor'] = gm_department_color($v['_department']) ?? '#15803d';
+    [$v['_vehiclePic'], $v['_vehiclePicLegacy']] = gm_resolve_vehicle_picture_paths($vd['Picture'] ?? '');
+    $v['_details'] = $vd;
 }
 unset($v);
 
 $VehicleCount = count($vehicles);
 $TotalCount   = $VehicleCount + count($locations);
+
+// --- Employee GPS History tab (merged from standalone employee_gps_history.php) ---
+$ehEmployees = [];
+$ehEmpListSql = "
+    SELECT DISTINCT e.EmployeeID, e.FirstName, e.LastName, e.[Picture]
+    FROM dbo.TBL_HREmployeeList e
+    INNER JOIN dbo.View_Employee_GPS g ON g.EmployeeID = e.EmployeeID
+    WHERE e.Active = 1
+    ORDER BY e.LastName, e.FirstName
+";
+$ehEmpListStmt = sqlsrv_query($conn, $ehEmpListSql);
+if ($ehEmpListStmt === false) {
+    error_log('TBL_HREmployeeList (GPS history tab) query error: ' . print_r(sqlsrv_errors(), true));
+} else {
+    while ($row = sqlsrv_fetch_array($ehEmpListStmt, SQLSRV_FETCH_ASSOC)) {
+        $ehEmployees[] = $row;
+    }
+}
+
+$EmployeeId = $_GET['EmployeeId'] ?? '';
+$DateFrom   = $_GET['DateFrom'] ?? date('Y-m-d', strtotime('-7 days'));
+$DateTo     = $_GET['DateTo'] ?? date('Y-m-d');
+
+$ehPings = [];
+$ehQueryError = null;
+
+if ($EmployeeId !== '') {
+    $ehSql = "
+        SELECT EmployeeID, EmployeeName, Longitude, Latitude, DateTimeInput
+        FROM dbo.View_Employee_GPS
+        WHERE EmployeeID = ? AND DateTimeInput >= ? AND DateTimeInput <= ?
+        ORDER BY DateTimeInput ASC
+    ";
+    $ehStmt = sqlsrv_query($conn, $ehSql, [$EmployeeId, $DateFrom . ' 00:00:00', $DateTo . ' 23:59:59']);
+    if ($ehStmt === false) {
+        $ehQueryError = sqlsrv_errors();
+        error_log('View_Employee_GPS history query error: ' . print_r($ehQueryError, true));
+    } else {
+        while ($row = sqlsrv_fetch_array($ehStmt, SQLSRV_FETCH_ASSOC)) {
+            $lat = $row['Latitude']; $lng = $row['Longitude'];
+            if ($lat === null || $lng === null || !is_numeric($lat) || !is_numeric($lng)) continue;
+
+            $rawDt = $row['DateTimeInput'] ?? null;
+            $ts = $rawDt instanceof DateTime ? $rawDt->format('Y-m-d H:i:s') : (string)$rawDt;
+
+            $ehPings[] = ['lat' => (float)$lat, 'lng' => (float)$lng, 'ts' => $ts];
+        }
+    }
+}
+
+$ehSelectedEmployeeName = '';
+$ehSelectedEmployeePic = '';
+$ehSelectedEmployeePicLegacy = '';
+$ehSelectedEmployeeInitials = '';
+foreach ($ehEmployees as $e) {
+    if ((string)$e['EmployeeID'] === (string)$EmployeeId) {
+        $ehSelectedEmployeeName = trim($e['FirstName'] . ' ' . $e['LastName']);
+        [$ehSelectedEmployeePic, $ehSelectedEmployeePicLegacy] = gm_resolve_picture_paths($e['Picture'] ?? '');
+        $ehSelectedEmployeeInitials = strtoupper(substr($e['FirstName'], 0, 1) . substr($e['LastName'], 0, 1));
+        break;
+    }
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -275,6 +403,39 @@ body {
 .gm-toggle-customer i { color: #d97706; }
 .gm-toggle-other i { color: #6b7280; }
 
+.gm-page-tabs { display: flex; gap: 4px; background: #f3f4f6; padding: 4px; border-radius: 9px; width: fit-content; margin-bottom: 20px; }
+.gm-page-tabs button {
+    border: none; background: transparent; padding: 7px 16px; border-radius: 7px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600;
+    color: #6b7280; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    transition: background .15s, color .15s;
+}
+.gm-page-tabs button.active { background: #fff; color: #2563eb; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.gm-page-tabs button:hover:not(.active) { color: #374151; }
+
+.gm-field { display: flex; flex-direction: column; gap: 6px; }
+.gm-field label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; }
+.gm-field input, .gm-field select {
+    height: 42px; padding: 0 14px; border: 1.5px solid #d1d5db; border-radius: 9px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #111827;
+    background: #f9fafb; outline: none; min-width: 180px;
+}
+.gm-field input:focus, .gm-field select:focus { border-color: #2563eb; background: #fff; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.gm-btn {
+    height: 42px; padding: 0 20px; border: none; border-radius: 9px; background: #2563eb; color: #fff;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.gm-btn:hover { background: #1d4ed8; }
+
+.gm-panel { background: #fff; border: 1.5px solid #e2e5ea; border-radius: 14px; padding: 20px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+.gm-panel h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; margin-bottom: 12px; }
+.gm-eh-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+.gm-eh-table thead tr { text-align: left; color: #6b7280; border-bottom: 1px solid #e2e5ea; }
+.gm-eh-table th, .gm-eh-table td { padding: 8px 6px; }
+.gm-eh-table tbody tr { border-bottom: 1px solid #f1f3f7; }
+.gm-eh-table td.mono { font-family: 'IBM Plex Mono', monospace; color: #6b7280; }
+.gm-empty { font-size: 13px; color: #6b7280; padding: 20px 0; }
+
 .gm-map-wrap { position: relative; z-index: 0; }
 .gm-view-toggle { display: flex; gap: 4px; background: #f3f4f6; padding: 4px; border-radius: 9px; }
 .gm-view-toggle button {
@@ -288,6 +449,10 @@ body {
 .gm-map-controls { position: absolute; top: 12px; right: 12px; z-index: 1000; }
 #gm-map {
     width: 100%; height: 640px; border-radius: 14px; border: 1.5px solid #e2e5ea;
+    box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+#gm-eh-map {
+    width: 100%; height: 520px; border-radius: 14px; border: 1.5px solid #e2e5ea;
     box-shadow: 0 1px 4px rgba(0,0,0,.04);
 }
 
@@ -329,6 +494,12 @@ body {
     transform: rotate(45deg); border: 1px solid rgba(255,255,255,.8);
 }
 .gm-pin-initials { transform: rotate(45deg); color: #fff; font-weight: 700; font-size: 11px; }
+
+/* Vehicle photo shown directly on the truck pin, same treatment as employee pins */
+.gm-vehicle-pin-photo {
+    width: 26px; height: 26px; border-radius: 50%; object-fit: cover;
+    border: 1px solid rgba(255,255,255,.8);
+}
 
 /* marker cluster bubbles (employees/customers/other only — vehicles aren't clustered) */
 .gm-cluster {
@@ -373,6 +544,73 @@ body {
 .gm-popup-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; }
 .gm-popup-row span:first-child { color: #6b7280; }
 .gm-popup-row span:last-child { font-family: 'IBM Plex Mono', monospace; color: #111827; }
+
+/* ── Pin details modal (Employee / Customer / Vehicle) ── */
+.gm-modal-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(17,24,39,.5);
+    z-index: 3000; align-items: center; justify-content: center; padding: 20px;
+}
+.gm-modal-backdrop.active { display: flex; }
+.gm-modal {
+    background: #fff; border-radius: 16px; max-width: 480px; width: 100%;
+    max-height: 85vh; overflow-y: auto; position: relative;
+    box-shadow: 0 20px 50px rgba(0,0,0,.25); padding: 28px 26px 22px;
+}
+.gm-modal-close {
+    position: absolute; top: 14px; right: 14px; border: none; background: #f3f4f6;
+    width: 30px; height: 30px; border-radius: 50%; font-size: 18px; line-height: 1;
+    color: #6b7280; cursor: pointer;
+}
+.gm-modal-close:hover { background: #e5e7eb; color: #111827; }
+.gm-modal-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.gm-modal-avatar {
+    width: 56px; height: 56px; border-radius: 50%; object-fit: cover;
+    border: 2px solid #e2e5ea; flex-shrink: 0;
+}
+.gm-modal-avatar-initials {
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 18px; background: #2563eb;
+}
+.gm-modal-avatar-icon {
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 22px;
+}
+.gm-modal-title { font-size: 18px; font-weight: 700; color: #111827; }
+.gm-modal-subtitle { font-size: 12px; color: #6b7280; margin-top: 2px; }
+.gm-modal-grid { display: flex; flex-direction: column; gap: 2px; }
+.gm-modal-row {
+    display: flex; justify-content: space-between; gap: 14px; padding: 7px 0;
+    border-bottom: 1px solid #f1f3f7; font-size: 13px;
+}
+.gm-modal-row:last-child { border-bottom: none; }
+.gm-modal-row span:first-child { color: #6b7280; }
+.gm-modal-row span:last-child { color: #111827; font-family: 'IBM Plex Mono', monospace; text-align: right; }
+.gm-modal-warn {
+    margin-top: 12px; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+    border-radius: 10px; padding: 8px 12px; font-size: 12px;
+}
+
+/* Modal avatar becomes clickable when a real photo is loaded (icon/initials
+   fallbacks are not — nothing to preview) */
+.gm-modal-avatar[data-previewable] { cursor: zoom-in; }
+
+/* ── Image lightbox — full-size preview on avatar click ── */
+.gm-lightbox-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85);
+    z-index: 4000; align-items: center; justify-content: center; padding: 30px;
+    cursor: zoom-out;
+}
+.gm-lightbox-backdrop.active { display: flex; }
+.gm-lightbox-backdrop img {
+    max-width: 90vw; max-height: 90vh; border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+.gm-lightbox-close {
+    position: absolute; top: 20px; right: 24px; border: none; background: rgba(255,255,255,.15);
+    width: 38px; height: 38px; border-radius: 50%; font-size: 22px; line-height: 1;
+    color: #fff; cursor: pointer;
+}
+.gm-lightbox-close:hover { background: rgba(255,255,255,.3); }
 </style>
 </head>
 <body>
@@ -450,6 +688,16 @@ body {
         </div>
     </div>
 
+    <div class="gm-page-tabs">
+        <button type="button" id="gm-tab-map" class="active" onclick="gmSwitchTab('map')">
+            <i class="bi bi-geo-alt-fill"></i> Map
+        </button>
+        <button type="button" id="gm-tab-eh" onclick="gmSwitchTab('eh')">
+            <i class="bi bi-person-walking"></i> Employee GPS History
+        </button>
+    </div>
+
+    <div id="gm-map-tab-section">
     <div class="gm-map-wrap">
         <div class="gm-map-controls gm-view-toggle">
             <button type="button" id="gm-btn-street" class="active" onclick="gmSwitchBasemap('street')">
@@ -460,19 +708,102 @@ body {
             </button>
         </div>
         <div class="gm-legend">
-            <div class="gm-legend-title">Pin Color</div>
-            <div class="gm-legend-item"><span class="dot" style="background:#15803d;"></span> Vehicle</div>
-            <?php if (($EmployeeCount + $CustomerCount) > 0): ?>
-            <div class="gm-legend-title" style="margin-top:4px;">Department</div>
+            <div class="gm-legend-title">Pin Color · Department</div>
             <div class="gm-legend-item"><span class="dot" style="background:#dc2626;"></span> Monde</div>
             <div class="gm-legend-item"><span class="dot" style="background:#2563eb;"></span> Century</div>
             <div class="gm-legend-item"><span class="dot" style="background:#16a34a;"></span> NutriAsia / Silver Swan</div>
             <div class="gm-legend-item"><span class="dot" style="background:#ca8a04;"></span> Multilines</div>
-            <?php endif; ?>
+            <div class="gm-legend-item"><span class="dot" style="background:#15803d;"></span> No dept match</div>
         </div>
         <div id="gm-map"></div>
     </div>
+    </div>
+
+    <div id="gm-eh-tab-section" style="display:none;">
+        <?php if ($ehQueryError): ?>
+            <div class="gm-error">Could not load ping history — check the error log for details.</div>
+        <?php endif; ?>
+
+        <form method="GET" class="gm-toolbar">
+            <div class="gm-field">
+                <label>Employee</label>
+                <select name="EmployeeId">
+                    <option value="">— Select —</option>
+                    <?php foreach ($ehEmployees as $e): ?>
+                        <option value="<?= h($e['EmployeeID']) ?>" <?= (string)$e['EmployeeID'] === (string)$EmployeeId ? 'selected' : '' ?>>
+                            <?= h($e['LastName'] . ', ' . $e['FirstName']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="gm-field">
+                <label>From</label>
+                <input type="date" name="DateFrom" value="<?= h($DateFrom) ?>">
+            </div>
+            <div class="gm-field">
+                <label>To</label>
+                <input type="date" name="DateTo" value="<?= h($DateTo) ?>">
+            </div>
+            <input type="hidden" name="tab" value="eh">
+            <button type="submit" class="gm-btn">Apply</button>
+        </form>
+
+        <?php if ($EmployeeId === ''): ?>
+            <div class="gm-panel"><div class="gm-empty">Select an employee to see their GPS ping log.</div></div>
+        <?php elseif (empty($ehPings)): ?>
+            <div class="gm-panel"><div class="gm-empty">No pings logged for <?= h($ehSelectedEmployeeName) ?> in this date range.</div></div>
+        <?php else: ?>
+            <div class="gm-stats">
+                <div class="gm-stat-card">
+                    <div class="gm-stat-label">Total Pings</div>
+                    <div class="gm-stat-value"><?= count($ehPings) ?></div>
+                </div>
+                <div class="gm-stat-card">
+                    <div class="gm-stat-label">First Ping</div>
+                    <div class="gm-stat-value" style="font-size:15px;"><?= h($ehPings[0]['ts']) ?></div>
+                </div>
+                <div class="gm-stat-card">
+                    <div class="gm-stat-label">Last Ping</div>
+                    <div class="gm-stat-value" style="font-size:15px;"><?= h(end($ehPings)['ts']) ?></div>
+                </div>
+            </div>
+
+            <div class="gm-map-wrap" style="margin-bottom:20px;">
+                <div id="gm-eh-map"></div>
+            </div>
+
+            <div class="gm-panel">
+                <h4><?= h($ehSelectedEmployeeName) ?> — Ping Log (<?= count($ehPings) ?>)</h4>
+                <div style="max-height:400px;overflow-y:auto;">
+                    <table class="gm-eh-table">
+                        <thead><tr><th>Timestamp</th><th>Latitude</th><th>Longitude</th></tr></thead>
+                        <tbody>
+                            <?php foreach (array_reverse($ehPings) as $p): ?>
+                            <tr>
+                                <td class="mono"><?= h($p['ts']) ?></td>
+                                <td class="mono"><?= h($p['lat']) ?></td>
+                                <td class="mono"><?= h($p['lng']) ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+    </div>
 </div>
+</div>
+
+<div id="gm-modal-backdrop" class="gm-modal-backdrop" onclick="if(event.target===this) gmCloseModal()">
+    <div class="gm-modal">
+        <button type="button" class="gm-modal-close" onclick="gmCloseModal()">&times;</button>
+        <div id="gm-modal-body"></div>
+    </div>
+</div>
+
+<div id="gm-lightbox-backdrop" class="gm-lightbox-backdrop" onclick="gmCloseLightbox()">
+    <button type="button" class="gm-lightbox-close" onclick="gmCloseLightbox(); event.stopPropagation();">&times;</button>
+    <img id="gm-lightbox-img" src="" alt="">
 </div>
 
 <script>
@@ -482,6 +813,7 @@ const gmVehicles = [
         $lat = $v['location']['latitude'] ?? null;
         $lng = $v['location']['longitude'] ?? null;
         if ($lat === null || $lng === null) continue;
+        $vd = $v['_details'];
     ?>
     {
         plate: <?= json_encode($v['registration'] ?? ('#' . ($v['vehicle_id'] ?? '?'))) ?>,
@@ -492,7 +824,26 @@ const gmVehicles = [
         position: <?= json_encode($v['_position']) ?>,
         lastUpdate: <?= json_encode($v['_lastUpdate']) ?>,
         isStale: <?= json_encode($v['_isStale']) ?>,
-        geofenceCount: <?= json_encode(count($v['_geofenceIds'])) ?>
+        geofenceCount: <?= json_encode(count($v['_geofenceIds'])) ?>,
+        department: <?= json_encode($v['_department']) ?>,
+        pinColor: <?= json_encode($v['_pinColor']) ?>,
+        pic: <?= json_encode($v['_vehiclePic']) ?>,
+        picLegacy: <?= json_encode($v['_vehiclePicLegacy']) ?>,
+        details: {
+            vehicleId: <?= json_encode($vd['VehicleID'] ?? null) ?>,
+            description: <?= json_encode($vd['Description'] ?? null) ?>,
+            vehicleType: <?= json_encode($vd['Vehicletype'] ?? null) ?>,
+            capacityWeight: <?= json_encode($vd['Capacityweight'] ?? null) ?>,
+            tireSize: <?= json_encode($vd['Tiresize'] ?? null) ?>,
+            active: <?= json_encode($vd['Active'] ?? null) ?>,
+            fuelType: <?= json_encode($vd['FuelType'] ?? null) ?>,
+            brand: <?= json_encode($vd['Brand'] ?? null) ?>,
+            model: <?= json_encode($vd['Model'] ?? null) ?>,
+            year: <?= json_encode($vd['Year'] ?? null) ?>,
+            transmission: <?= json_encode($vd['Transmission'] ?? null) ?>,
+            wheeler: <?= json_encode($vd['Wheeler'] ?? null) ?>,
+            category: <?= json_encode($vd['Category'] ?? null) ?>
+        }
     },
     <?php endforeach; ?>
 ];
@@ -578,6 +929,143 @@ function gmAvatarHtml(loc) {
                  })(this)">`;
 }
 
+// --- Details modal, shared by Employee / Customer / Other / Vehicle pins ---
+function gmModalRow(label, value) {
+    if (value === null || value === undefined || value === '') value = '—';
+    return `<div class="gm-modal-row"><span>${label}</span><span>${value}</span></div>`;
+}
+
+function gmModalAvatarHtml(kind, loc) {
+    if (kind === 'vehicle') {
+        if (!loc.pic) {
+            return `<div class="gm-modal-avatar gm-modal-avatar-icon" style="background:${loc.pinColor || '#15803d'};"><i class="bi bi-truck"></i></div>`;
+        }
+        const src = loc.pic.replace(/"/g, '&quot;');
+        const legacy = (loc.picLegacy || '').replace(/"/g, '&quot;');
+        const fallbackBg = loc.pinColor || '#15803d';
+        return `<img src="${src}" class="gm-modal-avatar" alt="" data-previewable
+                     data-legacy="${legacy}"
+                     onclick="gmOpenLightbox(this.src); event.stopPropagation();"
+                     onerror="(function(img){
+                         var leg = img.getAttribute('data-legacy');
+                         if (leg && !img.getAttribute('data-legacy-tried')) {
+                             img.setAttribute('data-legacy-tried','1');
+                             img.src = leg;
+                         } else {
+                             var d = document.createElement('div');
+                             d.className = 'gm-modal-avatar gm-modal-avatar-icon';
+                             d.style.background = '${fallbackBg}';
+                             var ic = document.createElement('i');
+                             ic.className = 'bi bi-truck';
+                             d.appendChild(ic);
+                             img.replaceWith(d);
+                         }
+                     })(this)">`;
+    }
+    if (loc.category !== 'employee') {
+        const cfg = GM_ICONS[loc.category] || GM_ICONS.other;
+        return `<div class="gm-modal-avatar gm-modal-avatar-icon" style="background:${loc.pinColor || cfg.fallback};"><i class="bi ${cfg.bi}"></i></div>`;
+    }
+    const initials = (loc.initials || '?').replace(/"/g, '&quot;');
+    if (!loc.pic) {
+        return `<div class="gm-modal-avatar gm-modal-avatar-initials">${initials}</div>`;
+    }
+    const src = loc.pic.replace(/"/g, '&quot;');
+    const legacy = (loc.picLegacy || '').replace(/"/g, '&quot;');
+    return `<img src="${src}" class="gm-modal-avatar" alt="" data-previewable
+                 data-legacy="${legacy}" data-initials="${initials}"
+                 onclick="gmOpenLightbox(this.src); event.stopPropagation();"
+                 onerror="(function(img){
+                     var leg = img.getAttribute('data-legacy');
+                     if (leg && !img.getAttribute('data-legacy-tried')) {
+                         img.setAttribute('data-legacy-tried','1');
+                         img.src = leg;
+                     } else {
+                         var d = document.createElement('div');
+                         d.className = 'gm-modal-avatar gm-modal-avatar-initials';
+                         d.textContent = img.getAttribute('data-initials') || '?';
+                         img.replaceWith(d);
+                     }
+                 })(this)">`;
+}
+
+function gmOpenModal(kind, data) {
+    const body = document.getElementById('gm-modal-body');
+    let html = '';
+
+    if (kind === 'vehicle') {
+        const v = data;
+        const d = v.details || {};
+        html += `<div class="gm-modal-head">
+            ${gmModalAvatarHtml('vehicle', v)}
+            <div>
+                <div class="gm-modal-title">${v.plate}</div>
+                <div class="gm-modal-subtitle">${d.brand || ''} ${d.model || ''} ${d.year ? '(' + d.year + ')' : ''}</div>
+            </div>
+        </div>`;
+        html += '<div class="gm-modal-grid">';
+        html += gmModalRow('Status', v.status);
+        html += gmModalRow('Department', v.department);
+        html += gmModalRow('Fuel', v.fuel !== null ? v.fuel + '%' : null);
+        html += gmModalRow('Geofences', v.geofenceCount);
+        html += gmModalRow('Last Update', v.lastUpdate);
+        html += gmModalRow('Position', v.position);
+        html += gmModalRow('Description', d.description);
+        html += gmModalRow('Vehicle Type', d.vehicleType);
+        html += gmModalRow('Category', d.category);
+        html += gmModalRow('Capacity (weight)', d.capacityWeight);
+        html += gmModalRow('Tire Size', d.tireSize);
+        html += gmModalRow('Fuel Type', d.fuelType);
+        html += gmModalRow('Transmission', d.transmission);
+        html += gmModalRow('Wheeler', d.wheeler);
+        html += gmModalRow('Active', d.active === null || d.active === undefined ? null : (d.active ? 'Yes' : 'No'));
+        html += '</div>';
+        if (v.isStale) html += '<div class="gm-modal-warn">⚠ No update in over 24 hours</div>';
+    } else {
+        const loc = data;
+        html += `<div class="gm-modal-head">
+            ${gmModalAvatarHtml('location', loc)}
+            <div>
+                <div class="gm-modal-title">${loc.name || '(no name)'}</div>
+                <div class="gm-modal-subtitle">${loc.type || ''}</div>
+            </div>
+        </div>`;
+        html += '<div class="gm-modal-grid">';
+        html += gmModalRow('Type', loc.type);
+        html += gmModalRow('Department', loc.department);
+        html += gmModalRow('Code', loc.code);
+        html += gmModalRow('Last Update', loc.lastUpdate);
+        html += '</div>';
+        if (loc.corrected) html += '<div class="gm-modal-warn">⚠ Lat/Lng appeared swapped in source data — auto-corrected for display</div>';
+        if (loc.isStale) html += '<div class="gm-modal-warn">⚠ No update in over 24 hours</div>';
+    }
+
+    body.innerHTML = html;
+    document.getElementById('gm-modal-backdrop').classList.add('active');
+}
+
+function gmCloseModal() {
+    document.getElementById('gm-modal-backdrop').classList.remove('active');
+}
+
+function gmOpenLightbox(src) {
+    if (!src) return;
+    document.getElementById('gm-lightbox-img').src = src;
+    document.getElementById('gm-lightbox-backdrop').classList.add('active');
+}
+
+function gmCloseLightbox() {
+    document.getElementById('gm-lightbox-backdrop').classList.remove('active');
+    document.getElementById('gm-lightbox-img').src = '';
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        gmCloseLightbox();
+        gmCloseModal();
+    }
+});
+
 let gmMap = null;
 let gmStreetLayer = null;
 let gmSatelliteLayer = null;
@@ -600,6 +1088,7 @@ function gmSwitchBasemap(type) {
     }
 }
 let gmVehicleLayer = null; // plain L.layerGroup — vehicles aren't clustered, same as vehicle_status.php
+let gmVehicleMarkers = []; // { marker, plate } — vehicles, now included in search filtering
 let gmMarkers = []; // { marker, category, name, code } — GPS locations only (search targets these)
 let gmClusterGroups = {}; // category -> L.markerClusterGroup
 
@@ -643,12 +1132,30 @@ function gmInitMap() {
     // --- Vehicle layer (truck pins, same solid green as vehicle_status.php) ---
     gmVehicleLayer = L.layerGroup();
     gmVehicles.forEach(v => {
+        let vInner = '<i class="bi bi-truck"></i>';
+        if (v.pic) {
+            const src = v.pic.replace(/"/g, '&quot;');
+            const legacy = (v.picLegacy || '').replace(/"/g, '&quot;');
+            vInner = `<img src="${src}" class="gm-vehicle-pin-photo" alt=""
+                           data-legacy="${legacy}"
+                           onerror="(function(img){
+                               var leg = img.getAttribute('data-legacy');
+                               if (leg && !img.getAttribute('data-legacy-tried')) {
+                                   img.setAttribute('data-legacy-tried','1');
+                                   img.src = leg;
+                               } else {
+                                   var i = document.createElement('i');
+                                   i.className = 'bi bi-truck';
+                                   img.replaceWith(i);
+                               }
+                           })(this)">`;
+        }
         const icon = L.divIcon({
             className: '',
             html: `
                 <div style="text-align:center;">
-                    <div class="gm-vehicle-pin ${v.isStale ? 'gm-pin-stale' : ''}">
-                        <i class="bi bi-truck"></i>
+                    <div class="gm-vehicle-pin ${v.isStale ? 'gm-pin-stale' : ''}" style="background:${v.pinColor};">
+                        ${vInner}
                     </div>
                     <div class="gm-pin-label">${v.plate}</div>
                 </div>
@@ -659,21 +1166,9 @@ function gmInitMap() {
         });
 
         const marker = L.marker([v.lat, v.lng], { icon });
-        const fuelDisplay = v.fuel !== null ? v.fuel + '%' : '—';
-        const staleTag = v.isStale ? ' <span style="color:#b91c1c;font-weight:600;">(Stale)</span>' : '';
-
-        marker.bindPopup(`
-            <div class="gm-map-popup">
-                <div class="gm-popup-title">${v.plate}${staleTag}</div>
-                <div class="gm-popup-row"><span>Status</span><span>${v.status}</span></div>
-                <div class="gm-popup-row"><span>Fuel</span><span>${fuelDisplay}</span></div>
-                <div class="gm-popup-row"><span>Geofences</span><span>${v.geofenceCount}</span></div>
-                <div class="gm-popup-row"><span>Last Update</span><span${v.isStale ? ' style="color:#b91c1c;"' : ''}>${v.lastUpdate || '—'}</span></div>
-                <div style="margin-top:6px;color:#6b7280;font-size:11px;">${v.position || ''}</div>
-            </div>
-        `);
-
+        marker.on('click', () => gmOpenModal('vehicle', v));
         marker.addTo(gmVehicleLayer);
+        gmVehicleMarkers.push({ marker, plate: (v.plate || '').toLowerCase() });
         bounds.push([v.lat, v.lng]);
     });
     gmVehicleLayer.addTo(gmMap);
@@ -692,20 +1187,7 @@ function gmInitMap() {
 
     gmLocations.forEach(loc => {
         const marker = L.marker([loc.lat, loc.lng], { icon: gmBuildIcon(loc) });
-        const avatarHtml = gmAvatarHtml(loc);
-        marker.bindPopup(`
-            <div class="gm-map-popup">
-                <div class="gm-popup-head">
-                    ${avatarHtml}
-                    <div class="gm-popup-title">${loc.name || '(no name)'}</div>
-                </div>
-                <div class="gm-popup-row"><span>Type</span><span>${loc.type || '—'}</span></div>
-                <div class="gm-popup-row"><span>Department</span><span>${loc.department || '—'}</span></div>
-                <div class="gm-popup-row"><span>Code</span><span>${loc.code || '—'}</span></div>
-                <div class="gm-popup-row"><span>Last Update</span><span${loc.isStale ? ' style="color:#b91c1c;"' : ''}>${loc.lastUpdate || '—'}</span></div>
-                ${loc.corrected ? '<div style="color:#b91c1c;margin-top:4px;">⚠ Lat/Lng appeared swapped in source data — auto-corrected for display</div>' : ''}
-            </div>
-        `);
+        marker.on('click', () => gmOpenModal('location', loc));
         const group = gmClusterGroups[loc.category] || gmClusterGroups.other;
         group.addLayer(marker);
         gmMarkers.push({ marker, category: loc.category, name: (loc.name || '').toLowerCase(), code: (loc.code || '').toLowerCase() });
@@ -723,10 +1205,16 @@ function gmApplyFilters() {
     const otherToggle = document.getElementById('gm-toggle-other');
     const showOther = otherToggle ? otherToggle.checked : true;
 
-    // Vehicle layer: simple show/hide, no search filtering (mirrors vehicle_status.php).
+    // Vehicle layer: now filtered by the search box too (previously simple
+    // show/hide only) — rebuilt from gmVehicleMarkers on every filter change,
+    // same clear-and-repopulate pattern as the GPS category clusters below.
     if (gmVehicleLayer) {
+        gmVehicleLayer.clearLayers();
         if (showVehicle) {
             if (!gmMap.hasLayer(gmVehicleLayer)) gmMap.addLayer(gmVehicleLayer);
+            gmVehicleMarkers
+                .filter(m => q === '' || m.plate.includes(q))
+                .forEach(m => gmVehicleLayer.addLayer(m.marker));
         } else {
             if (gmMap.hasLayer(gmVehicleLayer)) gmMap.removeLayer(gmVehicleLayer);
         }
@@ -734,21 +1222,10 @@ function gmApplyFilters() {
 
     const categoryShown = { employee: showEmployee, customer: showCustomer, other: showOther };
 
-    if (q === '') {
-        // No search — just toggle whole cluster layers on/off (cheap).
-        Object.keys(gmClusterGroups).forEach(cat => {
-            const group = gmClusterGroups[cat];
-            if (categoryShown[cat]) {
-                if (!gmMap.hasLayer(group)) gmMap.addLayer(group);
-            } else {
-                if (gmMap.hasLayer(group)) gmMap.removeLayer(group);
-            }
-        });
-        return;
-    }
-
-    // Searching — rebuild each cluster group's contents from scratch so
-    // clusters only ever bubble matching markers.
+    // Always rebuild each cluster group's contents from the current query + toggle
+    // state (an empty query just means "match everything"). Previously, clearing the
+    // search box short-circuited to a plain show/hide of the whole group, which left
+    // it holding only whatever subset the last non-empty search had matched.
     Object.keys(gmClusterGroups).forEach(cat => {
         const group = gmClusterGroups[cat];
         group.clearLayers();
@@ -758,13 +1235,70 @@ function gmApplyFilters() {
         }
         if (!gmMap.hasLayer(group)) gmMap.addLayer(group);
         gmMarkers
-            .filter(m => m.category === cat && (m.name.includes(q) || m.code.includes(q)))
+            .filter(m => m.category === cat && (q === '' || m.name.includes(q) || m.code.includes(q)))
             .forEach(m => group.addLayer(m.marker));
     });
 }
 
+const ehPings = <?= json_encode($ehPings, JSON_UNESCAPED_UNICODE) ?>;
+const ehEmployeeName = <?= json_encode($ehSelectedEmployeeName) ?>;
+const ehEmployeePic = <?= json_encode($ehSelectedEmployeePic) ?>;
+const ehEmployeePicLegacy = <?= json_encode($ehSelectedEmployeePicLegacy) ?>;
+const ehEmployeeInitials = <?= json_encode($ehSelectedEmployeeInitials ?: '?') ?>;
+
+let ehMap = null;
+let ehMapInitialized = false;
+
+function ehInitMap() {
+    if (ehMapInitialized || !ehPings.length) return;
+    ehMapInitialized = true;
+
+    ehMap = L.map('gm-eh-map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19
+    }).addTo(ehMap);
+
+    const bounds = [];
+    const trailLatLngs = ehPings.map(p => [p.lat, p.lng]);
+    L.polyline(trailLatLngs, { color: '#9ca3af', weight: 2, opacity: 0.6, dashArray: '4,4' }).addTo(ehMap);
+
+    // Reuse the same photo/initials pin as the main GPS layer
+    const ehIcon = gmBuildIcon({
+        category: 'employee', pic: ehEmployeePic, picLegacy: ehEmployeePicLegacy,
+        initials: ehEmployeeInitials, corrected: false, pinColor: '#2563eb'
+    });
+
+    ehPings.forEach(p => {
+        L.marker([p.lat, p.lng], { icon: ehIcon })
+            .bindPopup(`<b>${ehEmployeeName}</b><br>${p.ts}`).addTo(ehMap);
+        bounds.push([p.lat, p.lng]);
+    });
+
+    if (bounds.length) ehMap.fitBounds(bounds, { padding: [30, 30] });
+}
+
+function gmSwitchTab(tab) {
+    const mapSection = document.getElementById('gm-map-tab-section');
+    const ehSection = document.getElementById('gm-eh-tab-section');
+    const btnMap = document.getElementById('gm-tab-map');
+    const btnEh = document.getElementById('gm-tab-eh');
+
+    mapSection.style.display = tab === 'map' ? 'block' : 'none';
+    ehSection.style.display = tab === 'eh' ? 'block' : 'none';
+    btnMap.classList.toggle('active', tab === 'map');
+    btnEh.classList.toggle('active', tab === 'eh');
+
+    if (tab === 'eh') {
+        ehInitMap();
+        setTimeout(() => { if (ehMap) ehMap.invalidateSize(); }, 50);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     gmInitMap();
+    const initialTab = new URLSearchParams(window.location.search).get('tab');
+    if (initialTab === 'eh') gmSwitchTab('eh');
     document.getElementById('gm-search').addEventListener('input', gmApplyFilters);
     document.getElementById('gm-toggle-vehicle').addEventListener('change', gmApplyFilters);
     document.getElementById('gm-toggle-employee').addEventListener('change', gmApplyFilters);

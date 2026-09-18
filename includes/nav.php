@@ -20,93 +20,104 @@ function base_url(string $path = ''): string {
 // ── All routes in ONE place ───────────────────────────────────
 define('ROUTES', [
 
-    // ── Core / Root
-    'home'                 => 'home.php',
-    'login'                => 'login.php',
-    'logout'               => 'logout.php',
-    'orgchart'             => 'orgchart.php',
-    'help'                 => 'help-manual.php',
-    'set_department'       => 'set_department.php',
+    // ── Core / Root Modules
+    'home'                          => 'home.php',
+    'login'                         => 'login.php',
+    'logout'                        => 'logout.php',
+    'orgchart'                      => 'orgchart.php',
+    'help'                          => 'help-manual.php',
+    'set_department'                => 'set_department.php',
 
-    // ── HR Module
-    'payroll_dashboard'    => 'HR/payroll_dashboard.php',
-    'careers'              => 'HR/careers.php',
-    'careers_admin'        => 'HR/careers-admin.php',
-    'careers_details'      => 'HR/careers-details.php',
-    'job_application'      => 'HR/job-application.php',
-    'view_applications'    => 'HR/view-applications.php',
-    'update_status'        => 'HR/update-status.php',
-    'save_interview'       => 'HR/save-interview.php',
-    'download_resume'      => 'HR/download-resume.php',
-    'uniform_inventory'    => 'HR/uniform-inventory.php',
-    'uniform_po_items'     => 'HR/uniform-po-items.php',
-    'employee_list'        => 'HR/employee-list.php',
-    'attendance'           => 'HR/attendance.php',
-    'my_attendance'        => 'HR/my_attendance.php',
-    'employee_loans'       => 'EMPLOYEE/index.php',
-    'my_loans'             => 'EMPLOYEE/my_loans.php',
-    'cash_advance'         => 'VALE/create.php',
-    'cash_advance_record'  => 'VALE/cash-advance-record.php',
-    'leave_application'    => 'LEAVE/leave-application.php',
-    'leave_management'     => 'LEAVE/leave-info-management.php',
-    'leave_approval'       => 'LEAVE/leave-application-list.php',
-    'override_attendance'  => 'HR/override-attendance.php',
-    'override_attendance_approval' => 'HR/override-approval.php',
-    'schedule_calendar'    => 'HR/schedule_calendar.php',
-    'payroll_cutoff'       => 'HR/payroll_cutoff.php',
-    'attendance_present'   => 'HR/attendance_present.php',
-    'weekly_payroll'      => 'HR/weekly_payroll.php',
+    // ── HR Modules
+    'payroll_dashboard'             => 'HR/payroll_dashboard.php',
+    'careers'                       => 'HR/careers.php',
+    'careers_admin'                 => 'HR/careers-admin.php',
+    'careers_details'               => 'HR/careers-details.php',
+    'job_application'               => 'HR/job-application.php',
+    'view_applications'             => 'HR/view-applications.php',
+    'update_status'                 => 'HR/update-status.php',
+    'save_interview'                => 'HR/save-interview.php',
+    'download_resume'               => 'HR/download-resume.php',
+    'uniform_inventory'             => 'HR/uniform-inventory.php',
+    'uniform_po_items'              => 'HR/uniform-po-items.php',
+    'employee_list'                 => 'HR/employee-list.php',
+    'attendance'                    => 'HR/attendance.php',
+    'my_attendance'                 => 'HR/my_attendance.php',
+    'override_attendance'           => 'HR/override-attendance.php',
+    'override_attendance_approval'  => 'HR/override-approval.php',
+    'schedule_calendar'             => 'HR/schedule_calendar.php',
+    'payroll_cutoff'                => 'HR/payroll_cutoff.php',
+    'attendance_present'            => 'HR/attendance_present.php',
+    'weekly_payroll'                => 'HR/weekly_payroll.php',
 
-    // ── Logistics and Warehouse Module
-    'fuel_dashboard'       => 'LOGISTICS/fuel_dashboard.php',
-    'graphs'               => 'LOGISTICS/graphs.php',
-    'team_schedule'        => 'LOGISTICS/team_schedule.php',
-    'fuel'                 => 'fuel/index.php',
-    'maintenance_report'   => 'MaintenanceReport/index.php',
-    'inventory'            => 'Inventory/index.php',
-    'fleet_tracking'       => '/FLEET/vehicle_status.php',
-    'employee_gps_history' => '/FLEET/employee_gps_history.php',
+    // ── Leave Modules
+    'leave_application'             => 'LEAVE/leave-application.php',
+    'leave_management'              => 'LEAVE/leave-info-management.php',
+    'leave_approval'                => 'LEAVE/leave-application-list.php',
 
-    // ── PO Module
-    'po_index'             => 'PO/index.php',
+    // ── Loans Modules
+    'employee_loans'                => 'LOANS/index.php',
+    'my_loans'                      => 'LOANS/my_loans.php',
 
-    // ── Accounting Module
-    'short_stocks_paid' => 'ACCOUNTING/short_stocks_paid.php',
-    'employee_expenses' => 'ACCOUNTING/employee_expenses.php',
-    
-    // ── Customer Module
-    'customer_list'        => 'CUSTOMERS/customer-list.php',
-    'customer_detail'      => 'CUSTOMERS/customer-detail.php',
-    'customer_qr'          => 'CUSTOMERS/customer_qr.php',
+    // ── Vale / Cash Advance Modules
+    'cash_advance'                  => 'VALE/create.php',
+    'cash_advance_record'           => 'VALE/cash-advance-record.php',
 
-    // ── FINANCE Module
-    'delivery_remittance'  => 'FINANCE/delivery_remittance.php',
-    'ar_remittance'        => 'FINANCE/ar_remittance.php',
-    'invoice_monitoring'   => 'FINANCE/invoice_monitoring.php',
-    'check_information'    => 'FINANCE/check_information.php',
-    'deduction_records'    => 'FINANCE/deduction_records.php',
-    'other_payment_details'=> 'FINANCE/other_payment_details.php',
-    'cheques'              => 'FINANCE/cheques.php',
+    // ── Logistics and Warehouse Modules
+    'fuel_dashboard'                => 'LOGISTICS/fuel_dashboard.php',
+    'graphs'                        => 'LOGISTICS/graphs.php',
+    'team_schedule'                 => 'LOGISTICS/team_schedule.php',
 
-    // ── SALES Module
-    'sales_order_report'   => 'SALES/sales_order_report.php',
-    'gps_location_map'     => 'SALES/gps_location_map.php',
-    'qr_scan_log'          => 'SALES/qr_scan_log.php',
+    // ── Aeron Modules
+    'fuel'                          => 'fuel/index.php',
+    'maintenance_report'            => 'MaintenanceReport/index.php',
+    'inventory'                     => 'Inventory/index.php',
 
-    // ── BULLETIN Module
-    'bulletin'          => 'BULLETIN/bulletin_manage.php',
+    // ── Cartrack / Fleet Tracking Modules
+    'fleet_tracking'                => '/FLEET/vehicle_status.php',
+    'employee_gps_history'          => '/FLEET/employee_gps_history.php',
 
-    // ── TEST Module
-    'message_user'         => 'TEST/messages.php',
-    // ── FACE RECOGNITION Module
-    'face_recognition' => 'face_recognition/index.php',
-    'face_recognition_devices' => 'face_recognition/device_registry.php',
+    // ── PO Modules
+    'po_index'                      => 'PO/index.php',
+
+    // ── Accounting Modules
+    'short_stocks_paid'             => 'ACCOUNTING/short_stocks_paid.php',
+    'employee_expenses'             => 'ACCOUNTING/employee_expenses.php',
+
+    // ── Customer Modules
+    'customer_list'                 => 'CUSTOMERS/customer-list.php',
+    'customer_detail'               => 'CUSTOMERS/customer-detail.php',
+    'customer_qr'                   => 'CUSTOMERS/customer_qr.php',
+
+    // ── FINANCE Modules
+    'delivery_remittance'           => 'FINANCE/delivery_remittance.php',
+    'ar_remittance'                 => 'FINANCE/ar_remittance.php',
+    'invoice_monitoring'            => 'FINANCE/invoice_monitoring.php',
+    'check_information'             => 'FINANCE/check_information.php',
+    'deduction_records'             => 'FINANCE/deduction_records.php',
+    'other_payment_details'         => 'FINANCE/other_payment_details.php',
+    'cheques'                       => 'FINANCE/cheques.php',
+
+    // ── SALES Modules
+    'sales_order_report'            => 'SALES/sales_order_report.php',
+    'gps_location_map'              => 'SALES/gps_location_map.php',
+    'qr_scan_log'                   => 'SALES/qr_scan_log.php',
+
+    // ── BULLETIN Modules
+    'bulletin'                      => 'BULLETIN/bulletin_manage.php',
+
+    // ── TEST Modules
+    'message_user'                  => 'TEST/messages.php',
+
+    // ── FACE RECOGNITION Modules
+    'face_recognition'              => 'face_recognition/index.php',
+    'face_recognition_devices'      => 'face_recognition/device_registry.php',
 
     // ── Forms
-    'awards'               => 'forms/awards.php',
-    'awards_details'       => 'forms/awards-details.php',
-    'contact'              => 'forms/contact.php',
-    'newsletter'           => 'forms/newsletter.php',
+    'awards'                        => 'forms/awards.php',
+    'awards_details'                => 'forms/awards-details.php',
+    'contact'                       => 'forms/contact.php',
+    'newsletter'                    => 'forms/newsletter.php',
 
 ]);
 

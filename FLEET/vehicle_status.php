@@ -18,16 +18,157 @@ $topbar_page = 'fleet_tracking';
 
 function h($str) { return htmlspecialchars($str ?? '', ENT_QUOTES, 'UTF-8'); }
 
+// Resolve an employee Picture value into TWM/legacy portal URL candidates —
+// mirrors the dual-path + onerror-fallback convention used in employee-list.php.
+// TWM stores:    uploads/employee_pics/filename.jpg  (forward slash, subdirectory)
+// Legacy stores: uploads\filename.jpg                (backslash, no subdirectory)
+function ft_resolve_picture_paths($rawPic) {
+    $rawPic = trim((string)$rawPic);
+    if ($rawPic === '') return ['', ''];
+    $normPic = str_replace('\\', '/', $rawPic);
+    $picFile = basename($normPic);
+    if ($picFile === '') return ['', ''];
+    $twmPic = strpos($normPic, 'employee_pics') !== false
+        ? (str_starts_with($normPic, '/') ? $normPic : '/TWM/' . $normPic)
+        : '/TWM/uploads/employee_pics/' . $picFile;
+    $legacyPic = '/tradewellportal/uploads/' . $picFile;
+    return [$twmPic, $legacyPic];
+}
+
+// Pin color coding by Department/principal — per-company color assignments as given.
+// Falls back to a category default (employee/customer/other) when Department is blank
+// or doesn't match a known key.
+function ft_department_color($dept) {
+    static $map = [
+        'MONDE'       => '#dc2626', // red
+        'CENTURY'     => '#2563eb', // blue
+        'NUTRIASIA'   => '#16a34a', // green
+        'SILVER SWAN' => '#16a34a', // green
+        'MULTILINES'  => '#ca8a04', // yellow
+    ];
+    $key = strtoupper(trim((string)$dept));
+    return $map[$key] ?? null;
+}
+
+// --- Employee & Customer GPS locations (dbo.View_GPS_Location) ---
+// Merged from gps_location_map.php: rendered as toggleable layers on the Map tab,
+// on the same Leaflet instance as the fleet vehicle pins.
+// Employee rows are left-joined to TBL_HREmployeeList on EmployeeID = Code so the
+// popup can show the employee's Picture (same convention as employee-list.php).
+$gpsLocations = [];
+$gpsNoCoordCount = 0;
+$gpsCorrectedCount = 0;
+
+$gpsSql = "
+    SELECT
+        g.[Type], g.[Department], g.[Code], g.[Name], g.[Longitude], g.[Latitude], g.[DateTimeInput],
+        e.[Picture]   AS EmployeePicture,
+        e.[FirstName] AS EmployeeFirstName,
+        e.[LastName]  AS EmployeeLastName
+    FROM [dbo].[View_GPS_Location] g
+    LEFT JOIN [dbo].[TBL_HREmployeeList] e
+        ON UPPER(LTRIM(RTRIM(ISNULL(g.[Type], '')))) = 'EMPLOYEE'
+       AND LTRIM(RTRIM(CONVERT(VARCHAR(50), g.[Code]))) = LTRIM(RTRIM(CONVERT(VARCHAR(50), e.[EmployeeID])))
+";
+$gpsStmt = sqlsrv_query($conn, $gpsSql);
+
+if ($gpsStmt === false) {
+    error_log('View_GPS_Location query error: ' . print_r(sqlsrv_errors(), true));
+} else {
+    while ($row = sqlsrv_fetch_array($gpsStmt, SQLSRV_FETCH_ASSOC)) {
+        $typeRaw = strtoupper(trim((string)($row['Type'] ?? '')));
+        if ($typeRaw === 'EMPLOYEE') {
+            $category = 'employee';
+        } elseif ($typeRaw === 'CUSTOMER') {
+            $category = 'customer';
+        } else {
+            $category = 'other'; // unknown/future Type values from the view fall back here
+        }
+
+        $lat = $row['Latitude'];
+        $lng = $row['Longitude'];
+        if ($lat === null || $lng === null || !is_numeric($lat) || !is_numeric($lng)) {
+            $gpsNoCoordCount++;
+            continue; // can't plot without coordinates
+        }
+        $lat = (float)$lat;
+        $lng = (float)$lng;
+        $corrected = false;
+
+        // Defensive stopgap: some source rows have Latitude/Longitude swapped.
+        // A real latitude can never exceed ±90, so if it does but swapping the two
+        // would land within valid ranges, auto-correct and flag it.
+        if (abs($lat) > 90 && abs($lng) <= 90) {
+            [$lat, $lng] = [$lng, $lat];
+            $corrected = true;
+            $gpsCorrectedCount++;
+        }
+
+        $empPic = '';
+        $empPicLegacy = '';
+        $empInitials = '';
+        if ($category === 'employee') {
+            [$empPic, $empPicLegacy] = ft_resolve_picture_paths($row['EmployeePicture'] ?? '');
+            $fn = trim((string)($row['EmployeeFirstName'] ?? ''));
+            $ln = trim((string)($row['EmployeeLastName'] ?? ''));
+            $empInitials = strtoupper(substr($fn, 0, 1) . substr($ln, 0, 1));
+        }
+
+        $categoryDefault = $category === 'employee' ? '#2563eb' : ($category === 'customer' ? '#d97706' : '#6b7280');
+        $department = trim((string)($row['Department'] ?? ''));
+        $pinColor = ft_department_color($department) ?? $categoryDefault;
+
+        // DateTimeInput comes back as a DateTime object from sqlsrv — format it for
+        // display and flag rows that haven't reported in over 24hr (same threshold
+        // used for vehicle staleness above).
+        $lastUpdate = '';
+        $lastUpdateTs = 0;
+        $rawDt = $row['DateTimeInput'] ?? null;
+        if ($rawDt instanceof DateTime) {
+            $lastUpdateTs = $rawDt->getTimestamp();
+            $lastUpdate = $rawDt->format('M j, Y g:i A');
+        } elseif (!empty($rawDt)) {
+            $lastUpdateTs = strtotime((string)$rawDt) ?: 0;
+            $lastUpdate = $lastUpdateTs ? date('M j, Y g:i A', $lastUpdateTs) : (string)$rawDt;
+        }
+        $isStale = $lastUpdateTs > 0 && $lastUpdateTs < (time() - 86400);
+
+        $gpsLocations[] = [
+            'category'    => $category,
+            'type'        => $row['Type'] ?? '',
+            'department'  => $department,
+            'code'        => $row['Code'] ?? '',
+            'name'        => $row['Name'] ?? '',
+            'lat'         => $lat,
+            'lng'         => $lng,
+            'corrected'   => $corrected,
+            'pic'         => $empPic,
+            'picLegacy'   => $empPicLegacy,
+            'initials'    => $empInitials,
+            'pinColor'    => $pinColor,
+            'lastUpdate'  => $lastUpdate,
+            'isStale'     => $isStale,
+        ];
+    }
+    sqlsrv_free_stmt($gpsStmt);
+}
+
+$GpsEmployeeCount = count(array_filter($gpsLocations, fn($l) => $l['category'] === 'employee'));
+$GpsCustomerCount = count(array_filter($gpsLocations, fn($l) => $l['category'] === 'customer'));
+$GpsOtherCount    = count(array_filter($gpsLocations, fn($l) => $l['category'] === 'other'));
+
 $vehicleStatus = cartrack_get('/vehicles/status');
 if (isset($vehicleStatus['error'])) {
     error_log('Cartrack API error [' . $vehicleStatus['code'] . ']: ' . $vehicleStatus['raw']);
 }
 $apiError = isset($vehicleStatus['error']);
 
-// NOTE: endpoint paths below are guesses based on the docblock example in cartrack_client.php —
-// not yet confirmed against Cartrack's actual API docs. If these 404, the real path needs
-// to be found in Cartrack's API reference before the Trips/Geofences tabs can show real data.
 // --- Trips: vehicle selector + fetch ---
+// CONFIRMED (2026-09-05) against Cartrack's official API reference: per-vehicle trips is a
+// dedicated endpoint, GET /trips/:registration (registration as a path segment) — see
+// https://developer.cartrack.com/docs/fleet-api/get-trips-by-registration. Earlier attempts at
+// 'filter[vehicle_id]' and a 'registration' query param were both silently ignored by the
+// fleet-wide /trips endpoint, which has no vehicle-scoping param at all. Fixed below.
 $tripVehicleOptions = $vehicleStatus['data'] ?? [];
 usort($tripVehicleOptions, fn($a, $b) => strcmp($a['registration'] ?? '', $b['registration'] ?? ''));
 
@@ -38,19 +179,229 @@ if ($TripVehicleId === '' && !empty($tripVehicleOptions)) {
     $TripVehicleId = $tripVehicleOptions[0]['vehicle_id'] ?? '';
 }
 
+// The selector still keys on vehicle_id (stable, unique), so look up the matching
+// registration to actually send to the API.
+$TripVehicleRegistration = '';
+foreach ($tripVehicleOptions as $opt) {
+    if ((string)($opt['vehicle_id'] ?? '') === (string)$TripVehicleId) {
+        $TripVehicleRegistration = $opt['registration'] ?? '';
+        break;
+    }
+}
+
 $tripsParams = [
     'start_timestamp' => date('Y-m-d H:i:s', strtotime('-24 hours')),
     'end_timestamp'   => date('Y-m-d H:i:s'),
     'page'            => $TripPage,
 ];
-// NOTE: 'filter[vehicle_id]' is a guess based on cartrack_client.php's original docblock example —
-// not yet confirmed against Cartrack's official API docs.
-if ($TripVehicleId !== '') {
-    $tripsParams['filter[vehicle_id]'] = $TripVehicleId;
+
+// Per-vehicle trips use the dedicated /trips/:registration endpoint (see note above);
+// otherwise fall back to the fleet-wide /trips.
+if ($TripVehicleRegistration !== '') {
+    $tripsData = cartrack_get('/trips/' . rawurlencode($TripVehicleRegistration), $tripsParams);
+} else {
+    $tripsData = cartrack_get('/trips', $tripsParams);
+}
+$geofencesData = cartrack_get('/geofences');
+
+// --- Selected geofence + its visitor/visit history (read-only drill-down) ---
+// NOTE: exact endpoint paths unconfirmed against Cartrack's official docs as of this
+// edit — verify before relying on this in production. Using conventional REST shape.
+$GeofenceId = $_GET['GeofenceId'] ?? '';
+$VisitFrom = $_GET['VisitFrom'] ?? date('Y-m-d', strtotime('-7 days'));
+$VisitTo   = $_GET['VisitTo'] ?? date('Y-m-d');
+$AlertsFrom = $_GET['AlertsFrom'] ?? date('Y-m-d', strtotime('-1 days'));
+$AlertsTo   = $_GET['AlertsTo'] ?? date('Y-m-d');
+$geofenceVisitorsData = null;
+$geofenceVisitsData = null;
+if ($GeofenceId !== '') {
+    $geofenceVisitorsData = cartrack_get('/geofences/' . rawurlencode($GeofenceId) . '/visitors');
+
+    // /geofences/visits is fleet-wide with no geofence filter param (confirmed against docs —
+    // same shape as /trips/elapsed), so fetch and filter client-side. Cartrack only writes a
+    // visit record on IGN_OFF, so a vehicle currently inside the zone won't show up yet.
+    // /geofences/visits enforces a max ~1-day range between filter[enter_timestamp] and
+    // filter[exit_timestamp] (confirmed via two 422s: the rejected cutoff was exactly
+    // ~1 day after whatever enter_timestamp we sent, each time). So we page backward in
+    // 1-day windows across the user-selected [$VisitFrom, $VisitTo] range instead of a
+    // fixed 7 days.
+    $rawVisits = [];
+    $maxCallsPerWindow = 10;   // pagination safety cap within a single day's window
+    $maxWindows = 45;          // hard cap on total days walked, regardless of range picked
+
+    $rangeEnd = DateTime::createFromFormat('Y-m-d H:i:s', $VisitTo . ' 23:59:59');
+    $rangeStart = DateTime::createFromFormat('Y-m-d H:i:s', $VisitFrom . ' 00:00:00');
+    if (!$rangeEnd || !$rangeStart || $rangeStart > $rangeEnd) {
+        $geofenceVisitsData = ['error' => true, 'code' => 0, 'raw' => 'Invalid date range.'];
+    } else {
+        $windowEnd = $rangeEnd;
+        $windows = 0;
+        while ($windowEnd > $rangeStart && $windows < $maxWindows) {
+            $windowStart = max($rangeStart, (clone $windowEnd)->modify('-1 day'));
+
+            $page = 1;
+            $lastPage = 1;
+            do {
+                $visitsResp = cartrack_get('/geofences/visits', [
+                    'filter[enter_timestamp]' => $windowStart->format('Y-m-d H:i:s'),
+                    'filter[exit_timestamp]'  => $windowEnd->format('Y-m-d H:i:s'),
+                    'page'                    => $page,
+                ]);
+                if (isset($visitsResp['error'])) {
+                    $geofenceVisitsData = $visitsResp;
+                    break 2; // stop entirely on a real error
+                }
+                foreach (($visitsResp['data'] ?? []) as $visit) {
+                    if ((string)($visit['geofence_id'] ?? '') === (string)$GeofenceId) {
+                        $rawVisits[] = $visit;
+                    }
+                }
+                $lastPage = $visitsResp['meta']['last_page'] ?? 1;
+                $page++;
+            } while ($page <= $lastPage && $page <= $maxCallsPerWindow);
+
+            $windowEnd = $windowStart;
+            $windows++;
+        }
+    }
+
+    if (!isset($geofenceVisitsData)) {
+        $geofenceVisitsData = ['data' => $rawVisits];
+    }
+
+    // --- Near real-time entry/exit feed, mirroring Cartrack's own email alerts ---
+    // Powered by GET /alerts/notifications, fed by whatever geofence alerts are already
+    // configured per-vehicle in the Cartrack portal (same source as the "[Cartrack Alert]"
+    // emails). Fleet-wide + paginated, so filter by geofence_id client-side while paging.
+    // Each physical crossing fires once per configured notification channel (E-Mail, RSS,
+    // etc.) with an identical event_ts, so dedupe on (registration, event_ts, direction).
+    // Direction isn't its own field — read it out of notification_msg.
+    $geofenceAlerts = [];
+    $geofenceAlertsData = null;
+    $alertsPage = 1;
+    $alertsLastPage = 1;
+    $alertsMaxPages = 30;
+    $seenAlerts = [];
+    do {
+        $alertsResp = cartrack_get('/alerts/notifications', [
+            'filter[date_from]' => $VisitFrom . ' 00:00:00',
+            'filter[date_to]'   => $VisitTo . ' 23:59:59',
+            'page'              => $alertsPage,
+        ]);
+        if (isset($alertsResp['error'])) { $geofenceAlertsData = $alertsResp; break; }
+        foreach (($alertsResp['data'] ?? []) as $alert) {
+            if ((string)($alert['geofence_id'] ?? '') !== (string)$GeofenceId) continue;
+
+            $msg = $alert['notification_msg'] ?? '';
+            if (stripos($msg, 'entered') !== false) {
+                $direction = 'entered';
+            } elseif (stripos($msg, 'left') !== false) {
+                $direction = 'left';
+            } else {
+                $direction = $alert['trigger_description'] ?? '—';
+            }
+
+            $dedupeKey = ($alert['registration'] ?? '') . '|' . ($alert['event_ts'] ?? '') . '|' . $direction;
+            if (isset($seenAlerts[$dedupeKey])) continue;
+            $seenAlerts[$dedupeKey] = true;
+
+            $geofenceAlerts[] = [
+                'registration' => $alert['registration'] ?? '—',
+                'direction'    => $direction,
+                'event_ts'     => $alert['event_ts'] ?? '—',
+            ];
+        }
+        $alertsLastPage = $alertsResp['meta']['last_page'] ?? 1;
+        $alertsPage++;
+    } while ($alertsPage <= $alertsLastPage && $alertsPage <= $alertsMaxPages);
+
+    // Newest first
+    usort($geofenceAlerts, fn($a, $b) => strcmp($b['event_ts'], $a['event_ts']));
+
+    // --- Employee ping count inside this zone (simple count, not session-based visits —
+    // pings are periodic samples, not a continuous feed like Cartrack gives for vehicles) ---
+    $selectedGeofencePolygon = [];
+    if (!isset($geofencesData['error'])) {
+        foreach (($geofencesData['data'] ?? []) as $gf) {
+            if ((string)($gf['geofence_id'] ?? '') === (string)$GeofenceId) {
+                $selectedGeofencePolygon = ft_parse_wkt_polygon($gf['polygon'] ?? '');
+                break;
+            }
+        }
+    }
+
+    $employeePingCounts = [];
+    if (!empty($selectedGeofencePolygon)) {
+        $empSql = "
+            SELECT EmployeeID, EmployeeName, Longitude, Latitude
+            FROM dbo.View_Employee_GPS
+            WHERE DateTimeInput >= ? AND DateTimeInput <= ?
+        ";
+        $empStmt = sqlsrv_query($conn, $empSql, [$VisitFrom . ' 00:00:00', $VisitTo . ' 23:59:59']);
+        if ($empStmt === false) {
+            error_log('View_Employee_GPS query error: ' . print_r(sqlsrv_errors(), true));
+        } else {
+            while ($row = sqlsrv_fetch_array($empStmt, SQLSRV_FETCH_ASSOC)) {
+                $lat = $row['Latitude']; $lng = $row['Longitude'];
+                if ($lat === null || $lng === null || !is_numeric($lat) || !is_numeric($lng)) continue;
+                if (!ft_point_in_polygon((float)$lat, (float)$lng, $selectedGeofencePolygon)) continue;
+
+                $empId = $row['EmployeeID'];
+                if (!isset($employeePingCounts[$empId])) {
+                    $employeePingCounts[$empId] = ['name' => $row['EmployeeName'] ?? $empId, 'count' => 0];
+                }
+                $employeePingCounts[$empId]['count']++;
+            }
+        }
+        uasort($employeePingCounts, fn($a, $b) => $b['count'] <=> $a['count']);
+    }
 }
 
-$tripsData = cartrack_get('/trips', $tripsParams);
-$geofencesData = cartrack_get('/geofences');
+// --- Fleet-wide real-time entry/exit feed (Alerts tab) — same source, dedupe logic and
+// direction parsing as the per-geofence panel above, just not filtered to one geofence_id.
+$fleetAlerts = [];
+$fleetAlertsData = null;
+$fleetAlertsPage = 1;
+$fleetAlertsLastPage = 1;
+$fleetAlertsMaxPages = 30;
+$seenFleetAlerts = [];
+do {
+    $fleetAlertsResp = cartrack_get('/alerts/notifications', [
+        'filter[date_from]' => $AlertsFrom . ' 00:00:00',
+        'filter[date_to]'   => $AlertsTo . ' 23:59:59',
+        'page'              => $fleetAlertsPage,
+    ]);
+    if (isset($fleetAlertsResp['error'])) { $fleetAlertsData = $fleetAlertsResp; break; }
+    foreach (($fleetAlertsResp['data'] ?? []) as $alert) {
+        $msg = $alert['notification_msg'] ?? '';
+        if (stripos($msg, 'entered') !== false) {
+            $direction = 'entered';
+        } elseif (stripos($msg, 'left') !== false) {
+            $direction = 'left';
+        } else {
+            $direction = $alert['trigger_description'] ?? '—';
+        }
+        $dedupeKey = ($alert['registration'] ?? '') . '|' . ($alert['event_ts'] ?? '') . '|' . $direction;
+        if (isset($seenFleetAlerts[$dedupeKey])) continue;
+        $seenFleetAlerts[$dedupeKey] = true;
+
+        $fleetAlerts[] = [
+            'registration' => $alert['registration'] ?? '—',
+            'geofence'     => $alert['name'] ?? '—',
+            'direction'    => $direction,
+            'event_ts'     => $alert['event_ts'] ?? '—',
+        ];
+    }
+    $fleetAlertsLastPage = $fleetAlertsResp['meta']['last_page'] ?? 1;
+    $fleetAlertsPage++;
+} while ($fleetAlertsPage <= $fleetAlertsLastPage && $fleetAlertsPage <= $fleetAlertsMaxPages);
+
+usort($fleetAlerts, fn($a, $b) => strcmp($b['event_ts'], $a['event_ts']));
+
+$fleetAlertsByPlate = [];
+foreach ($fleetAlerts as $alert) {
+    $fleetAlertsByPlate[$alert['registration']][] = $alert;
+}
 
 // --- Elapsed points: used to draw a real (if coarse) route line per trip ---
 // Confirmed against a live API response on 2026-09-02: /trips/elapsed returns one GPS
@@ -171,6 +522,23 @@ function ft_parse_wkt_polygon($wkt) {
     return $coords;
 }
 
+// Standard ray-casting point-in-polygon test. $polygon is an array of [lat, lng] pairs
+// (same shape ft_parse_wkt_polygon returns). Used to attribute employee GPS pings to a
+// Cartrack geofence zone, since employees have no Cartrack-side enter/exit events of
+// their own — only a raw ping history in Tbl_Employee_GPS_Location.
+function ft_point_in_polygon($lat, $lng, $polygon) {
+    $inside = false;
+    $n = count($polygon);
+    for ($i = 0, $j = $n - 1; $i < $n; $j = $i++) {
+        $latI = $polygon[$i][0]; $lngI = $polygon[$i][1];
+        $latJ = $polygon[$j][0]; $lngJ = $polygon[$j][1];
+        $intersects = (($lngI > $lng) !== ($lngJ > $lng))
+            && ($lat < ($latJ - $latI) * ($lng - $lngI) / ($lngJ - $lngI) + $latI);
+        if ($intersects) $inside = !$inside;
+    }
+    return $inside;
+}
+
 // Renders a label/value grid for one section of a vehicle's full record
 function ft_detail_grid($pairs) {
     $out = '<div class="ft-detail-grid">';
@@ -204,6 +572,9 @@ function ft_status_color($label) {
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <title>Fleet Tracking</title>
     <style>
@@ -296,7 +667,19 @@ function ft_status_color($label) {
         }
         .ft-view-toggle button.active { background: #fff; color: #2563eb; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
         .ft-view-toggle button:hover:not(.active) { color: #374151; }
-        .ft-map-controls { position: absolute; top: 12px; right: 12px; z-index: 1000; }
+        .ft-view-toggle a {
+            border: none; background: transparent; padding: 7px 16px; border-radius: 7px;
+            font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600;
+            color: #6b7280; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+            text-decoration: none; transition: background .15s, color .15s;
+        }
+        .ft-view-toggle a:hover { color: #374151; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .ft-map-controls { position: absolute; top: 12px; right: 12px; z-index: 40; }
+        #ft-map-section .leaflet-top, #ft-map-section .leaflet-bottom,
+        #ft-geofences-section .leaflet-top, #ft-geofences-section .leaflet-bottom,
+        #ft-trips-section .leaflet-top, #ft-trips-section .leaflet-bottom {
+            z-index: 40;
+        }
 
         /* ── Map ──────────────────────────────────────── */
         #ft-map { width: 100%; height: 560px; border-radius: 0; }
@@ -304,13 +687,23 @@ function ft_status_color($label) {
         .ft-map-popup .ft-popup-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #111827; }
         .ft-map-popup .ft-popup-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; color: #4b5563; }
         .ft-map-popup .ft-popup-row span:last-child { font-family: 'IBM Plex Mono', monospace; color: #111827; }
+        .ft-popup-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        .ft-popup-avatar {
+            width: 40px; height: 40px; border-radius: 50%; object-fit: cover;
+            border: 2px solid #e2e5ea; flex-shrink: 0; display: block;
+        }
+        .ft-popup-avatar-initials {
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-weight: 700; font-size: 14px; background: #2563eb;
+        }
+        .ft-popup-head .ft-popup-title { margin-bottom: 0; }
 
         /* ── Custom Vehicle Pins ───────────────────────── */
         .ft-vehicle-pin {
             width: 34px; height: 34px; border-radius: 50% 50% 50% 0;
             transform: rotate(-45deg);
             display: flex; align-items: center; justify-content: center;
-            border: 3px solid; box-shadow: 0 2px 6px rgba(0,0,0,.35);
+            border: 3px solid #fff; background: #15803d; box-shadow: 0 2px 6px rgba(0,0,0,.35);
             transition: transform .15s;
             cursor: pointer;
         }
@@ -322,6 +715,65 @@ function ft_status_color($label) {
             color: #111827; background: rgba(255,255,255,.9); padding: 1px 5px;
             border-radius: 4px; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.2);
         }
+
+        /* ── GPS Layer: Employee / Customer pins (merged from gps_location_map.php) ── */
+        /* Pin fill color is set inline per-marker now (department color-coding), not by category class. */
+        .ft-gps-pin {
+            width: 28px; height: 28px; border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            display: flex; align-items: center; justify-content: center;
+            border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+        }
+        .ft-gps-pin i { transform: rotate(45deg); color: #fff; font-size: 13px; }
+        .ft-gps-pin-corrected { outline: 2px dashed #b91c1c; outline-offset: 2px; }
+        /* Employee photo shown directly on the pin (not just the popup) */
+        .ft-gps-pin-photo {
+            width: 22px; height: 22px; border-radius: 50%; object-fit: cover;
+            transform: rotate(45deg); border: 1px solid rgba(255,255,255,.8);
+        }
+        .ft-gps-pin-initials { transform: rotate(45deg); color: #fff; font-weight: 700; font-size: 11px; }
+
+        .ft-gps-cluster {
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; color: #fff; font-weight: 700; font-size: 12px;
+            border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+        }
+        .ft-gps-cluster-employee { background: rgba(37, 99, 235, .85); }
+        .ft-gps-cluster-customer { background: rgba(217, 119, 6, .85); }
+        .ft-gps-cluster-other { background: rgba(107, 114, 128, .85); }
+
+        /* ── Department color-coding legend ─────────────── */
+        .ft-dept-legend {
+            border-top: 1px solid #e5e7eb; margin-top: 8px; padding-top: 8px;
+            display: flex; flex-direction: column; gap: 5px;
+        }
+        .ft-dept-legend-title {
+            font-size: 10px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.05em; color: #9ca3af; margin-bottom: 2px;
+        }
+        .ft-dept-legend-item {
+            display: flex; align-items: center; gap: 7px; font-size: 11px;
+            color: #374151; white-space: nowrap;
+        }
+        .ft-dept-legend-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+        /* ── Layer Toggle (vehicles / employees / customers on the Map tab) ── */
+        /* Bottom-left, clear of Leaflet's own zoom control (top-left) */
+        .ft-layer-controls {
+            position: absolute; bottom: 12px; left: 12px; z-index: 40;
+            background: #fff; border: 1.5px solid #e2e5ea; border-radius: 9px;
+            padding: 10px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.08);
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .ft-layer-toggle {
+            display: flex; align-items: center; gap: 7px; font-size: 12px;
+            font-weight: 600; cursor: pointer; user-select: none; white-space: nowrap;
+        }
+        .ft-layer-toggle input { cursor: pointer; }
+        .ft-layer-toggle .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+        .ft-layer-toggle .dot-vehicle { background: #e8ff19; }
+        .ft-layer-toggle .dot-employee { background: #2563eb; }
+        .ft-layer-toggle .dot-customer { background: #d97706; }
 
         /* ── Section / Table Card ─────────────────────── */
         .ft-section {
@@ -393,9 +845,14 @@ function ft_status_color($label) {
             <div class="ft-dept-label">Fleet &nbsp;· Live Vehicle Monitoring</div>
             <h1 class="ft-page-title">Fleet <span>Tracking</span></h1>
         </div>
-        <?php if ($viewOnly): ?>
-            <span class="ft-badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">View Only</span>
-        <?php endif; ?>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <a href="routes_eta.php" class="ft-btn ft-btn--primary">
+                <i class="bi bi-arrow-right-circle"></i> Routes &amp; ETA
+            </a>
+            <?php if ($viewOnly): ?>
+                <span class="ft-badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">View Only</span>
+            <?php endif; ?>
+        </div>
     </div>
 
     <?php if ($apiError): ?>
@@ -473,11 +930,14 @@ function ft_status_color($label) {
             <button type="button" id="ft-btn-geofences" onclick="ftSwitchView('geofences')">
                 <i class="bi bi-pentagon-fill"></i> Geofences
             </button>
+            <button type="button" id="ft-btn-alerts" onclick="ftSwitchView('alerts')">
+                <i class="bi bi-bell-fill"></i> Alerts
+            </button>
         </div>
     </div>
 
     <!-- ── Trips View ───────────────────────────────── -->
-    <div class="ft-section" id="ft-trips-section" style="display:none; margin-bottom: 20px;">
+    <div class="ft-section" id="ft-trips-section" style="display:none; margin-bottom: 20px; position: relative; z-index: 0;">
         <?php if (isset($tripsData['error'])): ?>
             <div class="ft-error" style="margin: 20px;">
                 Trips endpoint returned an error (code <?= h($tripsData['code'] ?? '') ?>).
@@ -486,7 +946,7 @@ function ft_status_color($label) {
             $trips = $tripsData['data'] ?? [];
             $tripsMeta = $tripsData['meta'] ?? [];
         ?>
-            <form method="get" style="display:flex; align-items:end; gap:14px; padding:20px; border-bottom:1.5px solid #e2e5ea; flex-wrap:wrap;">
+            <form method="get" action="#trips" style="display:flex; align-items:end; gap:14px; padding:20px; border-bottom:1.5px solid #e2e5ea; flex-wrap:wrap;">
                 <input type="hidden" name="Status" value="<?= h($Status) ?>">
                 <input type="hidden" name="Search" value="<?= h($Search) ?>">
                 <div class="ft-field">
@@ -547,7 +1007,7 @@ function ft_status_color($label) {
     </div>
 
     <!-- ── Geofences View ───────────────────────────── -->
-    <div class="ft-section" id="ft-geofences-section" style="display:none; margin-bottom: 20px;">
+    <div class="ft-section" id="ft-geofences-section" style="display:none; margin-bottom: 20px; position: relative; z-index: 0;">
         <?php if (isset($geofencesData['error'])): ?>
             <div class="ft-error" style="margin: 20px;">
                 Geofences endpoint returned an error (code <?= h($geofencesData['code'] ?? '') ?>).
@@ -560,26 +1020,203 @@ function ft_status_color($label) {
                     <h4 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:12px;">
                         <?= count($geofences) ?> Zone<?= count($geofences) !== 1 ? 's' : '' ?>
                     </h4>
-                    <?php foreach ($geofences as $gf): ?>
-                        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f1f3f7;cursor:pointer;"
-                             onclick="ftFocusGeofence('<?= h($gf['geofence_id']) ?>')">
+                    <?php foreach ($geofences as $gf):
+                        $gfId = $gf['geofence_id'] ?? '';
+                        $isSelected = $GeofenceId !== '' && (string)$gfId === (string)$GeofenceId;
+                    ?>
+                        <a href="?GeofenceId=<?= urlencode($gfId) ?>#geofences"
+                           style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;margin:0 -8px;border-bottom:1px solid #f1f3f7;cursor:pointer;text-decoration:none;<?= $isSelected ? 'background:#eff6ff;' : '' ?>">
                             <span style="width:14px;height:14px;border-radius:4px;background:<?= h($gf['colour'] ?? '#999') ?>;flex-shrink:0;"></span>
                             <div>
                                 <div style="font-size:13px;font-weight:600;color:#111827;"><?= h($gf['name'] ?: 'Unnamed Zone') ?></div>
                                 <div style="font-size:11px;color:#6b7280;"><?= h($gf['position_description'] ?: '—') ?></div>
                             </div>
-                        </div>
+                        </a>
                     <?php endforeach; ?>
                 </div>
                 <div style="flex:3; min-width:300px;">
                     <div id="ft-geofence-map" style="width:100%; height:560px;"></div>
                 </div>
             </div>
+
+            <?php if ($GeofenceId !== ''): ?>
+            <div style="display:flex; flex-wrap:wrap; gap:20px; padding:20px; border-top:1.5px solid #e2e5ea;">
+                <div style="flex:1; min-width:300px;">
+                    <h4 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:12px;">Visitors</h4>
+                    <?php if (isset($geofenceVisitorsData['error'])): ?>
+                        <div class="ft-error">Visitors endpoint returned an error (code <?= h($geofenceVisitorsData['code'] ?? '') ?>).</div>
+                    <?php else:
+                        $visitors = $geofenceVisitorsData['data'] ?? [];
+                    ?>
+                        <?php if (empty($visitors)): ?>
+                            <div style="font-size:12px;color:#6b7280;">No visitors recorded.</div>
+                        <?php else: ?>
+                            <table style="width:100%;font-size:12px;border-collapse:collapse;">
+                                <thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid #e2e5ea;">
+                                    <th style="padding:6px 4px;">Vehicle</th><th style="padding:6px 4px;">Driver</th><th style="padding:6px 4px;">Last Visit</th>
+                                </tr></thead>
+                                <tbody>
+                                    <?php foreach ($visitors as $vis): ?>
+                                    <tr style="border-bottom:1px solid #f1f3f7;">
+                                        <td style="padding:6px 4px;"><?= h($vis['registration'] ?? $vis['vehicle_id'] ?? '—') ?></td>
+                                        <td style="padding:6px 4px;"><?= h($vis['driver_name'] ?? '—') ?></td>
+                                        <td style="padding:6px 4px;"><?= h($vis['last_visit'] ?? $vis['timestamp'] ?? '—') ?></td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+                <div style="flex:1; min-width:300px;">
+                                        <h4 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:12px;">Visits</h4>
+                    <form method="GET" action="?#geofences" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+                        <input type="hidden" name="GeofenceId" value="<?= h($GeofenceId) ?>">
+                        <input type="date" name="VisitFrom" value="<?= h($VisitFrom) ?>" style="font-size:12px;padding:4px 6px;border:1px solid #d1d5db;border-radius:4px;">
+                        <span style="font-size:12px;color:#6b7280;">to</span>
+                        <input type="date" name="VisitTo" value="<?= h($VisitTo) ?>" style="font-size:12px;padding:4px 6px;border:1px solid #d1d5db;border-radius:4px;">
+                        <button type="submit" style="font-size:12px;padding:4px 10px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;cursor:pointer;">Apply</button>
+                    </form>
+                    <?php if (!empty($rawVisits)): ?>
+                        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">Debug — first row raw: <?= h(json_encode($rawVisits[0])) ?></div>
+                    <?php endif; ?>
+                    <?php if (isset($geofenceVisitsData['error'])): ?>
+                        <div class="ft-error">
+                            Visits endpoint returned an error (code <?= h($geofenceVisitsData['code'] ?? '') ?>).<br>
+                            <small style="font-family:monospace;white-space:pre-wrap;"><?= h($geofenceVisitsData['raw'] ?? '') ?></small>
+                        </div>
+                    <?php else:
+                        $visits = $geofenceVisitsData['data'] ?? [];
+                    ?>
+                        <?php if (empty($visits)): ?>
+                            <div style="font-size:12px;color:#6b7280;">No visits in the last 7 days.</div>
+                        <?php else: ?>
+                            <table style="width:100%;font-size:12px;border-collapse:collapse;">
+                                <thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid #e2e5ea;">
+                                    <th style="padding:6px 4px;">Vehicle</th><th style="padding:6px 4px;">Entry</th><th style="padding:6px 4px;">Exit</th>
+                                </tr></thead>
+                                <tbody>
+                                    <?php foreach ($visits as $visit): ?>
+                                    <tr style="border-bottom:1px solid #f1f3f7;">
+                                        <td style="padding:6px 4px;"><?= h($visit['registration'] ?? $visit['vehicle_id'] ?? '—') ?></td>
+                                        <td style="padding:6px 4px;"><?= h($visit['entry_timestamp'] ?? '—') ?></td>
+                                        <td style="padding:6px 4px;"><?= h($visit['exit_timestamp'] ?? '—') ?></td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div style="padding:0 20px 20px;">
+                <h4 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:12px;">
+                    Employees in Zone <span style="font-weight:400;color:#9ca3af;">(ping count, <?= h($VisitFrom) ?> to <?= h($VisitTo) ?>)</span>
+                </h4>
+                <?php if (empty($employeePingCounts)): ?>
+                    <div style="font-size:12px;color:#6b7280;">No employee pings recorded inside this zone for the selected range.</div>
+                <?php else: ?>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                        <?php foreach ($employeePingCounts as $emp): ?>
+                            <div style="display:flex;align-items:center;gap:8px;background:#f9fafb;border:1px solid #e2e5ea;border-radius:20px;padding:6px 14px;">
+                                <span style="font-size:12px;font-weight:600;color:#111827;"><?= h($emp['name']) ?></span>
+                                <span style="font-size:11px;font-weight:700;color:#2563eb;background:#eff6ff;padding:1px 8px;border-radius:10px;"><?= $emp['count'] ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <div style="padding:0 20px 20px;">
+                <h4 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:12px;">Recent Alerts (Entry / Exit)</h4>
+                <?php if (isset($geofenceAlertsData['error'])): ?>
+                    <div class="ft-error">Alerts endpoint returned an error (code <?= h($geofenceAlertsData['code'] ?? '') ?>).</div>
+                <?php elseif (empty($geofenceAlerts)): ?>
+                    <div style="font-size:12px;color:#6b7280;">No entry/exit alerts in this range.</div>
+                <?php else: ?>
+                    <table style="width:100%;font-size:12px;border-collapse:collapse;max-width:500px;">
+                        <thead>
+                            <tr style="text-align:left;color:#6b7280;border-bottom:1px solid #e2e5ea;">
+                                <th style="padding:6px 4px;">Vehicle</th>
+                                <th style="padding:6px 4px;">Event</th>
+                                <th style="padding:6px 4px;">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($geofenceAlerts as $alert): ?>
+                            <tr style="border-bottom:1px solid #f1f3f7;">
+                                <td style="padding:6px 4px;font-weight:600;"><?= h($alert['registration']) ?></td>
+                                <td style="padding:6px 4px;">
+                                    <span style="padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;
+                                        <?= $alert['direction'] === 'entered' ? 'background:#dcfce7;color:#15803d;' : ($alert['direction'] === 'left' ? 'background:#fee2e2;color:#b91c1c;' : 'background:#f3f4f6;color:#6b7280;') ?>">
+                                        <?= h(ucfirst($alert['direction'])) ?>
+                                    </span>
+                                </td>
+                                <td style="padding:6px 4px;color:#6b7280;"><?= h($alert['event_ts']) ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+        <?php endif; ?>
+    </div>
+
+        <!-- ── Alerts View (fleet-wide, real-time entry/exit) ─── -->
+    <div class="ft-section" id="ft-alerts-section" style="display:none; margin-bottom: 20px; padding: 24px;">
+        <form method="GET" action="?#alerts" style="display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
+            <div class="ft-field" style="gap:2px;">
+                <label style="font-size:10px;">From</label>
+                <input type="date" name="AlertsFrom" value="<?= h($AlertsFrom) ?>" style="height:36px;padding:0 10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;">
+            </div>
+            <div class="ft-field" style="gap:2px;">
+                <label style="font-size:10px;">To</label>
+                <input type="date" name="AlertsTo" value="<?= h($AlertsTo) ?>" style="height:36px;padding:0 10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:13px;">
+            </div>
+            <button type="submit" class="ft-btn ft-btn--primary" style="height:36px;align-self:flex-end;">Apply</button>
+            <?php if (!empty($fleetAlerts)): ?>
+                <span style="align-self:flex-end;font-size:12px;color:#6b7280;margin-left:auto;">
+                    <?= count($fleetAlerts) ?> event<?= count($fleetAlerts) !== 1 ? 's' : '' ?> across <?= count($fleetAlertsByPlate) ?> vehicle<?= count($fleetAlertsByPlate) !== 1 ? 's' : '' ?>
+                </span>
+            <?php endif; ?>
+        </form>
+
+        <?php if (isset($fleetAlertsData['error'])): ?>
+            <div class="ft-error">Alerts endpoint returned an error (code <?= h($fleetAlertsData['code'] ?? '') ?>).</div>
+        <?php elseif (empty($fleetAlertsByPlate)): ?>
+            <div style="font-size:13px;color:#6b7280;padding:20px 0;">No entry/exit alerts in this range.</div>
+        <?php else: ?>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:16px;">
+                <?php foreach ($fleetAlertsByPlate as $plate => $plateAlerts): ?>
+                    <div style="background:#fff;border:1.5px solid #e2e5ea;border-radius:14px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.04);">
+                        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f9fafb;border-bottom:1.5px solid #e2e5ea;">
+                            <span style="font-size:13px;font-weight:700;color:#111827;font-family:'IBM Plex Mono',monospace;"><?= h($plate) ?></span>
+                            <span style="font-size:11px;font-weight:600;color:#6b7280;background:#eef0f3;padding:2px 8px;border-radius:10px;"><?= count($plateAlerts) ?></span>
+                        </div>
+                        <div style="max-height:320px;overflow-y:auto;">
+                            <?php foreach ($plateAlerts as $i => $alert): ?>
+                            <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;<?= $i > 0 ? 'border-top:1px solid #f1f3f7;' : '' ?>">
+                                <span style="flex-shrink:0;width:56px;text-align:center;padding:2px 0;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;
+                                    <?= $alert['direction'] === 'entered' ? 'background:#dcfce7;color:#15803d;' : ($alert['direction'] === 'left' ? 'background:#fee2e2;color:#b91c1c;' : 'background:#f3f4f6;color:#6b7280;') ?>">
+                                    <?= h($alert['direction'] === 'entered' ? 'In' : ($alert['direction'] === 'left' ? 'Out' : $alert['direction'])) ?>
+                                </span>
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-size:12.5px;color:#111827;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><?= h($alert['geofence']) ?></div>
+                                    <div style="font-size:11px;color:#9ca3af;font-family:'IBM Plex Mono',monospace;"><?= h($alert['event_ts']) ?></div>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         <?php endif; ?>
     </div>
 
     <!-- ── Map View ─────────────────────────────────── -->
-    <div class="ft-section" id="ft-map-section" style="display:none; margin-bottom: 20px; position: relative;">
+    <div class="ft-section" id="ft-map-section" style="display:none; margin-bottom: 20px; position: relative; z-index: 0;">
         <div class="ft-map-controls ft-view-toggle">
             <button type="button" id="ft-btn-street" class="active" onclick="ftSwitchBasemap('street')">
                 <i class="bi bi-map"></i> Street
@@ -587,6 +1224,38 @@ function ft_status_color($label) {
             <button type="button" id="ft-btn-satellite" onclick="ftSwitchBasemap('satellite')">
                 <i class="bi bi-globe-americas"></i> Satellite
             </button>
+            <a href="employee_gps_history.php">
+                <i class="bi bi-person-walking"></i> Employee GPS
+            </a>
+        </div>
+        <div class="ft-layer-controls">
+            <label class="ft-layer-toggle">
+                <input type="checkbox" id="ft-layer-vehicles" checked onchange="ftToggleLayer('vehicles', this.checked)">
+                <span class="dot dot-vehicle"></span> Vehicles (<?= number_format($TotalCount) ?>)
+            </label>
+            <label class="ft-layer-toggle">
+                <input type="checkbox" id="ft-layer-employees" checked onchange="ftToggleLayer('employee', this.checked)">
+                <span class="dot dot-employee"></span> Employees (<?= number_format($GpsEmployeeCount) ?>)
+            </label>
+            <label class="ft-layer-toggle">
+                <input type="checkbox" id="ft-layer-customers" checked onchange="ftToggleLayer('customer', this.checked)">
+                <span class="dot dot-customer"></span> Customers (<?= number_format($GpsCustomerCount) ?>)
+            </label>
+            <?php if ($GpsOtherCount > 0): ?>
+            <label class="ft-layer-toggle">
+                <input type="checkbox" id="ft-layer-other" onchange="ftToggleLayer('other', this.checked)">
+                <span class="dot" style="background:#6b7280;"></span> Other (<?= number_format($GpsOtherCount) ?>)
+            </label>
+            <?php endif; ?>
+            <?php if (($GpsEmployeeCount + $GpsCustomerCount) > 0): ?>
+            <div class="ft-dept-legend">
+                <div class="ft-dept-legend-title">Pin Color · Department</div>
+                <div class="ft-dept-legend-item"><span class="dot" style="background:#dc2626;"></span> Monde</div>
+                <div class="ft-dept-legend-item"><span class="dot" style="background:#2563eb;"></span> Century</div>
+                <div class="ft-dept-legend-item"><span class="dot" style="background:#16a34a;"></span> NutriAsia / Silver Swan</div>
+                <div class="ft-dept-legend-item"><span class="dot" style="background:#ca8a04;"></span> Multilines</div>
+            </div>
+            <?php endif; ?>
         </div>
         <div id="ft-map"></div>
     </div>
@@ -792,6 +1461,9 @@ const ftVehicles = [
     <?php endforeach; ?>
 ];
 
+// Employee/customer GPS data for the map, merged from gps_location_map.php
+const ftGpsLocations = <?= json_encode($gpsLocations, JSON_UNESCAPED_UNICODE) ?>;
+
 let ftMap = null;
 let ftMapInitialized = false;
 let ftGeofenceMap = null;
@@ -800,6 +1472,8 @@ let ftGeofenceLayers = {};
 let ftTripsMap = null;
 let ftTripsMapInitialized = false;
 let ftTripMarkers = {};
+let ftVehicleLayer = null;      // plain layer group — vehicle count is small, no need to cluster
+let ftGpsClusterGroups = {};    // category ('employee'/'customer'/'other') -> L.markerClusterGroup
 
 const ftGeofences = [
     <?php if (!isset($geofencesData['error'])): foreach (($geofencesData['data'] ?? []) as $gf): ?>
@@ -889,6 +1563,7 @@ const ftDayRoute = <?= json_encode(array_map(fn($p) => [$p['lat'], $p['lng']], $
 
 let ftDayRouteLine = null;
 let ftTripRouteLine = null;
+let ftFocusToken = 0;
 
 function ftInitTripsMap() {
     if (ftTripsMapInitialized) return;
@@ -920,6 +1595,9 @@ function ftFocusTrip(id) {
     const trip = ftTrips.find(t => t.id === id);
     if (!trip) return;
 
+    ftFocusToken++;
+    const myToken = ftFocusToken;
+
     Object.values(ftTripMarkers).forEach(m => ftTripsMap.removeLayer(m));
     ftTripMarkers = {};
     if (ftTripRouteLine) { ftTripsMap.removeLayer(ftTripRouteLine); ftTripRouteLine = null; }
@@ -945,17 +1623,44 @@ function ftFocusTrip(id) {
     ftTripMarkers.start = startMarker;
     ftTripMarkers.end = endMarker;
 
-    // Real ping-based route if we have 2+ points inside this trip's window; otherwise a
-    // dashed straight line so it's visually clear this segment is an approximation.
-    if (trip.route.length >= 2) {
-        ftTripRouteLine = L.polyline(trip.route, { color: '#2563eb', weight: 4, opacity: 0.9 }).addTo(ftTripsMap);
-    } else {
-        ftTripRouteLine = L.polyline([trip.start, trip.end], {
-            color: '#2563eb', weight: 3, opacity: 0.7, dashArray: '6,8'
-        }).addTo(ftTripsMap);
-    }
+    // Waypoints for this trip: start -> any real stop-pings inside the trip window -> end.
+    const waypoints = [trip.start, ...(trip.route.length >= 2 ? trip.route : []), trip.end];
+
+    // Draw an immediate dashed placeholder (straight segments) so the map isn't empty
+    // while the real road-snapped route loads.
+    ftTripRouteLine = L.polyline(waypoints, {
+        color: '#2563eb', weight: 3, opacity: 0.5, dashArray: '6,8'
+    }).addTo(ftTripsMap);
 
     ftTripsMap.fitBounds([trip.start, trip.end], { padding: [60, 60] });
+
+    ftFetchRoadRoute(waypoints).then(roadRoute => {
+        // Bail if the user focused a different trip while this was in flight.
+        if (myToken !== ftFocusToken || !ftTripsMap) return;
+        if (roadRoute && roadRoute.length >= 2) {
+            ftTripsMap.removeLayer(ftTripRouteLine);
+            ftTripRouteLine = L.polyline(roadRoute, { color: '#2563eb', weight: 4, opacity: 0.9 }).addTo(ftTripsMap);
+        }
+        // On failure, the dashed placeholder line stays — still real waypoints, just unsnapped.
+    });
+}
+
+// Snaps a sequence of [lat,lng] waypoints to the road network via OSRM's public demo
+// routing server (free, no API key — not officially rated for heavy production load,
+// but fine for on-demand per-trip lookups like this). Returns [lat,lng] pairs for the
+// driven route, or null on any failure so the caller can fall back to the straight line.
+async function ftFetchRoadRoute(waypointsLatLng) {
+    if (waypointsLatLng.length < 2) return null;
+    const coordStr = waypointsLatLng.map(p => `${p[1]},${p[0]}`).join(';');
+    try {
+        const resp = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`);
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        if (data.code !== 'Ok' || !data.routes || !data.routes.length) return null;
+        return data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+    } catch (e) {
+        return null;
+    }
 }
 let ftStreetLayer = null;
 let ftSatelliteLayer = null;
@@ -978,15 +1683,119 @@ function ftSwitchBasemap(type) {
     }
 }
 
+// Cluster bubble color follows the GPS layer's category
+function ftGpsClusterIconCreate(category) {
+    return function (cluster) {
+        const count = cluster.getChildCount();
+        const size = count < 10 ? 32 : (count < 50 ? 40 : 48);
+        return L.divIcon({
+            html: `<div class="ft-gps-cluster ft-gps-cluster-${category}" style="width:${size}px;height:${size}px;">${count}</div>`,
+            className: '',
+            iconSize: [size, size]
+        });
+    };
+}
+
+const FT_GPS_ICONS = {
+    employee: { bi: 'bi-person-fill', fallback: '#2563eb' },
+    customer: { bi: 'bi-shop',        fallback: '#d97706' },
+    other:    { bi: 'bi-geo-fill',    fallback: '#6b7280' }
+};
+
+// Builds the pin itself. Employees show their photo right on the pin (falling back
+// to legacy path, then initials, same chain as the popup avatar); other categories
+// show the category icon. Fill color is the department color-coding (or the
+// category default when Department is blank/unmapped) — set inline per marker.
+function ftGpsBuildIcon(loc) {
+    const cfg = FT_GPS_ICONS[loc.category] || FT_GPS_ICONS.other;
+    const cls = loc.corrected ? 'ft-gps-pin ft-gps-pin-corrected' : 'ft-gps-pin';
+    const bg = loc.pinColor || cfg.fallback;
+
+    let inner;
+    if (loc.category === 'employee') {
+        const initials = (loc.initials || '?').replace(/"/g, '&quot;');
+        if (loc.pic) {
+            const src = loc.pic.replace(/"/g, '&quot;');
+            const legacy = (loc.picLegacy || '').replace(/"/g, '&quot;');
+            inner = `<img src="${src}" class="ft-gps-pin-photo" alt=""
+                         data-legacy="${legacy}" data-initials="${initials}"
+                         onerror="(function(img){
+                             var leg = img.getAttribute('data-legacy');
+                             if (leg && !img.getAttribute('data-legacy-tried')) {
+                                 img.setAttribute('data-legacy-tried','1');
+                                 img.src = leg;
+                             } else {
+                                 var span = document.createElement('span');
+                                 span.className = 'ft-gps-pin-initials';
+                                 span.textContent = img.getAttribute('data-initials') || '?';
+                                 img.replaceWith(span);
+                             }
+                         })(this)">`;
+        } else {
+            inner = `<span class="ft-gps-pin-initials">${initials}</span>`;
+        }
+    } else {
+        inner = `<i class="bi ${cfg.bi}"></i>`;
+    }
+
+    return L.divIcon({
+        className: '',
+        html: `<div class="${cls}" style="background:${bg};">${inner}</div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 28],
+        popupAnchor: [0, -28]
+    });
+}
+
+// Employee avatar for the popup — TWM path first, legacy portal path on error,
+// initials bubble if both fail (or there's no picture on file at all). Mirrors
+// the resolution chain used in employee-list.php.
+function ftGpsAvatarHtml(loc) {
+    if (loc.category !== 'employee') return '';
+    const initials = (loc.initials || '?').replace(/"/g, '&quot;');
+    if (!loc.pic) {
+        return `<div class="ft-popup-avatar ft-popup-avatar-initials">${initials}</div>`;
+    }
+    const src = loc.pic.replace(/"/g, '&quot;');
+    const legacy = (loc.picLegacy || '').replace(/"/g, '&quot;');
+    return `<img src="${src}" class="ft-popup-avatar" alt=""
+                 data-legacy="${legacy}" data-initials="${initials}"
+                 onerror="(function(img){
+                     var leg = img.getAttribute('data-legacy');
+                     if (leg && !img.getAttribute('data-legacy-tried')) {
+                         img.setAttribute('data-legacy-tried','1');
+                         img.src = leg;
+                     } else {
+                         var d = document.createElement('div');
+                         d.className = 'ft-popup-avatar ft-popup-avatar-initials';
+                         d.textContent = img.getAttribute('data-initials') || '?';
+                         img.replaceWith(d);
+                     }
+                 })(this)">`;
+}
+
+// Toggle a layer on/off from the checkboxes in .ft-layer-controls
+function ftToggleLayer(key, show) {
+    if (!ftMap) return;
+    const layer = key === 'vehicles' ? ftVehicleLayer : ftGpsClusterGroups[key];
+    if (!layer) return;
+    if (show) {
+        if (!ftMap.hasLayer(layer)) ftMap.addLayer(layer);
+    } else {
+        if (ftMap.hasLayer(layer)) ftMap.removeLayer(layer);
+    }
+}
+
 function ftInitMap() {
     if (ftMapInitialized) return;
     ftMapInitialized = true;
 
-    // Center on the average position of all plotted vehicles, fallback to Quezon province
+    // Center on the average position of all plotted vehicles + GPS points, fallback to Quezon province
     let centerLat = 13.9, centerLng = 121.6;
-    if (ftVehicles.length) {
-        centerLat = ftVehicles.reduce((s, v) => s + v.lat, 0) / ftVehicles.length;
-        centerLng = ftVehicles.reduce((s, v) => s + v.lng, 0) / ftVehicles.length;
+    const centerPoints = [...ftVehicles, ...ftGpsLocations];
+    if (centerPoints.length) {
+        centerLat = centerPoints.reduce((s, p) => s + p.lat, 0) / centerPoints.length;
+        centerLng = centerPoints.reduce((s, p) => s + p.lng, 0) / centerPoints.length;
     }
 
     ftMap = L.map('ft-map').setView([centerLat, centerLng], 9);
@@ -1003,26 +1812,16 @@ function ftInitMap() {
 
     ftStreetLayer.addTo(ftMap); // default basemap
 
-    // Deterministic color per vehicle, so the same plate always gets the same pin color across reloads
-    function ftColorForPlate(plate) {
-        let hash = 0;
-        for (let i = 0; i < plate.length; i++) {
-            hash = plate.charCodeAt(i) + ((hash << 5) - hash);
-        }
-        const hue = Math.abs(hash) % 360;
-        return `hsl(${hue}, 70%, 45%)`;
-    }
-
     const bounds = [];
-    ftVehicles.forEach(v => {
-        const pinColor = ftColorForPlate(v.plate);
 
+    // --- Vehicle layer (single flat color for all pins, same style as employee/customer pins) ---
+    ftVehicleLayer = L.layerGroup();
+    ftVehicles.forEach(v => {
         const icon = L.divIcon({
             className: '', // avoid Leaflet's default icon styles leaking in
             html: `
                 <div style="text-align:center;">
-                    <div class="ft-vehicle-pin ${v.isStale ? 'ft-pin-stale' : ''}"
-                         style="background:${pinColor}; border-color:${v.color};">
+                    <div class="ft-vehicle-pin ${v.isStale ? 'ft-pin-stale' : ''}">
                         <i class="bi bi-truck"></i>
                     </div>
                     <div class="ft-pin-label">${v.plate}</div>
@@ -1033,7 +1832,7 @@ function ftInitMap() {
             popupAnchor: [0, -40]
         });
 
-        const marker = L.marker([v.lat, v.lng], { icon }).addTo(ftMap);
+        const marker = L.marker([v.lat, v.lng], { icon });
 
         const fuelDisplay = v.fuel !== null ? v.fuel + '%' : '—';
         const staleTag = v.isStale ? ' <span style="color:#b91c1c;font-weight:600;">(Stale)</span>' : '';
@@ -1050,8 +1849,47 @@ function ftInitMap() {
             </div>
         `);
 
+        marker.addTo(ftVehicleLayer);
         bounds.push([v.lat, v.lng]);
     });
+    ftVehicleLayer.addTo(ftMap);
+
+    // --- Employee / Customer / Other GPS layers (one cluster group per category,
+    //     so each toggle checkbox just shows/hides its whole layer) ---
+    ['employee', 'customer', 'other'].forEach(cat => {
+        ftGpsClusterGroups[cat] = L.markerClusterGroup({
+            iconCreateFunction: ftGpsClusterIconCreate(cat),
+            spiderfyOnMaxZoom: true,
+            showCoverageOnHover: false,
+            maxClusterRadius: 50
+        });
+    });
+
+    ftGpsLocations.forEach(loc => {
+        const marker = L.marker([loc.lat, loc.lng], { icon: ftGpsBuildIcon(loc) });
+        const avatarHtml = ftGpsAvatarHtml(loc);
+        marker.bindPopup(`
+            <div class="ft-map-popup">
+                <div class="ft-popup-head">
+                    ${avatarHtml}
+                    <div class="ft-popup-title">${loc.name || '(no name)'}</div>
+                </div>
+                <div class="ft-popup-row"><span>Type</span><span>${loc.type || '—'}</span></div>
+                <div class="ft-popup-row"><span>Department</span><span>${loc.department || '—'}</span></div>
+                <div class="ft-popup-row"><span>Code</span><span>${loc.code || '—'}</span></div>
+                <div class="ft-popup-row"><span>Last Update</span><span${loc.isStale ? ' style="color:#b91c1c;"' : ''}>${loc.lastUpdate || '—'}</span></div>
+                ${loc.corrected ? '<div style="color:#b91c1c;margin-top:4px;font-size:11px;">⚠ Lat/Lng appeared swapped in source data — auto-corrected for display</div>' : ''}
+            </div>
+        `);
+        const group = ftGpsClusterGroups[loc.category] || ftGpsClusterGroups.other;
+        group.addLayer(marker);
+        bounds.push([loc.lat, loc.lng]);
+    });
+
+    // Employees and customers are shown by default; "other" stays off unless there's
+    // no dedicated toggle for it (kept out of the initial view to match the two checkboxes).
+    ftGpsClusterGroups.employee.addTo(ftMap);
+    ftGpsClusterGroups.customer.addTo(ftMap);
 
     if (bounds.length) {
         ftMap.fitBounds(bounds, { padding: [30, 30] });
@@ -1063,13 +1901,15 @@ function ftSwitchView(view) {
         table: document.getElementById('ft-table-section'),
         map: document.getElementById('ft-map-section'),
         trips: document.getElementById('ft-trips-section'),
-        geofences: document.getElementById('ft-geofences-section')
+        geofences: document.getElementById('ft-geofences-section'),
+        alerts: document.getElementById('ft-alerts-section')
     };
     const buttons = {
         table: document.getElementById('ft-btn-table'),
         map: document.getElementById('ft-btn-map'),
         trips: document.getElementById('ft-btn-trips'),
-        geofences: document.getElementById('ft-btn-geofences')
+        geofences: document.getElementById('ft-btn-geofences'),
+        alerts: document.getElementById('ft-btn-alerts')
     };
 
     Object.keys(sections).forEach(key => {
@@ -1102,6 +1942,18 @@ function ftToggleDetail(vid) {
         caret.classList.toggle('bi-caret-down-fill', isHidden);
     }
 }
+
+// Restore the active tab after a full page reload (Trips vehicle-select reload,
+// Trips pagination Prev/Next) so the user doesn't get bounced back to Table every time.
+document.addEventListener('DOMContentLoaded', () => {
+    const hash = window.location.hash.replace('#', '');
+    if (['table', 'map', 'trips', 'geofences', 'alerts'].includes(hash)) {
+        ftSwitchView(hash);
+    }
+    <?php if ($GeofenceId !== ''): ?>
+    setTimeout(() => ftFocusGeofence(<?= json_encode($GeofenceId) ?>), 100);
+    <?php endif; ?>
+});
 </script>
 </body>
 </html>

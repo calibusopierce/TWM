@@ -97,6 +97,7 @@ define('ROUTES', [
     'deduction_records'             => 'FINANCE/deduction_records.php',
     'other_payment_details'         => 'FINANCE/other_payment_details.php',
     'cheques'                       => 'FINANCE/cheques.php',
+    'check_issues'                  => 'FINANCE/check-issues.php',
 
     // ── SALES Modules
     'sales_order_report'            => 'SALES/sales_order_report.php',

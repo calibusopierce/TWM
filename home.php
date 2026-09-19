@@ -161,7 +161,34 @@ foreach ($sections as $section) {
     .topbar-search-wrap { flex: 1; max-width: 380px; margin: 0 auto; }
 
     /* ── Profile / user menu ── */
-    .topbar-user { position: relative; flex-shrink: 0; }
+    .topbar-user { position: relative; flex-shrink: 0; display: flex; align-items: center; gap: .55rem; }
+    .gift-btn {
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(251,191,36,.14); border: 1px solid rgba(251,191,36,.35);
+      color: #fbbf24; font-size: 1.05rem; text-decoration: none;
+      transition: background .15s, transform .15s, border-color .15s;
+    }
+    .gift-btn:hover { background: rgba(251,191,36,.24); border-color: rgba(251,191,36,.55); transform: scale(1.06); }
+
+    .notify-btn {
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+      background: var(--w10); border: 1px solid var(--w25);
+      color: var(--white); font-size: 1.05rem;
+      transition: background .15s, transform .15s, border-color .15s;
+      cursor: pointer;
+    }
+    .notify-btn:hover { background: var(--w15); transform: scale(1.06); }
+    .notify-btn-dot {
+      position: absolute; top: -1px; right: -1px;
+      min-width: 16px; height: 16px; padding: 0 3px; border-radius: 999px;
+      background: #ef4444; border: 2px solid var(--blue-deep);
+      color: #fff; font-size: .58rem; font-weight: 700; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
     .user-trigger {
       display: flex; align-items: center; gap: .5rem;
       background: rgba(255,255,255,.08); border: 1px solid var(--w15);
@@ -520,6 +547,13 @@ foreach ($sections as $section) {
     }
     .bulletin-eyebrow .bi { color: #fbbf24; font-size: 1rem; }
     .bulletin-counter { margin-left: auto; color: var(--w60); font-weight: 600; letter-spacing: 0; text-transform: none; font-size: .78rem; }
+    .bulletin-close {
+      display: flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+      background: transparent; border: none; color: var(--w60); font-size: 1rem; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .bulletin-close:hover { background: var(--w15); color: var(--white); }
     .bulletin-slide-wrap {
       flex: 1; overflow: hidden; position: relative;
       background: rgba(255,255,255,.04); border: 1px solid var(--w15);
@@ -568,6 +602,7 @@ foreach ($sections as $section) {
     <div class="bulletin-eyebrow">
       <i class="bi bi-megaphone-fill"></i> What's New
       <span class="bulletin-counter" id="bulletin-counter"></span>
+      <button class="bulletin-close" id="bulletin-close-btn" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     </div>
     <div class="bulletin-slide-wrap">
       <div class="bulletin-slide" id="bulletin-slide">
@@ -616,6 +651,13 @@ foreach ($sections as $section) {
     <?php endif; ?>
 
     <div class="topbar-user" id="user-menu">
+      <a href="birthday.php" class="gift-btn" title="Birthdays &amp; celebrations" aria-label="Birthdays">
+        <i class="bi bi-gift-fill"></i>
+      </a>
+      <button class="notify-btn" id="notify-btn" title="Bulletin board" aria-label="Bulletin board">
+        <i class="bi bi-bell-fill"></i>
+        <span class="notify-btn-dot" id="notify-btn-dot" style="display:none;"></span>
+      </button>
       <button class="user-trigger" onclick="toggleUserMenu()" aria-expanded="false" aria-haspopup="true">
         <span class="user-avatar"><?= htmlspecialchars(strtoupper(substr($displayName, 0, 1))) ?></span>
         <span class="user-name"><?= htmlspecialchars($displayName) ?></span>
@@ -930,12 +972,26 @@ function toggleSection(el) {
   const nextBtn          = document.getElementById('bulletin-next');
   const gotItBtn        = document.getElementById('bulletin-got-it-btn');
   const dismissAllBtn   = document.getElementById('bulletin-dismiss-all-btn');
+  const notifyBtn       = document.getElementById('notify-btn');
+  const notifyDot       = document.getElementById('notify-btn-dot');
+  const closeBtn        = document.getElementById('bulletin-close-btn');
   if (!overlay) return;
 
   let queue = [];
   let idx   = 0;
 
+  function updateNotifyDot() {
+    if (!notifyDot) return;
+    if (queue.length > 0) {
+      notifyDot.textContent = queue.length;
+      notifyDot.style.display = 'flex';
+    } else {
+      notifyDot.style.display = 'none';
+    }
+  }
+
   function render() {
+    updateNotifyDot();
     if (!queue.length) { overlay.classList.remove('open'); return; }
     if (idx >= queue.length) idx = queue.length - 1;
     if (idx < 0) idx = 0;
@@ -971,6 +1027,10 @@ function toggleSection(el) {
     if (dot) { idx = parseInt(dot.dataset.goto, 10); render(); }
   });
 
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('open'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') overlay.classList.remove('open'); });
+  closeBtn?.addEventListener('click', () => overlay.classList.remove('open'));
+
   gotItBtn.addEventListener('click', () => {
     const b = queue[idx];
     gotItBtn.disabled = true;
@@ -991,20 +1051,53 @@ function toggleSection(el) {
     });
   });
 
-  fetch('BULLETIN/bulletin_ajax.php', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'action=list_active',
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.success && data.bulletins.length) {
-        queue = data.bulletins;
+  function fetchActiveBulletins(ignoreDismissed) {
+    return fetch('BULLETIN/bulletin_ajax.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'action=list_active' + (ignoreDismissed ? '&ignore_dismissed=1' : ''),
+    })
+      .then(r => r.json())
+      .then(data => {
+        queue = (data.success && data.bulletins) ? data.bulletins : [];
+        if (idx >= queue.length) idx = 0;
+        updateNotifyDot();
+      })
+      .catch(() => {});
+  }
+
+  notifyBtn?.addEventListener('click', () => {
+    if (overlay.classList.contains('open')) {
+      overlay.classList.remove('open');
+      return;
+    }
+    fetchActiveBulletins(true).then(() => {
+      if (queue.length) {
+        gotItBtn.style.display = '';
+        dismissAllBtn.style.display = '';
         idx = 0;
         render();
+        return;
       }
-    })
-    .catch(() => {});
+      titleEl.textContent   = 'No announcements';
+      msgEl.textContent     = "You're all caught up — nothing new right now.";
+      metaEl.textContent    = '';
+      counterEl.textContent = '';
+      dotsEl.innerHTML      = '';
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+      gotItBtn.style.display = 'none';
+      dismissAllBtn.style.display = 'none';
+      overlay.classList.add('open');
+    });
+  });
+
+  fetchActiveBulletins().then(() => {
+    if (queue.length) {
+      idx = 0;
+      render();
+    }
+  });
 })();
 </script>
 

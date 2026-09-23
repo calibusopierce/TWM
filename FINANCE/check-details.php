@@ -165,16 +165,14 @@ $rowValuesJs = json_encode(array(
 
   body {
     margin: 0;
-    min-height: 100vh;
+    min-height: 100%;
     background: var(--bg);
     color: var(--ink);
     font-family: var(--font-body);
-    display: flex;
-    justify-content: center;
-    padding: clamp(20px, 5vw, 56px) 16px;
+    padding: 18px;
   }
 
-  .page { width: 100%; max-width: 740px; }
+  .page { width: 100%; max-width: 100%; }
 
   .toolbar {
     display: flex;
@@ -318,10 +316,6 @@ $rowValuesJs = json_encode(array(
 <body>
 
 <div class="page">
-  <a href="cheques.php" class="back-link">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-    Back to Cheques
-  </a>
   <?php if ($error): ?>
   <div class="error-banner"><?= ckd_esc($error) ?> Showing sample data below.</div>
   <?php endif; ?>
@@ -442,8 +436,6 @@ $rowValuesJs = json_encode(array(
 
     </div>
   </div>
-
-  <p class="hint">Pass <code>?id=TransactionID</code> in the URL to pull a real row from <code>dbo.Cheques</code>.</p>
 </div>
 
 <script>

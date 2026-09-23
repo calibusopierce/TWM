@@ -94,9 +94,13 @@ $CIDept     = $_GET['CIDept'] ?? '';
 $CIDateFrom = $_GET['CIDateFrom'] ?? '';
 $CIDateTo   = $_GET['CIDateTo'] ?? '';
 
+$CDept = $_GET['CDept'] ?? '';
+$RDept = $_GET['RDept'] ?? '';
+
 $bankOptions = [];
 $typeOptions = [];
 $actionOptions = [];
+$deptOptions = [];
 $ciBankOptions = [];
 $ciDeptOptions = [];
 $ciRows = [];
@@ -115,6 +119,12 @@ $actionStmt = $pdo->query("SELECT DISTINCT Action FROM dbo.ChequesReturn WHERE A
 while ($row = $actionStmt->fetch(PDO::FETCH_ASSOC)) {
     $actionOptions[] = $row['Action'];
 }
+// --- Department values from dbo.Cheques — used by both the Checks tab
+//     and the Returned tab's Department filter (same underlying field). ---
+$deptStmt = $pdo->query("SELECT DISTINCT Department FROM dbo.Cheques WHERE Department IS NOT NULL AND Department <> '' ORDER BY Department");
+while ($row = $deptStmt->fetch(PDO::FETCH_ASSOC)) {
+    $deptOptions[] = $row['Department'];
+}
 
 if ($Tab === 'cheques') {
 
@@ -128,6 +138,10 @@ if ($Tab === 'cheques') {
     if ($Bank !== '') {
         $conditions[] = "c.Bank = ?";
         $params[]     = $Bank;
+    }
+    if ($CDept !== '') {
+        $conditions[] = "c.Department = ?";
+        $params[]     = $CDept;
     }
     if ($Search !== '') {
         $term = '%' . $Search . '%';
@@ -205,26 +219,35 @@ if ($Tab === 'cheques') {
 
 } elseif ($Tab === 'returned') {
 
-    // --- Returned tab: dbo.ChequesReturn joined back to dbo.Cheques for context ---
-    $rConditions = [];
+    // --- Returned tab: sourced from dbo.View_CheckDeposit_Records, which
+    //     pre-joins Cheques + ChequesReturn and adds ARCollectionNo/Status ---
+    // This view includes every cheque, returned or not, so we always require
+    // an actual return record (RDate + Type both present) regardless of
+    // which other filters are set — otherwise a plain outlet/bank search
+    // pulls in every cheque for that outlet, not just its returns.
+    $rConditions = ["v.RDate IS NOT NULL", "v.Type IS NOT NULL"];
     $rParams     = [];
 
     if ($RType !== '') {
-        $rConditions[] = "cr.Type = ?";
+        $rConditions[] = "v.Type = ?";
         $rParams[]     = $RType;
+    }
+    if ($RDept !== '') {
+        $rConditions[] = "v.Department = ?";
+        $rParams[]     = $RDept;
     }
     if ($RSearch !== '') {
         $term = '%' . $RSearch . '%';
-        $rConditions[] = "(CAST(cr.CheckID AS VARCHAR(50)) LIKE ? OR CAST(c.CheckNumber AS VARCHAR(50)) LIKE ?
-                            OR c.Outlet LIKE ? OR c.Bank LIKE ? OR cr.Type LIKE ? OR cr.Action LIKE ? OR cr.Remarks LIKE ?)";
+        $rConditions[] = "(CAST(v.CheckID AS VARCHAR(50)) LIKE ? OR CAST(v.CheckNumber AS VARCHAR(50)) LIKE ?
+                            OR v.Outlet LIKE ? OR v.Bank LIKE ? OR v.Type LIKE ? OR v.Action LIKE ? OR v.Remarks LIKE ?)";
         array_push($rParams, $term, $term, $term, $term, $term, $term, $term);
     }
     if ($RDateFrom !== '') {
-        $rConditions[] = "cr.RDate >= ?";
+        $rConditions[] = "v.RDate >= ?";
         $rParams[]     = $RDateFrom;
     }
     if ($RDateTo !== '') {
-        $rConditions[] = "cr.RDate <= ?";
+        $rConditions[] = "v.RDate <= ?";
         $rParams[]     = $RDateTo;
     }
 
@@ -235,15 +258,15 @@ if ($Tab === 'cheques') {
     $rPrint  = ($_GET['print'] ?? '') === '1';
     if ($rExport === 'csv' || $rPrint) {
         $allStmt = $pdo->prepare("
-            SELECT cr.CheckRID, cr.CheckID,
-                   CONVERT(varchar(10), cr.RDate, 23) AS RDateFmt,
-                   cr.Type, cr.Remarks, cr.Action, cr.UserID, cr.ARRefNo,
-                   CONVERT(varchar(16), cr.DateTimeInput, 120) AS DateTimeInputFmt,
-                   c.Outlet, c.Bank, c.CheckNumber, c.Amount, c.Department
-            FROM dbo.ChequesReturn cr
-            LEFT JOIN dbo.Cheques c ON c.TransactionID = cr.CheckID
+            SELECT v.CheckRID, v.CheckID,
+                   CONVERT(varchar(10), v.RDate, 23) AS RDateFmt,
+                   v.Type, v.Remarks, v.Action, v.UserID, v.ARRefNo,
+                   CONVERT(varchar(16), v.DateTimeInput, 120) AS DateTimeInputFmt,
+                   v.Outlet, v.Bank, v.CheckNumber, v.Amount, v.Department,
+                   v.ARCollectionNo, v.Status
+            FROM dbo.View_CheckDeposit_Records v
             $rWhereSql
-            ORDER BY c.Outlet, cr.CheckID, cr.RDate, cr.CheckRID
+            ORDER BY v.Outlet, v.CheckID, v.RDate, v.CheckRID
         ");
         $allStmt->execute($rParams);
         $allRows = $allStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -282,8 +305,8 @@ if ($Tab === 'cheques') {
             fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM so Excel reads it correctly
             fputcsv($out, [
                 'Return ID', 'Ref# (Check ID)', 'Department', 'Outlet', 'Bank', 'Check #', 'Amount',
-                'Return Date', 'Type', 'Action Taken', 'Remarks', 'AR Ref#', 'Recorded By', 'Recorded At',
-                'Times This Check Returned', 'Total Returns for Outlet'
+                'Return Date', 'Type', 'Action Taken', 'Remarks', 'AR Ref#', 'AR Collection No.', 'Status',
+                'Recorded By', 'Recorded At', 'Times This Check Returned', 'Total Returns for Outlet'
             ], ',', '"', '\\');
             foreach ($allRows as $ar) {
                 $ckNo = (string)($ar['CheckNumber'] ?? '');
@@ -305,6 +328,8 @@ if ($Tab === 'cheques') {
                     $csvText($ar['Action']),
                     $csvText($ar['Remarks']),
                     $ar['ARRefNo'] ?? '',
+                    $csvText($ar['ARCollectionNo'] ?? ''),
+                    $csvText($ar['Status'] ?? ''),
                     $csvText($ar['UserID']),
                     $ar['DateTimeInputFmt'],
                     $checkCounts[$ar['CheckID']],
@@ -316,7 +341,13 @@ if ($Tab === 'cheques') {
         }
 
         // ---- Print view (standalone page, opens the print dialog automatically) ----
+        // Return Details table must be sorted by Return Date, newest first.
+        usort($allRows, function ($a, $b) {
+            return strcmp($b['RDateFmt'], $a['RDateFmt']);
+        });
+
         $filterBits = [];
+        if ($RDept !== '')     $filterBits[] = 'Department: ' . $RDept;
         if ($RType !== '')     $filterBits[] = 'Type: ' . $RType;
         if ($RDateFrom !== '') $filterBits[] = 'Return Date From: ' . $RDateFrom;
         if ($RDateTo !== '')   $filterBits[] = 'Return Date To: ' . $RDateTo;
@@ -389,6 +420,7 @@ if ($Tab === 'cheques') {
     <thead>
         <tr>
             <th>Ref#</th>
+            <th>Department</th>
             <th>Outlet</th>
             <th>Bank</th>
             <th>Check#</th>
@@ -398,6 +430,8 @@ if ($Tab === 'cheques') {
             <th>Action Taken</th>
             <th>Remarks</th>
             <th>AR Ref#</th>
+            <th>AR Collection No.</th>
+            <th>Status</th>
             <th>Recorded By</th>
             <th class="r">Times This Check Returned</th>
         </tr>
@@ -406,6 +440,7 @@ if ($Tab === 'cheques') {
         <?php if ($allRows): foreach ($allRows as $ar): ?>
         <tr>
             <td><?php echo htmlspecialchars($ar['CheckID']); ?></td>
+            <td><?php echo htmlspecialchars($ar['Department']); ?></td>
             <td><?php echo htmlspecialchars($ar['Outlet']); ?></td>
             <td><?php echo htmlspecialchars($ar['Bank']); ?></td>
             <td><?php echo htmlspecialchars($ar['CheckNumber']); ?></td>
@@ -415,11 +450,13 @@ if ($Tab === 'cheques') {
             <td><?php echo htmlspecialchars($ar['Action']); ?></td>
             <td><?php echo htmlspecialchars($ar['Remarks']); ?></td>
             <td><?php echo htmlspecialchars($ar['ARRefNo'] ?? ''); ?></td>
+            <td><?php echo htmlspecialchars($ar['ARCollectionNo'] ?? ''); ?></td>
+            <td><?php echo htmlspecialchars($ar['Status'] ?? ''); ?></td>
             <td><?php echo htmlspecialchars($ar['UserID']); ?></td>
             <td class="r"><?php echo (int)$checkCounts[$ar['CheckID']]; ?></td>
         </tr>
         <?php endforeach; else: ?>
-        <tr><td colspan="12">No returns found.</td></tr>
+        <tr><td colspan="15">No returns found.</td></tr>
         <?php endif; ?>
     </tbody>
 </table>
@@ -433,8 +470,7 @@ if ($Tab === 'cheques') {
 
     // --- Stat total ---
     $rStatSql = "SELECT COUNT(*) AS TotalCount
-                 FROM dbo.ChequesReturn cr
-                 LEFT JOIN dbo.Cheques c ON c.TransactionID = cr.CheckID
+                 FROM dbo.View_CheckDeposit_Records v
                  $rWhereSql";
     $rStatStmt = $pdo->prepare($rStatSql);
     $rStatStmt->execute($rParams);
@@ -448,15 +484,15 @@ if ($Tab === 'cheques') {
 
     // --- Paged data ---
     $rDataSql = "
-        SELECT cr.CheckRID, cr.CheckID,
-               CONVERT(varchar(10), cr.RDate, 23) AS RDateFmt,
-               cr.Type, cr.Remarks, cr.Action, cr.UserID, cr.ARRefNo,
-               CONVERT(varchar(16), cr.DateTimeInput, 120) AS DateTimeInputFmt,
-               c.Outlet, c.Bank, c.CheckNumber, c.Amount, c.Department
-        FROM dbo.ChequesReturn cr
-        LEFT JOIN dbo.Cheques c ON c.TransactionID = cr.CheckID
+        SELECT v.CheckRID, v.CheckID,
+               CONVERT(varchar(10), v.RDate, 23) AS RDateFmt,
+               v.Type, v.Remarks, v.Action, v.UserID, v.ARRefNo,
+               CONVERT(varchar(16), v.DateTimeInput, 120) AS DateTimeInputFmt,
+               v.Outlet, v.Bank, v.CheckNumber, v.Amount, v.Department,
+               v.ARCollectionNo, v.Status
+        FROM dbo.View_CheckDeposit_Records v
         $rWhereSql
-        ORDER BY cr.DateTimeInput DESC
+        ORDER BY v.DateTimeInput DESC
         OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
     ";
     $rStmt = $pdo->prepare($rDataSql);
@@ -715,6 +751,16 @@ function chk_qs($overrides = []) {
         .chk-modal .chk-field { width: 100%; }
         .chk-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
         .chk-modal--wide { max-width: 620px; }
+        .chk-modal--iframe {
+            max-width: 1200px; width: 96vw; padding: 0; overflow: hidden;
+            display: flex; flex-direction: column; max-height: 94vh;
+        }
+        .chk-modal--iframe .chk-modal-iframe-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 18px; border-bottom: 1.5px solid #e2e5ea; flex-shrink: 0;
+        }
+        .chk-modal--iframe .chk-modal-iframe-head h3 { font-size: 15px; font-weight: 600; }
+        .chk-modal--iframe iframe { width: 100%; height: 88vh; border: none; display: block; }
         .chk-detail-grid {
             display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; margin-bottom: 6px;
         }
@@ -783,6 +829,15 @@ function chk_qs($overrides = []) {
             </select>
         </div>
         <div class="chk-field">
+            <label for="CDept">Department</label>
+            <select id="CDept" name="CDept">
+                <option value="" <?php echo $CDept === '' ? 'selected' : ''; ?>>All</option>
+                <?php foreach ($deptOptions as $opt): ?>
+                <option value="<?php echo htmlspecialchars($opt); ?>" <?php echo $CDept === $opt ? 'selected' : ''; ?>><?php echo htmlspecialchars($opt); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="chk-field">
             <label for="DateFrom">Check Date From</label>
             <input type="date" id="DateFrom" name="DateFrom" value="<?php echo htmlspecialchars($DateFrom); ?>">
         </div>
@@ -797,7 +852,7 @@ function chk_qs($overrides = []) {
         <div class="chk-field">
             <button type="submit" class="chk-btn chk-btn--primary"><i class="bi bi-funnel"></i> Filter</button>
         </div>
-        <?php if ($Search || $Bank || !$DateDefaulted): ?>
+        <?php if ($Search || $Bank || $CDept || !$DateDefaulted): ?>
         <div class="chk-field">
             <a href="cheques.php" class="chk-btn chk-btn--ghost">Clear</a>
         </div>
@@ -831,7 +886,7 @@ function chk_qs($overrides = []) {
                     <tr>
                         <td>
                             <div class="chk-actions">
-                                <a class="chk-btn chk-btn--ghost chk-btn--sm" href="check-details.php?id=<?php echo urlencode($r['TransactionID']); ?>" target="_blank">View</a>
+                                <button type="button" class="chk-btn chk-btn--ghost chk-btn--sm chk-view-open" data-id="<?php echo htmlspecialchars($r['TransactionID']); ?>">View</button>
                                 <?php if (!$viewOnly): ?>
                                 <button type="button" class="chk-btn chk-btn--primary chk-btn--sm chk-return-open"
                                         data-id="<?php echo htmlspecialchars($r['TransactionID']); ?>"
@@ -879,6 +934,15 @@ function chk_qs($overrides = []) {
     <form method="get" class="chk-search-card">
         <input type="hidden" name="tab" value="returned">
         <div class="chk-field">
+            <label for="RDept">Department</label>
+            <select id="RDept" name="RDept">
+                <option value="" <?php echo $RDept === '' ? 'selected' : ''; ?>>All</option>
+                <?php foreach ($deptOptions as $opt): ?>
+                <option value="<?php echo htmlspecialchars($opt); ?>" <?php echo $RDept === $opt ? 'selected' : ''; ?>><?php echo htmlspecialchars($opt); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="chk-field">
             <label for="RType">Type</label>
             <select id="RType" name="RType">
                 <option value="" <?php echo $RType === '' ? 'selected' : ''; ?>>All</option>
@@ -902,7 +966,7 @@ function chk_qs($overrides = []) {
         <div class="chk-field">
             <button type="submit" class="chk-btn chk-btn--primary"><i class="bi bi-funnel"></i> Filter</button>
         </div>
-        <?php if ($RSearch || $RType || $RDateFrom || $RDateTo): ?>
+        <?php if ($RSearch || $RType || $RDept || $RDateFrom || $RDateTo): ?>
         <div class="chk-field">
             <a href="cheques.php?tab=returned" class="chk-btn chk-btn--ghost">Clear</a>
         </div>
@@ -922,6 +986,7 @@ function chk_qs($overrides = []) {
                     <tr>
                         <th>Return ID</th>
                         <th>Ref# (Check ID)</th>
+                        <th>Department</th>
                         <th>Outlet</th>
                         <th>Bank</th>
                         <th>Check#</th>
@@ -931,6 +996,8 @@ function chk_qs($overrides = []) {
                         <th>Action Taken</th>
                         <th>Remarks</th>
                         <th>AR Ref#</th>
+                        <th>AR Collection No.</th>
+                        <th>Status</th>
                         <th>Recorded By</th>
                         <th>Recorded At</th>
                     </tr>
@@ -939,7 +1006,8 @@ function chk_qs($overrides = []) {
                     <?php if ($RTotalCount > 0): while ($rr = $rStmt->fetch(PDO::FETCH_ASSOC)): ?>
                     <tr>
                         <td><?php echo htmlspecialchars($rr['CheckRID']); ?></td>
-                        <td><a href="check-details.php?id=<?php echo urlencode($rr['CheckID']); ?>" target="_blank"><?php echo htmlspecialchars($rr['CheckID']); ?></a></td>
+                        <td><a href="#" class="chk-view-open" data-id="<?php echo htmlspecialchars($rr['CheckID']); ?>"><?php echo htmlspecialchars($rr['CheckID']); ?></a></td>
+                        <td><?php echo htmlspecialchars($rr['Department']); ?></td>
                         <td><?php echo htmlspecialchars($rr['Outlet']); ?></td>
                         <td><?php echo htmlspecialchars($rr['Bank']); ?></td>
                         <td><?php echo htmlspecialchars($rr['CheckNumber']); ?></td>
@@ -949,11 +1017,13 @@ function chk_qs($overrides = []) {
                         <td><?php echo htmlspecialchars($rr['Action']); ?></td>
                         <td><?php echo htmlspecialchars($rr['Remarks']); ?></td>
                         <td><?php echo htmlspecialchars($rr['ARRefNo'] ?? ''); ?></td>
+                        <td><?php echo htmlspecialchars($rr['ARCollectionNo'] ?? ''); ?></td>
+                        <td><?php echo htmlspecialchars($rr['Status'] ?? ''); ?></td>
                         <td><?php echo htmlspecialchars($rr['UserID']); ?></td>
                         <td><?php echo htmlspecialchars($rr['DateTimeInputFmt']); ?></td>
                     </tr>
                     <?php endwhile; else: ?>
-                    <tr><td colspan="13" class="chk-empty">No returned cheques found.</td></tr>
+                    <tr><td colspan="16" class="chk-empty">No returned cheques found.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -1097,6 +1167,16 @@ function chk_qs($overrides = []) {
 </div>
 </div>
 
+<!-- ── Check Details Modal (embeds check-details.php) ───────────── -->
+<div class="chk-modal-backdrop" id="chkViewBackdrop">
+    <div class="chk-modal chk-modal--iframe">
+        <div class="chk-modal-iframe-head">
+            <h3>Check Details</h3>
+            <button type="button" class="chk-btn chk-btn--ghost chk-btn--sm" id="chkViewClose">Close</button>
+        </div>
+        <iframe id="chkViewFrame" src="about:blank" title="Check Details"></iframe>
+    </div>
+</div>
 
 <?php if (!$viewOnly): ?>
 <!-- ── Return Modal ─────────────────────────────── -->
@@ -1301,6 +1381,34 @@ function chk_qs($overrides = []) {
 })();
 </script>
 <?php endif; ?>
+
+<script>
+(function () {
+    var backdrop = document.getElementById('chkViewBackdrop');
+    var frame    = document.getElementById('chkViewFrame');
+    var closeBtn = document.getElementById('chkViewClose');
+
+    document.querySelectorAll('.chk-view-open').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            frame.src = 'check-details.php?id=' + encodeURIComponent(link.getAttribute('data-id'));
+            backdrop.classList.add('open');
+        });
+    });
+
+    function closeModal() {
+        backdrop.classList.remove('open');
+        frame.src = 'about:blank'; // stop it running / reset for next open
+    }
+    closeBtn.addEventListener('click', closeModal);
+    backdrop.addEventListener('click', function (e) {
+        if (e.target === backdrop) closeModal();
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && backdrop.classList.contains('open')) closeModal();
+    });
+})();
+</script>
 
 <script>
 (function () {

@@ -45,12 +45,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form_action'] ?? '') === '
         $action  = trim($_POST['Action'] ?? '');
 
         if ($checkId > 0 && $rDate !== '' && $type !== '' && $action !== '' && $remarks !== '') {
-            // ARRefNo is always 0 for a return recorded from this screen.
+            // ARRefNo defaults to 0 for a normal "Return", but must stay NULL
+            // for "Redeposit" — 0 is a real value users record for Return-type
+            // entries, so it can't also double as "not applicable".
+            // Note: ARCollectionNo is not a column on this table — it's pulled
+            // in by View_CheckDeposit_Records via a join on ARRefNo, so it
+            // isn't set directly here.
+            $isRedeposit = (strcasecmp(trim($type), 'Redeposit') === 0);
+            $arRefNo = $isRedeposit ? null : 0;
+
             $ins = $pdo->prepare(
                 "INSERT INTO dbo.ChequesReturn (CheckID, RDate, Type, Remarks, Action, UserID, DateTimeInput, ARRefNo)
-                 VALUES (?, ?, ?, ?, ?, ?, GETDATE(), 0)"
+                 VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)"
             );
-            $ins->execute([$checkId, $rDate, $type, $remarks, $action, $CurrentUser]);
+            $ins->execute([$checkId, $rDate, $type, $remarks, $action, $CurrentUser, $arRefNo]);
             $_SESSION['chk_flash'] = ['type' => 'success', 'msg' => "Return recorded for check #{$checkId}."];
         } else {
             $_SESSION['chk_flash'] = ['type' => 'error', 'msg' => 'All fields are required: Return Date, Type, Action Taken and Remarks.'];
@@ -260,7 +268,7 @@ if ($Tab === 'cheques') {
         $allStmt = $pdo->prepare("
             SELECT v.CheckRID, v.CheckID,
                    CONVERT(varchar(10), v.RDate, 23) AS RDateFmt,
-                   v.Type, v.Remarks, v.Action, v.UserID, v.ARRefNo,
+                   v.Type, v.Remarks, v.Action, v.UserID, v.ForCollectionNo,
                    CONVERT(varchar(16), v.DateTimeInput, 120) AS DateTimeInputFmt,
                    v.Outlet, v.Bank, v.CheckNumber, v.Amount, v.Department,
                    v.ARCollectionNo, v.Status
@@ -305,7 +313,7 @@ if ($Tab === 'cheques') {
             fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM so Excel reads it correctly
             fputcsv($out, [
                 'Return ID', 'Ref# (Check ID)', 'Department', 'Outlet', 'Bank', 'Check #', 'Amount',
-                'Return Date', 'Type', 'Action Taken', 'Remarks', 'AR Ref#', 'AR Collection No.', 'Status',
+                'Return Date', 'Type', 'Action Taken', 'Remarks', 'For Collection No.', 'AR Collection No.', 'Status',
                 'Recorded By', 'Recorded At', 'Times This Check Returned', 'Total Returns for Outlet'
             ], ',', '"', '\\');
             foreach ($allRows as $ar) {
@@ -327,7 +335,7 @@ if ($Tab === 'cheques') {
                     $csvText($ar['Type']),
                     $csvText($ar['Action']),
                     $csvText($ar['Remarks']),
-                    $ar['ARRefNo'] ?? '',
+                    $csvText($ar['ForCollectionNo'] ?? ''),
                     $csvText($ar['ARCollectionNo'] ?? ''),
                     $csvText($ar['Status'] ?? ''),
                     $csvText($ar['UserID']),
@@ -429,7 +437,7 @@ if ($Tab === 'cheques') {
             <th>Type</th>
             <th>Action Taken</th>
             <th>Remarks</th>
-            <th>AR Ref#</th>
+            <th>For Collection No.</th>
             <th>AR Collection No.</th>
             <th>Status</th>
             <th>Recorded By</th>
@@ -449,7 +457,7 @@ if ($Tab === 'cheques') {
             <td><?php echo htmlspecialchars($ar['Type']); ?></td>
             <td><?php echo htmlspecialchars($ar['Action']); ?></td>
             <td><?php echo htmlspecialchars($ar['Remarks']); ?></td>
-            <td><?php echo htmlspecialchars($ar['ARRefNo'] ?? ''); ?></td>
+            <td><?php echo htmlspecialchars($ar['ForCollectionNo'] ?? ''); ?></td>
             <td><?php echo htmlspecialchars($ar['ARCollectionNo'] ?? ''); ?></td>
             <td><?php echo htmlspecialchars($ar['Status'] ?? ''); ?></td>
             <td><?php echo htmlspecialchars($ar['UserID']); ?></td>
@@ -486,7 +494,7 @@ if ($Tab === 'cheques') {
     $rDataSql = "
         SELECT v.CheckRID, v.CheckID,
                CONVERT(varchar(10), v.RDate, 23) AS RDateFmt,
-               v.Type, v.Remarks, v.Action, v.UserID, v.ARRefNo,
+               v.Type, v.Remarks, v.Action, v.UserID, v.ForCollectionNo,
                CONVERT(varchar(16), v.DateTimeInput, 120) AS DateTimeInputFmt,
                v.Outlet, v.Bank, v.CheckNumber, v.Amount, v.Department,
                v.ARCollectionNo, v.Status
@@ -995,7 +1003,7 @@ function chk_qs($overrides = []) {
                         <th>Type</th>
                         <th>Action Taken</th>
                         <th>Remarks</th>
-                        <th>AR Ref#</th>
+                        <th>For Collection No.</th>
                         <th>AR Collection No.</th>
                         <th>Status</th>
                         <th>Recorded By</th>
@@ -1016,7 +1024,7 @@ function chk_qs($overrides = []) {
                         <td><?php echo htmlspecialchars($rr['Type']); ?></td>
                         <td><?php echo htmlspecialchars($rr['Action']); ?></td>
                         <td><?php echo htmlspecialchars($rr['Remarks']); ?></td>
-                        <td><?php echo htmlspecialchars($rr['ARRefNo'] ?? ''); ?></td>
+                        <td><?php echo htmlspecialchars($rr['ForCollectionNo'] ?? ''); ?></td>
                         <td><?php echo htmlspecialchars($rr['ARCollectionNo'] ?? ''); ?></td>
                         <td><?php echo htmlspecialchars($rr['Status'] ?? ''); ?></td>
                         <td><?php echo htmlspecialchars($rr['UserID']); ?></td>

@@ -47,12 +47,10 @@ $anyFilterApplied = ($dateFrom !== '' || $dateTo !== ''
     || (isset($_GET['area'])   && $_GET['area']   !== ''));
 
 if ($dateActive) {
-    $baseFrom = $dateFrom !== '' ? $dateFrom : '1900-01-01';
+    $baseFrom = $dateFrom !== '' ? $dateFrom : date('Y-m-01', strtotime($dateTo));
     $baseTo   = $dateTo   !== '' ? $dateTo   : date('Y-m-d');
-} elseif ($anyFilterApplied) {
-    $baseFrom = '1900-01-01';
-    $baseTo   = date('Y-m-d');
 } else {
+    // No date picked: default to current month, even if dept/vtype/plate filters are set
     $baseFrom = date('Y-m-01');
     $baseTo   = date('Y-m-d');
 }
@@ -98,7 +96,7 @@ $plateWhereR = $plateActive ? "AND f.PlateNumber LIKE '%$_plateSafe%'" : '';
 $selDriver    = isset($_GET['driver']) && $_GET['driver'] !== '' ? trim($_GET['driver']) : '';
 $driverActive = ($selDriver !== '');
 $_driverSafe  = str_replace("'", "''", $selDriver);
-$driverWhereF = $driverActive ? "AND EXISTS (SELECT 1 FROM [dbo].[teamschedule] td2 WHERE td2.PlateNumber = ts.PlateNumber AND td2.ScheduleDate = ts.ScheduleDate AND td2.Position LIKE '%DRIVER%' AND td2.Employee_Name LIKE '%$_driverSafe%')" : '';
+$driverWhereF = $driverActive ? "AND EXISTS (SELECT 1 FROM [dbo].[Schedule] s2 WHERE s2.TSID = ts.TruckScheduleID AND s2.Position LIKE '%DRIVER%' AND s2.Employee_Name LIKE '%$_driverSafe%')" : '';
 $driverWhereR = $driverActive ? "AND f.Requested LIKE '%$_driverSafe%'" : '';
 
 // ============================================================
@@ -223,7 +221,6 @@ function loadAnomalyCount($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhere
         AllRecords AS (
             SELECT f.FuelID, f.PlateNumber, f.Fueldate, f.Area, ROUND(f.Liters,2) AS Liters
             FROM [dbo].[View_Fuel] f
-            LEFT JOIN [dbo].[TruckSchedule] ts ON ts.PlateNumber = f.PlateNumber AND ts.ScheduleDate = f.Fueldate
             LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
             WHERE f.Fueldate BETWEEN '$blFrom' AND '$blTo'
               AND f.Area IS NOT NULL AND f.Liters IS NOT NULL
@@ -272,11 +269,13 @@ function loadLookups($conn, $selVtype, $_selVtypeSafe) {
             SELECT DISTINCT f.PlateNumber FROM [dbo].[View_Fuel] f
             LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
             WHERE v.Vehicletype = '$_selVtypeSafe' AND f.PlateNumber IS NOT NULL AND f.PlateNumber <> ''
+              AND f.Fueldate >= DATEADD(YEAR, -1, GETDATE())
             ORDER BY f.PlateNumber");
     } else {
         $plateList = runQuery($conn, "
             SELECT DISTINCT PlateNumber FROM [dbo].[View_Fuel]
             WHERE PlateNumber IS NOT NULL AND PlateNumber <> ''
+              AND Fueldate >= DATEADD(YEAR, -1, GETDATE())
             ORDER BY PlateNumber");
     }
     return [$deptList, $vtypeList, $plateList];

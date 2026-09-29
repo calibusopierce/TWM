@@ -12,7 +12,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'payhist' && isset($_SERVER['H
     $rows = [];
     if ($empid !== '' && $sdidVal !== '') {
         $rows = runQuery($conn, "
-            SELECT [SPPID],[AmountDue],[PaidAmount],[Balance],[DatePaid],[DateGenerate],[RefNo],[StatusofShort],[Remarks]
+            SELECT [SPPID],[AmountDue],[PaidAmount],[Balance],[DatePaid],[DateGenerate],[RefNo],[StatusofShort],[Remarks],[PaymentMethod],[PaymentID]
             FROM [dbo].[View_ShortPaymentPaidDetails]
             WHERE EmployeeID = '$empid' AND SDID = '$sdidVal'
             ORDER BY DateGenerate ASC
@@ -2571,6 +2571,8 @@ function openPayHistory(empId, sdid, empName) {
                 <td class="mono r" style="color:var(--c-green);font-weight:700;">₱${paid.toLocaleString('en-PH',{minimumFractionDigits:2})} <i class="bi bi-check-circle-fill" style="font-size:.65rem"></i></td>
                 <td class="mono r" style="color:${bal > 0 ? 'var(--c-red)' : 'var(--c-green)'};font-weight:800;">${bal > 0 ? '▼ ' : '✓ '}₱${bal.toLocaleString('en-PH',{minimumFractionDigits:2})}</td>
                 <td style="font-size:.72rem;">${escHtml(r.RefNo ?? '—')}</td>
+                <td style="font-size:.72rem;">${escHtml(r.PaymentMethod || '—')}</td>
+                <td style="font-size:.72rem;">${escHtml(r.PaymentID ?? '—')}</td>
                 <td style="font-size:.72rem;color:var(--c-dim);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(r.Remarks??'')}">${escHtml(r.Remarks || '—')}</td>
             </tr>`;
         }).join('');
@@ -2585,6 +2587,8 @@ function openPayHistory(empId, sdid, empName) {
                     <th style="text-align:left">Paid</th>
                     <th style="text-align:left">Balance</th>
                     <th>Ref No</th>
+                    <th>Payment Method</th>
+                    <th>Payment ID</th>
                     <th>Remarks</th>
                 </tr>
             </thead>

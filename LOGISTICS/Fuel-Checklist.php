@@ -11,16 +11,21 @@ require_once __DIR__ . '/fuel_shared.php';
 $activeTab = 'checklist';
 $checklistFilterActive = $dateActive || $vtypeActive || $plateActive || $driverActive;
 
+if (!$dateActive) { $baseFrom = date('Y-m-01'); }
 $checklistFrom = $baseFrom;
 $checklistTo   = $baseTo;
 
 // Prevent infinite execution
-set_time_limit(15);
+set_time_limit(90);
 ini_set('memory_limit', '256M');
 
 $tab = 'checklist';
+$_t0 = microtime(true);
 [$deptList, $vtypeList, $plateList] = loadLookups($conn, $selVtype, $_selVtypeSafe);
+$_t1 = microtime(true);
 $stats        = loadStatCards($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhereFuel, $filterSQL);
+$_t2 = microtime(true);
+error_log(sprintf('CHECKLIST lookups=%.2fs stats=%.2fs', $_t1-$_t0, $_t2-$_t1));
 $anomalyCount = loadAnomalyCount($conn, $baseFrom, $baseTo, $modeVtypeWhere, $deptWhereFuel, $filterSQL);
 ['trucks' => $totalTrucks, 'liters' => $totalLiters, 'amount' => $totalAmount, 'refuels' => $totalRefuels] = $stats;
 
@@ -29,37 +34,70 @@ $data = [];
 if ($checklistFilterActive) {
 
     $data = runQuery($conn, "
-        SELECT TOP 500
-            DAY(ts.ScheduleDate) AS [Day],
-            ts.ScheduleDate AS [Date],
-            CONVERT(VARCHAR(8), f.FuelTime, 108) AS [Fuel Time],
-            ts.PlateNumber AS [Plate Number],
-            ts.Department AS [Department],
-            v.Vehicletype AS [Vehicle Type],
-            (SELECT TOP 1 td.Employee_Name 
-             FROM [dbo].[teamschedule] td 
-             WHERE td.PlateNumber = ts.PlateNumber 
-               AND td.ScheduleDate = ts.ScheduleDate 
-               AND td.Position LIKE '%DRIVER%') AS [Sched. Driver],
-            ts.Area AS [Sched. Area],
-            f.Requested AS [Driver],
-            f.ORnumber AS [INV #],
-            ROUND(f.Liters, 2) AS [Liters],
-            ROUND(f.Amount, 2) AS [Amount],
-            CASE WHEN f.FuelID IS NOT NULL THEN 'REFUELED' ELSE 'NOT REFUELED' END AS [Status]
-        FROM [dbo].[TruckSchedule] ts
-        LEFT JOIN [dbo].[Tbl_fuel] f 
-            ON f.PlateNumber = ts.PlateNumber 
-           AND f.Fueldate = ts.ScheduleDate
-        LEFT JOIN [dbo].[Vehicle] v 
-            ON v.PlateNumber = ts.PlateNumber
-        WHERE ts.ScheduleDate BETWEEN '$baseFrom' AND '$baseTo'
-          AND ts.PlateNumber IS NOT NULL 
-          AND ts.PlateNumber <> ''
-          $deptWhereF $vtypeWhereF $plateWhereF $driverWhereF $areaWhereF
-        ORDER BY ts.ScheduleDate DESC");
+        SELECT TOP 20000 * FROM (
+            SELECT
+                DAY(ts.ScheduleDate) AS [Day],
+                ts.ScheduleDate AS [Date],
+                CONVERT(VARCHAR(8), f.FuelTime, 108) AS [Fuel Time],
+                ts.PlateNumber AS [Plate Number],
+                ts.Department AS [Department],
+                v.Vehicletype AS [Vehicle Type],
+                (SELECT TOP 1 s.Employee_Name
+                 FROM [dbo].[Schedule] s
+                 WHERE s.TSID = ts.TruckScheduleID
+                   AND s.Position LIKE '%DRIVER%') AS [Sched. Driver],
+                ts.Area AS [Sched. Area],
+                f.Requested AS [Driver],
+                f.ORnumber AS [INV #],
+                ROUND(f.Liters, 2) AS [Liters],
+                ROUND(f.Amount, 2) AS [Amount],
+                CASE WHEN f.FuelID IS NOT NULL THEN 'REFUELED' ELSE 'NOT REFUELED' END AS [Status]
+            FROM [dbo].[TruckSchedule] ts
+            LEFT JOIN [dbo].[Tbl_fuel] f 
+                ON f.PlateNumber = ts.PlateNumber 
+               AND f.Fueldate = ts.ScheduleDate
+            LEFT JOIN [dbo].[Vehicle] v 
+                ON v.PlateNumber = ts.PlateNumber
+            WHERE ts.ScheduleDate BETWEEN '$baseFrom' AND '$baseTo'
+              AND ts.PlateNumber IS NOT NULL 
+              AND ts.PlateNumber <> ''
+              $deptWhereF $vtypeWhereF $plateWhereF $driverWhereF $areaWhereF
+
+            UNION ALL
+
+            SELECT
+                DAY(f.Fueldate) AS [Day],
+                f.Fueldate AS [Date],
+                CONVERT(VARCHAR(8), f.FuelTime, 108) AS [Fuel Time],
+                f.PlateNumber AS [Plate Number],
+                f.Department AS [Department],
+                v.Vehicletype AS [Vehicle Type],
+                CAST(NULL AS NVARCHAR(100)) AS [Sched. Driver],
+                CAST(NULL AS NVARCHAR(100)) AS [Sched. Area],
+                f.Requested AS [Driver],
+                f.ORnumber AS [INV #],
+                ROUND(f.Liters, 2) AS [Liters],
+                ROUND(f.Amount, 2) AS [Amount],
+                'UNSCHEDULED REFUEL' AS [Status]
+            FROM [dbo].[Tbl_fuel] f
+            LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
+            WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
+              AND f.PlateNumber IS NOT NULL
+              AND f.PlateNumber <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM [dbo].[TruckSchedule] ts2
+                  WHERE ts2.PlateNumber = f.PlateNumber
+                    AND ts2.ScheduleDate = f.Fueldate
+              )
+              $deptWhereFuel $vtypeWhereF $plateWhereR $driverWhereR $areaWhereR
+        ) AS combined
+        ORDER BY [Date] DESC");
 }
 
+error_log(sprintf('CHECKLIST main query done at %.2fs total, rows=%d', microtime(true) - $_t0, count($data)));
+if (empty($data) && $checklistFilterActive && ($__e = sqlsrv_errors())) {
+    error_log('CHECKLIST SQL ERROR: ' . print_r($__e, true));
+}
 $rowLimit    = 20;
 $totalRows   = count($data);
 $totalPages  = max(1, (int)ceil($totalRows / $rowLimit));
@@ -69,8 +107,9 @@ $displayData = array_slice($data, $offset, $rowLimit);
 $prevUrl = $curPage > 1           ? pageUrl($curPage - 1) : '';
 $nextUrl = $curPage < $totalPages ? pageUrl($curPage + 1) : '';
 
-$refueledCount    = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'REFUELED'));
-$notRefueledCount = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'NOT REFUELED'));
+$refueledCount     = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'REFUELED'));
+$notRefueledCount  = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'NOT REFUELED'));
+$unscheduledCount  = count(array_filter($data, fn($r) => ($r['Status'] ?? '') === 'UNSCHEDULED REFUEL'));
 
 
 
@@ -136,6 +175,7 @@ $notRefueledCount = count(array_filter($data, fn($r) => ($r['Status'] ?? '') ===
         <span class="table-count"><?= $totalRows ?> rows</span>
         <span class="table-count" style="background:#dcfce7;color:#166534;border-color:#86efac;">✅ <?= $refueledCount ?> Refueled</span>
         <span class="table-count" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5;">❌ <?= $notRefueledCount ?> Not Refueled</span>
+        <span class="table-count" style="background:#fef3c7;color:#92400e;border-color:#fcd34d;">⚠️ <?= $unscheduledCount ?> Unscheduled Refuel</span>
       </div>
       <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
         <span style="background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;padding:.25rem .6rem;border-radius:.4rem;font-size:.8rem;">
@@ -174,23 +214,31 @@ $notRefueledCount = count(array_filter($data, fn($r) => ($r['Status'] ?? '') ===
           <?php endif; ?>
         </div></td></tr>
       <?php else: foreach ($displayData as $row):
-          $refueled = (($row['Status'] ?? '') === 'REFUELED');
-          $rowClass = $refueled ? 'row-refueled' : 'row-not-refueled';
-          $dateVal  = $row['Date'] instanceof DateTime ? $row['Date']->format('Y-m-d') : htmlspecialchars($row['Date'] ?? '');
+          $status      = $row['Status'] ?? '';
+          $refueled    = ($status === 'REFUELED');
+          $unscheduled = ($status === 'UNSCHEDULED REFUEL');
+          $hasFuel     = $refueled || $unscheduled;
+          $rowClass    = $refueled ? 'row-refueled' : ($unscheduled ? '' : 'row-not-refueled');
+          $rowStyle    = $unscheduled ? ' style="background:#fffbeb;"' : '';
+          $dateVal     = $row['Date'] instanceof DateTime ? $row['Date']->format('Y-m-d') : htmlspecialchars($row['Date'] ?? '');
       ?>
-        <tr class="<?= $rowClass ?>">
+        <tr class="<?= $rowClass ?>"<?= $rowStyle ?>>
           <td class="right mono dim bold"><?= htmlspecialchars((string)($row['Day'] ?? '—')) ?></td>
           <td class="mono dim"><?= $dateVal ?></td>
-          <td class="mono dim"><?= $refueled ? htmlspecialchars($row['Fuel Time'] ?? '—') : '<span class="text-muted">—</span>' ?></td>
+          <td class="mono dim"><?= $hasFuel ? htmlspecialchars($row['Fuel Time'] ?? '—') : '<span class="text-muted">—</span>' ?></td>
           <td><span class="plate"><?= htmlspecialchars($row['Plate Number'] ?? '—') ?></span></td>
           <td><?= deptBadge($row['Department'] ?? '') ?></td>
           <td class="dim"><?= htmlspecialchars($row['Vehicle Type'] ?? '—') ?></td>
-          <td class="dim"><?= htmlspecialchars($row['Sched. Driver'] ?? '—') ?></td>
-          <td class="dim"><?= htmlspecialchars($row['Sched. Area'] ?? '—') ?></td>
-          <td class="mono dim"><?= $refueled ? htmlspecialchars($row['INV #'] ?? '—') : '<span class="text-muted">—</span>' ?></td>
-          <td class="right mono bold"><?= $refueled ? fmt($row['Liters']) . ' L' : '<span class="text-muted">—</span>' ?></td>
-          <td class="right mono bold"><?= $refueled ? peso($row['Amount']) : '<span class="text-muted">—</span>' ?></td>
-          <td><?= $refueled ? "<span class='badge badge-everyday'>✅ Refueled</span>" : "<span class='badge badge-norefuel'>❌ Not Refueled</span>" ?></td>
+          <td class="dim"><?= $unscheduled ? '<span class="text-muted">—</span>' : htmlspecialchars($row['Sched. Driver'] ?? '—') ?></td>
+          <td class="dim"><?= $unscheduled ? '<span class="text-muted">—</span>' : htmlspecialchars($row['Sched. Area'] ?? '—') ?></td>
+          <td class="mono dim"><?= $hasFuel ? htmlspecialchars($row['INV #'] ?? '—') : '<span class="text-muted">—</span>' ?></td>
+          <td class="right mono bold"><?= $hasFuel ? fmt($row['Liters']) . ' L' : '<span class="text-muted">—</span>' ?></td>
+          <td class="right mono bold"><?= $hasFuel ? peso($row['Amount']) : '<span class="text-muted">—</span>' ?></td>
+          <td><?php
+              if ($refueled) echo "<span class='badge badge-everyday'>✅ Refueled</span>";
+              elseif ($unscheduled) echo "<span class='badge' style='background:#fef3c7;color:#92400e;border:1px solid #fcd34d;'>⚠️ Unscheduled Refuel</span>";
+              else echo "<span class='badge badge-norefuel'>❌ Not Refueled</span>";
+          ?></td>
         </tr>
       <?php endforeach; endif; ?>
       </tbody>
@@ -221,16 +269,10 @@ $notRefueledCount = count(array_filter($data, fn($r) => ($r['Status'] ?? '') ===
  * Prints the Refuel Checklist table exactly as it looks on screen:
  *   • Green rows  → REFUELED
  *   • Pink rows   → NOT REFUELED
+ *   • Amber rows  → UNSCHEDULED REFUEL
  *   • Plate badges (blue pill)
  *   • Dept badges  (color-coded pill)
  *   • Monospace numbers, dashes for empty values
- *
- * Fixes vs old version:
- *   1. Moved OUT of the submit event listener (now top-level)
- *   2. Reads from _checklistData (set by renderSharedJS)
- *   3. Faithful green/red row highlighting matching the screen UI
- *   4. Page-break-inside: avoid on each row
- *   5. Pop-up hint if blocked
  * ─────────────────────────────────────────────────────────────────
  * Expected global vars (set in renderSharedJS PHP output):
  *   _checklistData  — array of row objects
@@ -284,21 +326,25 @@ function checklistPrint() {
         return `<span class="plate-badge">${esc(plate)}</span>`;
     }
 
-    function statusBadgeHtml(refueled) {
-        return refueled
-            ? `<span class="badge badge-refueled">✅ REFUELED</span>`
-            : `<span class="badge badge-notrefueled">✕ NOT REFUELED</span>`;
+    function statusBadgeHtml(status) {
+        if (status === 'REFUELED') return `<span class="badge badge-refueled">✅ REFUELED</span>`;
+        if (status === 'UNSCHEDULED REFUEL') return `<span class="badge badge-unscheduled">⚠️ UNSCHEDULED</span>`;
+        return `<span class="badge badge-notrefueled">✕ NOT REFUELED</span>`;
     }
 
     // ── Summary counts ───────────────────────────────────────────────
     const refueledCount    = rows.filter(r => String(r['Status']||'').toUpperCase() === 'REFUELED').length;
-    const notRefueledCount = rows.length - refueledCount;
+    const unscheduledCount = rows.filter(r => String(r['Status']||'').toUpperCase() === 'UNSCHEDULED REFUEL').length;
+    const notRefueledCount = rows.length - refueledCount - unscheduledCount;
 
     // ── Build table rows ─────────────────────────────────────────────
     let tbodyHtml = '';
     rows.forEach((row, i) => {
-        const refueled = String(row['Status'] || '').toUpperCase() === 'REFUELED';
-        const rowClass = refueled ? 'row-refueled' : 'row-not-refueled';
+        const status      = String(row['Status'] || '').toUpperCase();
+        const refueled    = (status === 'REFUELED');
+        const unscheduled = (status === 'UNSCHEDULED REFUEL');
+        const hasFuel      = refueled || unscheduled;
+        const rowClass = refueled ? 'row-refueled' : (unscheduled ? 'row-unscheduled' : 'row-not-refueled');
 
         // Format date
         let dateVal = row['Date'] || '';
@@ -308,16 +354,16 @@ function checklistPrint() {
         tbodyHtml += `<tr class="${rowClass}">
             <td class="center mono bold">${esc(String(row['Day'] || '—'))}</td>
             <td class="mono">${esc(dateVal) || '<span class="dim-dash">—</span>'}</td>
-            <td class="mono center">${refueled ? esc(row['Fuel Time'] || '—') : '<span class="dim-dash">—</span>'}</td>
+            <td class="mono center">${hasFuel ? esc(row['Fuel Time'] || '—') : '<span class="dim-dash">—</span>'}</td>
             <td class="center">${plateBadgeHtml(row['Plate Number'])}</td>
             <td class="center">${deptBadgeHtml(row['Department'] || '—')}</td>
             <td>${esc(row['Vehicle Type'] || '—')}</td>
-            <td>${esc(row['Sched. Driver'] || '—')}</td>
-            <td>${esc(row['Sched. Area'] || '—')}</td>
-            <td class="mono center">${refueled ? esc(row['INV #'] || '—') : '<span class="dim-dash">—</span>'}</td>
-            <td class="right">${refueled ? fmtL(row['Liters']) : '<span class="dim-dash">—</span>'}</td>
-            <td class="right">${refueled ? fmtP(row['Amount']) : '<span class="dim-dash">—</span>'}</td>
-            <td class="center">${statusBadgeHtml(refueled)}</td>
+            <td>${unscheduled ? '<span class="dim-dash">—</span>' : esc(row['Sched. Driver'] || '—')}</td>
+            <td>${unscheduled ? '<span class="dim-dash">—</span>' : esc(row['Sched. Area'] || '—')}</td>
+            <td class="mono center">${hasFuel ? esc(row['INV #'] || '—') : '<span class="dim-dash">—</span>'}</td>
+            <td class="right">${hasFuel ? fmtL(row['Liters']) : '<span class="dim-dash">—</span>'}</td>
+            <td class="right">${hasFuel ? fmtP(row['Amount']) : '<span class="dim-dash">—</span>'}</td>
+            <td class="center">${statusBadgeHtml(status)}</td>
         </tr>`;
     });
 
@@ -377,6 +423,7 @@ function checklistPrint() {
   .stat-total  { background:#eff6ff; border-color:#93c5fd; color:#1d4ed8; }
   .stat-green  { background:#f0fdf4; border-color:#6ee7b7; color:#047857; }
   .stat-red    { background:#fff1f2; border-color:#fca5a5; color:#b91c1c; }
+  .stat-amber  { background:#fffbeb; border-color:#fcd34d; color:#92400e; }
 
   /* ── Table ────────────────────────────────────────────────── */
   table {
@@ -414,9 +461,13 @@ function checklistPrint() {
   tr.row-not-refueled td {
     background: #fff1f2;         /* light pink/red */
   }
+  tr.row-unscheduled td {
+    background: #fffbeb;         /* light amber */
+  }
   /* Subtle zebra within each group */
   tr.row-refueled:nth-of-type(even) td    { background: #dcfce7; }
   tr.row-not-refueled:nth-of-type(even) td { background: #ffe4e6; }
+  tr.row-unscheduled:nth-of-type(even) td { background: #fef3c7; }
 
   /* ── Badges ───────────────────────────────────────────────── */
   .badge {
@@ -431,6 +482,9 @@ function checklistPrint() {
   }
   .badge-notrefueled {
     background: #fee2e2; color: #991b1b; border-color: #fca5a5;
+  }
+  .badge-unscheduled {
+    background: #fef3c7; color: #92400e; border-color: #fcd34d;
   }
 
   .plate-badge {
@@ -477,6 +531,11 @@ function checklistPrint() {
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
+    tr.row-unscheduled td {
+      background: #fffbeb !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
     tr.row-refueled:nth-of-type(even) td {
       background: #dcfce7 !important;
       -webkit-print-color-adjust: exact;
@@ -484,6 +543,11 @@ function checklistPrint() {
     }
     tr.row-not-refueled:nth-of-type(even) td {
       background: #ffe4e6 !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    tr.row-unscheduled:nth-of-type(even) td {
+      background: #fef3c7 !important;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
@@ -532,6 +596,10 @@ function checklistPrint() {
     <div class="lbl">✕ Not Refueled</div>
     <div class="val">${notRefueledCount}</div>
   </div>
+  <div class="stat-box stat-amber">
+    <div class="lbl">⚠️ Unscheduled</div>
+    <div class="val">${unscheduledCount}</div>
+  </div>
   <div class="stat-box stat-total" style="min-width:110px;">
     <div class="lbl">Refuel Rate</div>
     <div class="val">${rows.length ? Math.round(refueledCount/rows.length*100) : 0}%</div>
@@ -564,7 +632,7 @@ function checklistPrint() {
 <!-- Footer -->
 <div class="rpt-footer">
   <span>Fuel Dashboard &nbsp;·&nbsp; Tradewell Fleet Monitoring System &nbsp;·&nbsp; ${esc(monthLabel)}</span>
-  <span>${rows.length} rows &nbsp;·&nbsp; ${refueledCount} refueled &nbsp;·&nbsp; ${notRefueledCount} not refueled</span>
+  <span>${rows.length} rows &nbsp;·&nbsp; ${refueledCount} refueled &nbsp;·&nbsp; ${notRefueledCount} not refueled &nbsp;·&nbsp; ${unscheduledCount} unscheduled</span>
 </div>
 
 </body>

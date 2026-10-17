@@ -54,12 +54,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form_action'] ?? '') === '
             $isRedeposit = (strcasecmp(trim($type), 'Redeposit') === 0);
             $arRefNo = $isRedeposit ? null : 0;
 
-            $ins = $pdo->prepare(
-                "INSERT INTO dbo.ChequesReturn (CheckID, RDate, Type, Remarks, Action, UserID, DateTimeInput, ARRefNo)
-                 VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)"
+            // Duplicate guard: same check + same return date + same type + same action
+            // is the same return (double-click / double submit).
+            $dupChk = $pdo->prepare(
+                "SELECT TOP 1 1 FROM dbo.ChequesReturn
+                 WHERE CheckID = ? AND CAST(RDate AS date) = ? AND Type = ? AND Action = ?"
             );
-            $ins->execute([$checkId, $rDate, $type, $remarks, $action, $CurrentUser, $arRefNo]);
-            $_SESSION['chk_flash'] = ['type' => 'success', 'msg' => "Return recorded for check #{$checkId}."];
+            $dupChk->execute([$checkId, $rDate, $type, $action]);
+
+            if ($dupChk->fetchColumn()) {
+                $_SESSION['chk_flash'] = ['type' => 'error', 'msg' => "A '{$type}' return with action '{$action}' for check #{$checkId} on {$rDate} is already recorded."];
+            } else {
+                $ins = $pdo->prepare(
+                    "INSERT INTO dbo.ChequesReturn (CheckID, RDate, Type, Remarks, Action, UserID, DateTimeInput, ARRefNo)
+                     VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)"
+                );
+                $ins->execute([$checkId, $rDate, $type, $remarks, $action, $CurrentUser, $arRefNo]);
+                $_SESSION['chk_flash'] = ['type' => 'success', 'msg' => "Return recorded for check #{$checkId}."];
+            }
         } else {
             $_SESSION['chk_flash'] = ['type' => 'error', 'msg' => 'All fields are required: Return Date, Type, Action Taken and Remarks.'];
         }
@@ -1428,13 +1440,19 @@ function chk_qs($overrides = []) {
     var cancelBtn = document.getElementById('chkReturnCancel');
 
     var remarksField = document.getElementById('chkReturnRemarks');
+    var returnSubmitting = false;
     backdrop.querySelector('form').addEventListener('submit', function (e) {
+        if (returnSubmitting) { e.preventDefault(); return; }
         if (remarksField.value.trim() === '') {
             e.preventDefault();
             remarksField.value = '';
             remarksField.focus();
             remarksField.reportValidity();
+            return;
         }
+        returnSubmitting = true;
+        var sb = this.querySelector('button[type="submit"]');
+        if (sb) { sb.disabled = true; sb.textContent = 'Saving...'; }
     });
 
     document.querySelectorAll('.chk-return-open').forEach(function (btn) {

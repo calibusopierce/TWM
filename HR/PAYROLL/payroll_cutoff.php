@@ -1,8 +1,8 @@
 <?php
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
-require_once __DIR__ . '/../auth_check.php';
-require_once __DIR__ . '/../RBAC/rbac_helper.php';
-require_once __DIR__ . '/../test_sqlsrv.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 auth_check();
 rbac_gate($pdo, 'payroll_cutoff');
 
@@ -322,7 +322,7 @@ function deptLabel(string $d): string {
 $topbar_page = 'hr_attendance';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
 $hr_active = 'payroll_cutoff';
-require_once __DIR__ . '/hr_nav.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/HR/hr_nav.php';
 ?>
 
 <!-- ── Page Header ───────────────────────────────────────── -->

@@ -706,6 +706,21 @@ HTML;
       box-shadow: 0 4px 14px rgba(5,150,105,.3);
     }
     .btn-submit-final:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(5,150,105,.38); }
+    #submitOverlay {
+      display: none; position: fixed; inset: 0; z-index: 99999;
+      background: rgba(15,23,42,.65); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center; flex-direction: column;
+      gap: 1rem; color: #fff; text-align: center; padding: 1rem;
+    }
+    #submitOverlay.show { display: flex; }
+    #submitOverlay .so-spinner {
+      width: 56px; height: 56px; border-radius: 50%;
+      border: 5px solid rgba(255,255,255,.25); border-top-color: #fff;
+      animation: soSpin .8s linear infinite;
+    }
+    #submitOverlay .so-title { font-size: 1.1rem; font-weight: 700; }
+    #submitOverlay .so-sub { font-size: .85rem; opacity: .85; }
+    @keyframes soSpin { to { transform: rotate(360deg); } }
 
     /* ── Review Summary ───────────────────────────────── */
     .review-grid { display: flex; flex-direction: column; gap: 1.1rem; }
@@ -1164,6 +1179,12 @@ HTML;
     </div>
   </div>
 
+  <div id="submitOverlay" role="alert" aria-live="assertive">
+    <div class="so-spinner"></div>
+    <div class="so-title">Submitting your application…</div>
+    <div class="so-sub">Uploading your documents. Please don't close or refresh this page.</div>
+  </div>
+
   <!-- Footer -->
   <footer class="app-footer">
     <div class="container">
@@ -1482,7 +1503,23 @@ function removeSlot(btn) {
 }
 
 // ── Permanent address auto-fill on submit ─────────────────────────────
-document.getElementById('appForm').addEventListener('submit', function() {
+let appSubmitting = false;
+function hideSubmitOverlay() {
+  appSubmitting = false;
+  document.getElementById('submitOverlay').classList.remove('show');
+  const b = document.getElementById('btnSubmit');
+  if (b) b.disabled = false;
+}
+window.addEventListener('pageshow', function(e) { if (e.persisted) hideSubmitOverlay(); });
+document.getElementById('appForm').addEventListener('submit', function(e) {
+  if (appSubmitting) { e.preventDefault(); return; }
+  appSubmitting = true;
+  document.getElementById('submitOverlay').classList.add('show');
+  setTimeout(function() {
+    const b = document.getElementById('btnSubmit');
+    if (b) b.disabled = true;
+  }, 0);
+  setTimeout(hideSubmitOverlay, 120000);
   const present   = document.getElementById('present_address');
   const permanent = document.getElementById('permanent_address');
   if (permanent && permanent.value.trim() === '' && present) {

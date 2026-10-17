@@ -38,9 +38,14 @@ function buildWhere(bool $viewAll, string $userDept, string $search, string $dep
     if (!$viewAll && $userDept !== '') { $where .= " AND LTRIM(RTRIM(e.Department)) LIKE ?"; $params[] = '%'.$userDept.'%'; }
     if ($viewAll && $deptFilter !== '') { $where .= " AND LTRIM(RTRIM(e.Department)) LIKE ?"; $params[] = '%'.$deptFilter.'%'; }
     if ($search !== '') {
-        $sp = "%{$search}%";
-        $where .= " AND (e.LastName LIKE ? OR e.FirstName LIKE ? OR e.EmployeeID LIKE ? OR e.Department LIKE ? OR e.Position_held LIKE ? OR e.Branch LIKE ?)";
-        array_push($params, $sp,$sp,$sp,$sp,$sp,$sp);
+        // Split into words so "Dela Cruz Juan" or "Juan Dela Cruz" both match,
+        // regardless of which word is the first name vs last name.
+        $terms = preg_split('/\s+/', trim($search), -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($terms as $term) {
+            $sp = "%{$term}%";
+            $where .= " AND (e.LastName LIKE ? OR e.FirstName LIKE ? OR e.EmployeeID LIKE ? OR e.Department LIKE ? OR e.Position_held LIKE ? OR e.Branch LIKE ?)";
+            array_push($params, $sp,$sp,$sp,$sp,$sp,$sp);
+        }
     }
     return $where;
 }
@@ -304,6 +309,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
         if (!$fileNo || !$empID || !$lastName || !$firstName || !$dept || !$position || !$hiredDate) {
             echo json_encode(['success'=>false,'message'=>'Required fields missing: Last Name, First Name, Department, Position, Hired Date.']);
             exit;
+        }
+
+        // Already transferred? Blocks duplicate employee rows from double-submit
+        if ($appID) {
+            $dup = sqlsrv_query($conn, "SELECT TOP 1 FileNo FROM [dbo].[TBL_HREmployeeList] WHERE ApplicationID=?", [$appID]);
+            if ($dup && sqlsrv_fetch_array($dup, SQLSRV_FETCH_ASSOC)) {
+                sqlsrv_free_stmt($dup);
+                echo json_encode(['success'=>false,'message'=>'This applicant has already been added to the Employee List.']);
+                exit;
+            }
+            if ($dup) sqlsrv_free_stmt($dup);
         }
 
         // FileNo conflict check
@@ -634,6 +650,11 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
     #missingFieldsPanel.has-missing{display:block;}
     #missingFieldsPanel ul{margin:.3rem 0 0;padding-left:1.2rem;}
     #missingFieldsPanel li{line-height:1.8;}
+
+    /* Numbered pagination */
+    .page-btn.active{background:var(--primary,#2563eb);color:#fff;border-color:var(--primary,#2563eb);font-weight:700;}
+    .page-ellipsis{padding:0 .35rem;color:#94a3b8;}
+    .detail-modal .modal-dialog{max-width:min(95vw, 1100px);}
     </style>
   </head>
 <body>
@@ -819,11 +840,26 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
 
     <!-- Pagination -->
     <?php if ($totalPages > 1):
-      $urlBase = fn($p) => '?'.http_build_query(array_merge($paginationParams,['page'=>$p]));
+      $urlBase    = fn($p) => '?'.http_build_query(array_merge($paginationParams,['page'=>$p]));
+      $winSize    = 2;
+      $rangeStart = max(1, $page - $winSize);
+      $rangeEnd   = min($totalPages, $page + $winSize);
     ?>
     <nav class="pagination-wrap d-flex justify-content-between align-items-center">
       <a class="page-btn <?= $page<=1?'disabled':'' ?>" href="<?= $page>1?$urlBase($page-1):'#' ?>"><i class="bi bi-chevron-left"></i> Prev</a>
-      <span class="page-info">Page <?= $page ?> of <?= $totalPages ?></span>
+      <div class="page-numbers d-flex align-items-center" style="gap:.25rem;">
+        <?php if ($rangeStart > 1): ?>
+          <a class="page-btn" href="<?= $urlBase(1) ?>">1</a>
+          <?php if ($rangeStart > 2): ?><span class="page-ellipsis">…</span><?php endif; ?>
+        <?php endif; ?>
+        <?php for ($p = $rangeStart; $p <= $rangeEnd; $p++): ?>
+          <a class="page-btn <?= $p === $page ? 'active' : '' ?>" href="<?= $urlBase($p) ?>"><?= $p ?></a>
+        <?php endfor; ?>
+        <?php if ($rangeEnd < $totalPages): ?>
+          <?php if ($rangeEnd < $totalPages - 1): ?><span class="page-ellipsis">…</span><?php endif; ?>
+          <a class="page-btn" href="<?= $urlBase($totalPages) ?>"><?= $totalPages ?></a>
+        <?php endif; ?>
+      </div>
       <a class="page-btn <?= $page>=$totalPages?'disabled':'' ?>" href="<?= $page<$totalPages?$urlBase($page+1):'#' ?>">Next <i class="bi bi-chevron-right"></i></a>
     </nav>
     <?php endif; ?>
@@ -834,7 +870,7 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
 
 <!-- ══ EMPLOYEE DETAIL MODAL ══════════════════════════════════ -->
 <div class="modal fade detail-modal" id="empDetailModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+  <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
     <div class="modal-content">
 
       <div class="modal-header">
@@ -1052,8 +1088,8 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
   align-items:center;justify-content:center;flex-direction:column;gap:1rem;">
   <div style="position:relative;text-align:center;">
     <img id="photoViewImg" src="" alt=""
-      style="max-width:320px;max-height:320px;border-radius:50%;
-             object-fit:cover;border:4px solid #fff;
+      style="width:min(70vw, 560px);height:min(70vw, 560px);border-radius:50%;
+             object-fit:cover;border:6px solid #fff;
              box-shadow:0 8px 40px rgba(0,0,0,.4);">
   </div>
   <div id="photoViewName" style="color:#fff;font-weight:700;font-size:1rem;"></div>

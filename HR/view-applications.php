@@ -109,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['_action']) && $_GET['_a
         'TransferredToEmployee'    => !empty($app['TransferredToEmployee']),
         // Core
         'ApplicationID'            => (int)$app['ApplicationID'],
-        'FullName'                 => $app['Fullname']         ?? '',
+        'FullName'                 => $app['Fullname'] ?? $app['FullName'] ?? '',
         'FirstName'                => $firstName,
         'MiddleName'               => $middleName,
         'LastName'                 => $lastName,
@@ -171,11 +171,56 @@ if ($isAdmin && isset($_GET['view_all'])) {
 }
 $viewAll = $isAdmin && ($_SESSION['view_all_depts'] ?? false);
 
+// ══ Remarks: edit permission, CSRF, save endpoint ══
+if (empty($_SESSION['va_csrf'])) $_SESSION['va_csrf'] = bin2hex(random_bytes(16));
+$canEditRemarks = !(function_exists('rbac_is_view_only') && rbac_is_view_only('view_applications'));
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'save_remarks') {
+    header('Content-Type: application/json');
+    $out = function (bool $ok, string $msg = '', array $extra = []): void {
+        echo json_encode(['success' => $ok, 'message' => $msg] + $extra);
+        exit;
+    };
+    if (!hash_equals($_SESSION['va_csrf'] ?? '', (string)($_POST['csrf'] ?? ''))) $out(false, 'Session expired. Please refresh the page.');
+    if (!$canEditRemarks) $out(false, 'You do not have permission to edit remarks.');
+
+    $appID = (int)($_POST['application_id'] ?? 0);
+    $field = (string)($_POST['field'] ?? '');
+    $cols  = ['hr' => 'HRRemarks', 'rejection' => 'RejectionRemarks'];
+    if ($appID <= 0 || !isset($cols[$field])) $out(false, 'Invalid request.');
+
+    $text = trim(preg_replace('/\r\n?/', "\n", (string)($_POST['remarks'] ?? '')));
+    if (mb_strlen($text, 'UTF-8') > 1000) $out(false, 'Remarks must be 1000 characters or fewer.');
+
+    $chk = sqlsrv_query($conn,
+        "SELECT ja.Status, d.DepartmentName
+         FROM JobApplications ja LEFT JOIN Departments d ON ja.DepartmentID = d.DepartmentID
+         WHERE ja.ApplicationID = ?", [$appID]);
+    $r = $chk ? sqlsrv_fetch_array($chk, SQLSRV_FETCH_ASSOC) : null;
+    if (!$r) $out(false, 'Applicant not found.');
+    $st = (int)$r['Status'];
+
+    if (!$isAdmin && $st !== 0 && $_userDept !== '' && strcasecmp(trim((string)$r['DepartmentName']), trim((string)$_userDept)) !== 0) {
+        $out(false, 'You do not have access to this application.');
+    }
+    if ($field === 'rejection') {
+        if ($st !== 7) $out(false, 'Rejection remarks only apply to rejected applications.');
+        if ($text === '') $out(false, 'Rejection remarks cannot be empty.');
+    }
+
+    $col = $cols[$field];
+    $upd = sqlsrv_query($conn,
+        "UPDATE JobApplications SET {$col} = ?, RemarksUpdatedBy = ?, RemarksUpdatedAt = GETDATE() WHERE ApplicationID = ?",
+        [$text === '' ? null : $text, mb_substr((string)$_userName, 0, 100, 'UTF-8'), $appID]);
+    if (!$upd) { $err = sqlsrv_errors(); $out(false, $err[0]['message'] ?? 'Could not save remarks.'); }
+    $out(true, 'Saved.', ['remarks' => $text]);
+}
+
 // ── Current tab ─────────────────────────────────────────────────
 $tabAliases = [
     'active' => 'interview',
 ];
-$validTabs = ['pending', 'evaluating', 'interview', 'hired', 'rejected'];
+$validTabs = ['pending', 'evaluating', 'interview', 'hired', 'rejected', 'walkin'];
 $requestedTab = strtolower(trim($_GET['tab'] ?? ''));
 if ($requestedTab !== '' && isset($tabAliases[$requestedTab])) {
     $requestedTab = $tabAliases[$requestedTab];
@@ -188,6 +233,7 @@ $tabStatusGroups = [
     'interview'  => [2, 3, 4, 5],
     'hired'      => [6],
     'rejected'   => [7],
+    'walkin'     => [8],
 ];
 
 $tabDisplayNames = [
@@ -196,6 +242,7 @@ $tabDisplayNames = [
     'interview'  => 'Interview',
     'hired'      => 'Hired',
     'rejected'   => 'Rejected',
+    'walkin'     => 'Manual Entry',
 ];
 
 $tabIcons = [
@@ -204,6 +251,7 @@ $tabIcons = [
     'interview'  => 'bi-calendar-event',
     'hired'      => 'bi-award',
     'rejected'   => 'bi-x-circle-fill',
+    'walkin'     => 'bi-person-walking',
 ];
 
 // ── Status definitions ─────────────────────────────────────────
@@ -216,10 +264,11 @@ $statusLabels = [
     5 => 'Final Interview Rescheduled',
     6 => 'Hired',
     7 => 'Rejected',
+    8 => 'Manual Entry',
 ];
 $statusBadgeClass = [
     0 => 's-0', 1 => 's-1', 2 => 's-2', 3 => 's-3',
-    4 => 's-4', 5 => 's-5', 6 => 's-6', 7 => 's-7',
+    4 => 's-4', 5 => 's-5', 6 => 's-6', 7 => 's-7', 8 => 's-8',
 ];
 
 // ── Departments — include ColorCode ───────────────────────────
@@ -249,6 +298,145 @@ if ($hrStmt) {
     sqlsrv_free_stmt($hrStmt);
 }
 
+// ── File categories (for walk-in document uploads) ──────────────
+$fileCategories = [];
+$fcStmt = sqlsrv_query($conn, "SELECT FileCategoryID, CategoryName FROM FileCategories WHERE IsActive = 1 ORDER BY SortOrder, CategoryName");
+if ($fcStmt) {
+    while ($r = sqlsrv_fetch_array($fcStmt, SQLSRV_FETCH_ASSOC)) $fileCategories[] = $r;
+    sqlsrv_free_stmt($fcStmt);
+}
+
+// ══ AJAX: full applicant details (row-click modal) ═════════════
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['_action'] ?? '') === 'view_applicant') {
+    header('Content-Type: application/json');
+    $send = function (array $payload): void {
+        $json = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE);
+        echo $json !== false ? $json : '{"success":false,"message":"Could not encode the response."}';
+        exit;
+    };
+
+    $appID = (int)($_GET['application_id'] ?? 0);
+    if ($appID <= 0) $send(['success' => false, 'message' => 'Missing application ID.']);
+
+    $stmt = sqlsrv_query($conn,
+        "SELECT ja.*, d.DepartmentName AS DeptNameJoined
+         FROM   JobApplications ja
+         LEFT JOIN Departments d ON ja.DepartmentID = d.DepartmentID
+         WHERE  ja.ApplicationID = ?", [$appID]);
+    if (!$stmt) {
+        $err = sqlsrv_errors();
+        $send(['success' => false, 'message' => $err[0]['message'] ?? 'Query failed.']);
+    }
+    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
+    sqlsrv_free_stmt($stmt);
+    if (!$row) $send(['success' => false, 'message' => 'Applicant not found.']);
+
+    // Lower-case keys so column-name casing in the table can't break lookups
+    $a  = array_change_key_case($row, CASE_LOWER);
+    $g  = fn(string $k): string => is_scalar($a[$k] ?? null) ? trim((string)$a[$k]) : '';
+    $st = (int)($a['status'] ?? 0);
+    $deptName = trim((string)($a['deptnamejoined'] ?? ''));
+
+    // Same scoping as the list: non-admins only see their own department (Pending is shared)
+    if (!$isAdmin && $st !== 0 && $_userDept !== '' && strcasecmp($deptName, trim((string)$_userDept)) !== 0) {
+        $send(['success' => false, 'message' => 'You do not have access to this application.']);
+    }
+
+    $fmt = function ($v, string $f): string {
+        if ($v instanceof DateTimeInterface) return $v->format($f);
+        if (is_string($v) && trim($v) !== '' && ($ts = strtotime($v)) !== false) return date($f, $ts);
+        return '';
+    };
+
+    $first = $g('firstname'); $mid = $g('middlename'); $last = $g('lastname');
+    $fullName = $g('fullname');
+    if ($fullName === '') $fullName = trim(implode(' ', array_filter([$first, $mid, $last])));
+
+    // Files
+    $files = [];
+    $fs = sqlsrv_query($conn,
+        "SELECT af.FileName, af.FilePath, fc.CategoryName
+         FROM   ApplicationFiles af
+         LEFT JOIN FileCategories fc ON af.FileCategoryID = fc.FileCategoryID
+         WHERE  af.ApplicationID = ?
+         ORDER BY af.FileID", [$appID]);
+    if ($fs) {
+        while ($f = sqlsrv_fetch_array($fs, SQLSRV_FETCH_ASSOC)) {
+            $files[] = [
+                'FileName'     => (string)($f['FileName'] ?? ''),
+                'FilePath'     => (string)($f['FilePath'] ?? ''),
+                'FileCategory' => ($f['CategoryName'] ?? '') ?: 'Document',
+            ];
+        }
+        sqlsrv_free_stmt($fs);
+    }
+
+    // Interview history (newest first)
+    $hrMap = [];
+    foreach ($hrContacts as $h) {
+        $hrMap[trim((string)($h['FileNo'] ?? ''))] = trim(($h['FirstName'] ?? '') . ' ' . ($h['LastName'] ?? ''));
+    }
+    $interviews = [];
+    $is = sqlsrv_query($conn,
+        "SELECT InterviewDateTime, OfficeAddress, HRContactFileNo
+         FROM   JobApplicationsInterview
+         WHERE  ApplicationID = ?
+         ORDER BY InterviewDateTime DESC, InterviewID DESC", [$appID]);
+    if ($is) {
+        while ($i = sqlsrv_fetch_array($is, SQLSRV_FETCH_ASSOC)) {
+            $hrFn = trim((string)($i['HRContactFileNo'] ?? ''));
+            $interviews[] = [
+                'When'      => $fmt($i['InterviewDateTime'] ?? null, 'M j, Y g:i A'),
+                'Address'   => trim((string)($i['OfficeAddress'] ?? '')),
+                'HRContact' => ($hrMap[$hrFn] ?? '') ?: $hrFn,
+            ];
+        }
+        sqlsrv_free_stmt($is);
+    }
+
+    $send([
+        'success'                  => true,
+        'ApplicationID'            => $appID,
+        'FullName'                 => $fullName,
+        'Status'                   => $st,
+        'StatusLabel'              => $statusLabels[$st] ?? 'Unknown',
+        'Position'                 => $g('position'),
+        'DepartmentName'           => $deptName,
+        'ApplicationType'          => $g('applicationtype') ?: 'Online',
+        'DateApplied'              => $fmt($a['dateapplied'] ?? null, 'M j, Y g:i A'),
+        'Transferred'              => !empty($a['transferredtoemployee']),
+        'Email'                    => $g('email'),
+        'Phone'                    => $g('phone'),
+        'Mobile_Number'            => $g('mobile_number'),
+        'Birth_date'               => $fmt($a['birth_date'] ?? null, 'M j, Y'),
+        'Birth_Place'              => $g('birth_place'),
+        'Gender'                   => $g('gender'),
+        'Civil_Status'             => $g('civil_status'),
+        'Nationality'              => $g('nationality'),
+        'Religion'                 => $g('religion'),
+        'Present_Address'          => $g('present_address'),
+        'Permanent_Address'        => $g('permanent_address'),
+        'SSS_Number'               => $g('sss_number'),
+        'TIN_Number'               => $g('tin_number'),
+        'Philhealth_Number'        => $g('philhealth_number'),
+        'HDMF'                     => $g('hdmf'),
+        'Contact_Person'           => $g('contact_person'),
+        'Relationship'             => $g('relationship'),
+        'Contact_Number_Emergency' => $g('contact_number_emergency'),
+        'Educational_Background'   => $g('educational_background'),
+        'Notes'                    => $g('notes'),
+        'RejectionRemarks'         => $g('rejectionremarks'),
+        'HRRemarks'                => $g('hrremarks'),
+        'RemarksUpdatedBy'         => $g('remarksupdatedby'),
+        'RemarksUpdatedAt'         => $fmt($a['remarksupdatedat'] ?? null, 'M j, Y g:i A'),
+        'CanEditRemarks'           => $canEditRemarks,
+        'FilesLocked'              => $st === 7,          // same rule as the list: rejected = files locked
+        'FileCount'                => count($files),
+        'Files'                    => $st === 7 ? [] : $files,
+        'Interviews'               => $interviews,
+    ]);
+}
+
 // ══ Query helpers ══════════════════════════════════════════════
 
 function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
@@ -266,7 +454,9 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
         ja.ApplicationID, ja.FullName, ja.Email, ja.Phone,
         ja.Mobile_Number,
         ja.Position, ja.Status, ja.DateApplied, ja.DepartmentID,
+        ja.ApplicationType,
         ja.TransferredToEmployee,
+        ja.RejectionRemarks, ja.HRRemarks,
         d.DepartmentName, d.ColorCode,
         af.FileID, af.FileName, af.FilePath,
         fc.CategoryName AS FileCategory,
@@ -298,12 +488,15 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
                 'Phone'             => $r['Phone']        ?? '',
                 'Mobile_Number'     => $r['Mobile_Number'] ?? '',
                 'Position'          => $r['Position']     ?? '',
+                'ApplicationType'   => $r['ApplicationType'] ?? 'Online',
                 'Status'            => (int)($r['Status'] ?? 0),
                 'DateApplied'       => $r['DateApplied']  ?? null,
                 'DepartmentID'          => isset($r['DepartmentID']) ? (int)$r['DepartmentID'] : null,
                 'DepartmentName'        => $r['DepartmentName']    ?? null,
                 'ColorCode'             => $r['ColorCode']         ?? null,
                 'TransferredToEmployee' => !empty($r['TransferredToEmployee']),
+                'RejectionRemarks'      => $r['RejectionRemarks'] ?? '',
+                'HRRemarks'             => $r['HRRemarks'] ?? '',
                 'InterviewDateTime'     => $r['InterviewDateTime'] ?? null,
                 'InterviewAddress'  => $r['OfficeAddress']     ?? null,
                 'HRContactFileNo'   => $r['HRContactFileNo']   ?? null,
@@ -321,6 +514,125 @@ function fetchApps($conn, $whereSQL, $params, $offset, $perPage): array
     }
     sqlsrv_free_stmt($stmt);
     return array_values($apps);
+}
+
+function fetchTabIds($conn, $whereSQL, $params): array
+{
+    $sql  = "SELECT ja.ApplicationID, ja.DateApplied
+             FROM   JobApplications ja
+             LEFT JOIN Departments d ON ja.DepartmentID = d.DepartmentID
+             {$whereSQL}";
+    $stmt = sqlsrv_query($conn, $sql, $params);
+    if (!$stmt) return [];
+    $rows = [];
+    while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $rows[(int)$r['ApplicationID']] = $r['DateApplied'] ?? null;
+    }
+    sqlsrv_free_stmt($stmt);
+    return $rows;
+}
+
+/**
+ * Flag applicants who match an existing/former employee, and whether that
+ * employee record is blacklisted. Matches on LastName + FirstName (a
+ * conflicting middle initial rules the match out). Runs once per page load.
+ * Returns [ApplicationID => ['FileNo','Department','Position','HiredDate','Active','Blacklisted']]
+ */
+function fetchEmployeeMatches($conn, array $apps): array
+{
+    $ids = [];
+    foreach ($apps as $a) {
+        if (empty($a['TransferredToEmployee'])) $ids[] = (int)$a['ApplicationID'];
+    }
+    if (!$ids) return [];
+
+    $norm   = fn($s) => mb_strtoupper(preg_replace('/\s+/', ' ', trim((string)$s)), 'UTF-8');
+    $isTrue = fn($v) => in_array(strtoupper(trim((string)$v)), ['1', 'TRUE', 'YES', 'Y'], true);
+
+    // 1) Structured names for this page's applicants
+    $in   = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = sqlsrv_query($conn,
+        "SELECT ApplicationID, FirstName, MiddleName, LastName FROM JobApplications WHERE ApplicationID IN ({$in})",
+        $ids);
+    $names = [];
+    if ($stmt) {
+        while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $names[(int)$r['ApplicationID']] = $r;
+        sqlsrv_free_stmt($stmt);
+    }
+
+    $want = [];
+    $lastNames = [];
+    foreach ($apps as $a) {
+        $id = (int)$a['ApplicationID'];
+        if (!in_array($id, $ids, true)) continue;
+        $n     = $names[$id] ?? [];
+        $first = $norm($n['FirstName']  ?? '');
+        $last  = $norm($n['LastName']   ?? '');
+        $mid   = $norm($n['MiddleName'] ?? '');
+        if ($first === '' || $last === '') {
+            // Fallback for old rows: same split fetch_applicant uses (first word = first name)
+            $parts = preg_split('/\s+/', trim((string)($a['FullName'] ?? '')), -1, PREG_SPLIT_NO_EMPTY);
+            $first = $norm($parts[0] ?? '');
+            $last  = $norm(implode(' ', array_slice($parts, 1)));
+            $mid   = '';
+        }
+        if ($first === '' || $last === '') continue;
+        $want[$id] = [$last, $first, $mid];
+        $lastNames[$last] = true;
+    }
+    if (!$want) return [];
+
+    // 2) Candidate employees sharing a last name with anyone on this page
+    $in2  = implode(',', array_fill(0, count($lastNames), '?'));
+    $stmt = sqlsrv_query($conn,
+        "SELECT FileNo, LastName, FirstName, MiddleName, Department, Branch, Position_held, Job_tittle, Employee_Status, Hired_date, Active, Blacklisted
+         FROM   TBL_HREmployeeList
+         WHERE  UPPER(LTRIM(RTRIM(LastName))) IN ({$in2})
+         ORDER BY Hired_date DESC",
+        array_map('strval', array_keys($lastNames)));
+    $emps = [];
+    if ($stmt) {
+        while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) $emps[] = $r;
+        sqlsrv_free_stmt($stmt);
+    }
+
+    // 3) Match in PHP
+    $out = [];
+    foreach ($want as $appId => [$last, $first, $mid]) {
+        foreach ($emps as $e) {
+            if ($norm($e['LastName'] ?? '') !== $last || $norm($e['FirstName'] ?? '') !== $first) continue;
+            $eMid = $norm($e['MiddleName'] ?? '');
+            if ($mid !== '' && $eMid !== '' && mb_substr($mid, 0, 1, 'UTF-8') !== mb_substr($eMid, 0, 1, 'UTF-8')) continue; // different middle initial = likely different person
+
+            if (!isset($out[$appId])) {
+                $hd = $e['Hired_date'] ?? null;
+                $out[$appId] = [
+                    'FileNo'      => trim((string)($e['FileNo'] ?? '')),
+                    'Department'  => trim((string)($e['Department'] ?? '')),
+                    'Position'    => trim((string)($e['Position_held'] ?? '')),
+                    'HiredDate'   => $hd instanceof DateTime ? $hd->format('M j, Y') : ($hd ? date('M j, Y', strtotime($hd)) : ''),
+                    'Active'      => $isTrue($e['Active'] ?? 0),
+                    'Blacklisted' => false,
+                ];
+            }
+            if ($isTrue($e['Blacklisted'] ?? 0)) $out[$appId]['Blacklisted'] = true;
+
+            $hd2 = $e['Hired_date'] ?? null;
+            $out[$appId]['Records'][] = [
+                'FileNo'         => trim((string)($e['FileNo'] ?? '')),
+                'Name'           => trim(trim((string)($e['LastName'] ?? '')) . ', ' . trim((string)($e['FirstName'] ?? '')) . ' ' . trim((string)($e['MiddleName'] ?? ''))),
+                'Department'     => trim((string)($e['Department'] ?? '')),
+                'Branch'         => trim((string)($e['Branch'] ?? '')),
+                'Position'       => trim((string)($e['Position_held'] ?? '')),
+                'JobTitle'       => trim((string)($e['Job_tittle'] ?? '')),
+                'EmployeeStatus' => trim((string)($e['Employee_Status'] ?? '')),
+                'HiredDate'      => $hd2 instanceof DateTime ? $hd2->format('M j, Y') : ($hd2 ? date('M j, Y', strtotime($hd2)) : ''),
+                'Active'         => $isTrue($e['Active'] ?? 0),
+                'Blacklisted'    => $isTrue($e['Blacklisted'] ?? 0),
+            ];
+        }
+    }
+    return $out;
 }
 
 function countApps($conn, $whereSQL, $params): int
@@ -343,12 +655,22 @@ $offset       = ($page - 1) * $perPage;
 $search       = trim($_GET['search']    ?? '');
 $dateFrom     = trim($_GET['date_from'] ?? '');
 $dateTo       = trim($_GET['date_to']   ?? '');
+$showAll      = (($_GET['range'] ?? '') === 'all');
+$dateDefaulted = false;
+if (!$showAll && $dateFrom === '' && $dateTo === '') {
+    $dateFrom      = date('Y-m-d', strtotime('-30 days'));
+    $dateDefaulted = true;
+}
+define('NEW_LOOKBACK_DAYS', 3);
 $statusFilter = trim($_GET['status']    ?? '');
+$validTypes   = ['Online', 'Walk-in', 'Job Fair', 'Other'];
+$typeFilter   = trim($_GET['type'] ?? '');
+if (!in_array($typeFilter, $validTypes, true)) $typeFilter = '';
 $deptFilter   = $viewAll ? trim($_GET['dept'] ?? '') : $_userDept;
 
 function buildTabWhere(string $tab, array &$params): string
 {
-    global $viewAll, $_userDept, $deptFilter, $search, $dateFrom, $dateTo, $statusFilter, $tabStatusGroups;
+    global $viewAll, $_userDept, $deptFilter, $search, $dateFrom, $dateTo, $statusFilter, $typeFilter, $tabStatusGroups;
 
     $statuses = $tabStatusGroups[$tab] ?? [0];
     $placeholders = implode(',', array_fill(0, count($statuses), '?'));
@@ -375,6 +697,11 @@ function buildTabWhere(string $tab, array &$params): string
         $params[] = $statusInt;
     }
 
+    if ($typeFilter !== '') {
+        $where .= " AND ja.ApplicationType = ?";
+        $params[] = $typeFilter;
+    }
+
     if ($search !== '') {
         $sp = "%{$search}%";
         $where .= " AND (ja.FullName LIKE ? OR ja.Email LIKE ? OR ja.Position LIKE ?)";
@@ -392,11 +719,26 @@ function buildTabWhere(string $tab, array &$params): string
     return $where;
 }
 
-$tabCounts = [];
+$tabCounts = []; $tabNewCounts = []; $tabIdMap = [];
+$firstVisit = !isset($_SESSION['app_seen']);
+if ($firstVisit) $_SESSION['app_seen'] = [];
+$newCutoff = new DateTime('-' . NEW_LOOKBACK_DAYS . ' days');
+
 foreach (array_keys($tabStatusGroups) as $tabKey) {
     $countParams = [];
-    $countWhere = buildTabWhere($tabKey, $countParams);
-    $tabCounts[$tabKey] = countApps($conn, $countWhere, $countParams);
+    $countWhere  = buildTabWhere($tabKey, $countParams);
+    $rows        = fetchTabIds($conn, $countWhere, $countParams);
+    $tabIdMap[$tabKey]  = $rows;
+    $tabCounts[$tabKey] = count($rows);
+
+    if ($firstVisit) {
+        $seed = [];
+        foreach ($rows as $id => $d) {
+            if (!($d instanceof DateTime) || $d < $newCutoff) $seed[] = $id;
+        }
+        $_SESSION['app_seen'][$tabKey] = $seed;
+    }
+    $tabNewCounts[$tabKey] = count(array_diff(array_keys($rows), $_SESSION['app_seen'][$tabKey] ?? []));
 }
 
 $activeParams = [];
@@ -404,19 +746,31 @@ $activeWhere = buildTabWhere($activeTab, $activeParams);
 $tabTotal = $tabCounts[$activeTab];
 $tabPages = max(1, (int)ceil($tabTotal / $perPage));
 $tabApps = fetchApps($conn, $activeWhere, $activeParams, $offset, $perPage);
+$empMatches = fetchEmployeeMatches($conn, $tabApps);
+
+$activeIds  = array_keys($tabIdMap[$activeTab] ?? []);
+$seenActive = $_SESSION['app_seen'][$activeTab] ?? [];
+$newIdSet   = array_flip(array_diff($activeIds, $seenActive));   // for row highlighting this load
+$_SESSION['app_seen'][$activeTab] = array_values(array_unique(array_merge($seenActive, $activeIds)));
 
 $paginationParams = [
     'tab'    => $activeTab,
     'search' => $search,
 ];
+if ($typeFilter !== '') {
+    $paginationParams['type'] = $typeFilter;
+}
 if ($viewAll && $activeTab !== 'pending' && $deptFilter !== '') {
     $paginationParams['dept'] = $deptFilter;
 }
 if ($activeTab === 'interview' && $statusFilter !== '' && is_numeric($statusFilter) && in_array((int)$statusFilter, $tabStatusGroups['interview'], true)) {
     $paginationParams['status'] = $statusFilter;
 }
-if ($dateFrom !== '') {
+if ($dateFrom !== '' && !$dateDefaulted) {
     $paginationParams['date_from'] = $dateFrom;
+}
+if ($showAll) {
+    $paginationParams['range'] = 'all';
 }
 if ($dateTo !== '') {
     $paginationParams['date_to'] = $dateTo;
@@ -425,9 +779,32 @@ if ($dateTo !== '') {
 // ── Flash ──────────────────────────────────────────────────────
 function resolveFlash(): array
 {
-    $updated    = $_GET['updated']     ?? null;
-    $transferred = $_GET['transferred'] ?? null;
-    $info       = $_GET['info']        ?? '';
+    $updated     = $_GET['updated']      ?? null;
+    $transferred = $_GET['transferred']  ?? null;
+    $walkinAdded = $_GET['walkin_added'] ?? null;
+    $info        = $_GET['info']         ?? '';
+    $error       = $_GET['error']        ?? '';
+
+    if ($walkinAdded !== null) {
+        if ($walkinAdded === '1') return [
+            'type' => 'success',
+            'msg'  => '<i class="bi bi-person-check-fill me-1"></i> Applicant added successfully.',
+        ];
+        $wkErrors = [
+            'missing_required'  => 'Please fill in Name, Position and Department.',
+            'invalid_email'     => 'Please enter a valid email address.',
+            'invalid_category'  => 'Each uploaded file needs a document category.',
+            'invalid_file_type' => 'One of the files has an unsupported type. Allowed: PDF, DOC, DOCX, JPG, PNG.',
+            'file_too_large'    => 'One of the files exceeds the 10 MB limit.',
+            'too_many_files'    => 'Maximum 5 files allowed.',
+            'invalid_type'      => 'Please choose an application type.',
+            'db_error'          => 'A database error occurred. Please check the error log.',
+        ];
+        return [
+            'type' => 'danger',
+            'msg'  => '<i class="bi bi-exclamation-triangle-fill me-1"></i> ' . ($wkErrors[$error] ?? 'Could not add walk-in applicant. Please try again.'),
+        ];
+    }
 
     // Transfer flash messages
     if ($transferred !== null) {
@@ -447,10 +824,27 @@ function resolveFlash(): array
         ];
     }
 
+    if ($updated === '0' && ($_GET['error'] ?? '') === 'status_locked') return [
+        'type' => 'warning',
+        'msg'  => '<i class="bi bi-lock-fill me-1"></i> This application is already Hired or Rejected and can no longer be changed.',
+    ];
+
     // Existing status-update flash
     if ($updated === '1') return [
         'type' => 'success',
         'msg'  => '<i class="bi bi-check-circle-fill me-1"></i> Application updated successfully.',
+    ];
+    if ($updated === '0' && $error === 'remarks_required') return [
+        'type' => 'warning',
+        'msg'  => '<i class="bi bi-exclamation-triangle-fill me-1"></i> Please enter the rejection remarks before rejecting an applicant.',
+    ];
+    if ($updated === '0' && $error === 'email_incomplete') return [
+        'type' => 'warning',
+        'msg'  => '<i class="bi bi-exclamation-triangle-fill me-1"></i> Your custom email needs both a subject and a message. Nothing was changed.',
+    ];
+    if ($updated === '0' && $error === 'walkin_not_selectable') return [
+        'type' => 'warning',
+        'msg'  => '<i class="bi bi-exclamation-triangle-fill me-1"></i> Manual Entry is a starting status only and can\'t be selected here.',
     ];
     if ($updated === '0') return [
         'type' => $info === 'no_change' ? 'info' : 'danger',
@@ -560,11 +954,34 @@ function deptBadgeStyle(?string $deptName, ?string $colorCode = null): string
 }
 
 /**
+ * Application type badge (Online / Walk-in / Job Fair / Other).
+ */
+function appTypeBadge(string $type): string
+{
+    $map = [
+        'Online'   => ['t-online',  'bi-globe'],
+        'Walk-in'  => ['t-walkin',  'bi-person-walking'],
+        'Job Fair' => ['t-jobfair', 'bi-people-fill'],
+        'Other'    => ['t-other',   'bi-three-dots'],
+    ];
+    [$cls, $icon] = $map[$type] ?? $map['Other'];
+    return '<span class="type-badge ' . $cls . '"><i class="bi ' . $icon . '"></i> ' . htmlspecialchars($type) . '</span>';
+}
+
+/**
  * Render uploaded files button.
  */
-function renderFiles(array $files): string
+function renderFiles(array $files, bool $locked = false): string
 {
     if (empty($files)) return '<span class="no-files">No files</span>';
+
+    if ($locked) {
+        $n = count($files);
+        return '<button type="button" class="btn btn-sm btn-outline-secondary files-btn is-locked" disabled'
+             . ' title="Files are locked for rejected applications">'
+             . '<i class="bi bi-lock-fill me-1"></i>' . $n . ' file' . ($n !== 1 ? 's' : '')
+             . '</button>';
+    }
 
     $count   = count($files);
     $payload = htmlspecialchars(
@@ -593,9 +1010,25 @@ function renderPagination(int $page, int $totalPages, array $extra = []): string
     $prevClass = $page <= 1           ? 'disabled' : '';
     $nextClass = $page >= $totalPages ? 'disabled' : '';
 
-    return '<nav class="pagination-wrap d-flex justify-content-between align-items-center" aria-label="Page navigation">'
+    // Numbered buttons: first, last, and a window of 2 pages around the current one
+    $window = 2;
+    $pages  = [1];
+    for ($i = max(2, $page - $window); $i <= min($totalPages - 1, $page + $window); $i++) $pages[] = $i;
+    $pages[] = $totalPages;
+
+    $numbers = '';
+    $prevShown = 0;
+    foreach ($pages as $p) {
+        if ($p - $prevShown > 1) $numbers .= '<span class="page-gap">…</span>';
+        $numbers .= $p === $page
+            ? '<span class="page-btn page-num active" aria-current="page">' . $p . '</span>'
+            : '<a class="page-btn page-num" href="' . htmlspecialchars($url($p)) . '">' . $p . '</a>';
+        $prevShown = $p;
+    }
+
+    return '<nav class="pagination-wrap d-flex justify-content-between align-items-center flex-wrap gap-2" aria-label="Page navigation">'
          . '<a class="page-btn ' . $prevClass . '" href="' . $prevUrl . '"><i class="bi bi-chevron-left"></i> Prev</a>'
-         . '<span class="page-info">Page ' . $page . ' of ' . $totalPages . '</span>'
+         . '<div class="page-numbers">' . $numbers . '</div>'
          . '<a class="page-btn ' . $nextClass . '" href="' . $nextUrl . '">Next <i class="bi bi-chevron-right"></i></a>'
          . '</nav>';
 }
@@ -650,8 +1083,64 @@ function fmtInterview($dt): string
     }
     .app-name-wrap  { display: flex; align-items: center; gap: .65rem; }
     .app-name       { font-weight: 700; font-size: .88rem; color: var(--text-primary); line-height: 1.2; }
+    .app-row.is-new td { background: rgba(37,99,235,.045); }
+    .new-chip { display:inline-block; margin-left:.35rem; padding:.05rem .4rem; font-size:.58rem; font-weight:800; letter-spacing:.04em; color:#fff; background:#2563eb; border-radius:99px; vertical-align:middle; }
+    .status-pill.is-locked { cursor:not-allowed; opacity:.8; }
+    .page-numbers { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:.3rem; }
+    .page-numbers .page-num { min-width:34px; justify-content:center; text-align:center; }
+    .page-numbers .page-btn.active { background:var(--primary, #2563eb); color:#fff; border-color:var(--primary, #2563eb); cursor:default; pointer-events:none; }
+    .page-numbers .page-gap { color:var(--text-muted); padding:0 .25rem; user-select:none; }
+    .emp-flags { display:flex; flex-wrap:wrap; gap:.3rem; margin:.2rem 0 .15rem; }
+    .emp-flag { display:inline-flex; align-items:center; gap:.28rem; padding:.15rem .5rem; border-radius:999px; font-size:.64rem; font-weight:800; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap; cursor:help; }
+    .emp-flag.ef-former      { background:rgba(217,119,6,.10); color:#b45309; border:1px solid rgba(217,119,6,.4); }
+    .emp-flag.ef-current     { background:rgba(37,99,235,.10); color:#1d4ed8; border:1px solid rgba(37,99,235,.35); }
+    .emp-flag.ef-blacklisted { background:#dc2626; color:#fff; border:1px solid #b91c1c; }
+    .emp-flag[data-bs-toggle] { cursor:pointer; }
+    .emp-flag[data-bs-toggle]:hover { filter:brightness(.95); box-shadow:0 1px 4px rgba(0,0,0,.15); }
+    .files-btn.is-locked   { cursor:not-allowed; opacity:.55; pointer-events:none; }
+    .status-pill.s-8 { background: rgba(100,116,139,.12); color:#475569; border:1px solid rgba(100,116,139,.35); }
+    .status-pill.s-8 .dot { background:#475569; }
+    .type-badge { display:inline-flex; align-items:center; gap:.3rem; padding:.2rem .55rem; border-radius:999px; font-size:.68rem; font-weight:700; letter-spacing:.03em; white-space:nowrap; }
+    .type-badge.t-online  { background:rgba(37,99,235,.10);  color:#1d4ed8; border:1px solid rgba(37,99,235,.35); }
+    .type-badge.t-walkin  { background:rgba(217,119,6,.10);  color:#b45309; border:1px solid rgba(217,119,6,.35); }
+    .type-badge.t-jobfair { background:rgba(124,58,237,.10); color:#6d28d9; border:1px solid rgba(124,58,237,.35); }
+    .type-badge.t-other   { background:rgba(100,116,139,.10);color:#475569; border:1px solid rgba(100,116,139,.35); }
     .app-sub        { font-size: .72rem; color: var(--text-muted); margin-top: .1rem; }
-    .app-row        { cursor: default; transition: background .12s; }
+    .app-row        { cursor: pointer; transition: background .12s; }
+    .rej-remark { margin-top:.3rem; font-size:.7rem; line-height:1.3; color:#b91c1c; max-width:210px; margin-inline:auto; }
+    .hr-remark { margin-top:.3rem; font-size:.7rem; line-height:1.3; color:#1d4ed8; max-width:210px; margin-inline:auto; }
+    .ad-hr { border:1px solid #bfdbfe; background:#eff6ff; border-radius:12px; padding:.8rem 1rem; margin-bottom:.8rem; }
+    .ad-hr .ad-reject-title { color:#1d4ed8; }
+    .ad-remark-edit { margin-left:auto; border:0; background:transparent; color:inherit; font-size:.7rem; font-weight:700; cursor:pointer; text-transform:none; letter-spacing:0; }
+    .ad-remark-actions { display:flex; gap:.4rem; margin-top:.5rem; }
+    .ad-remark-meta { font-size:.68rem; color:#64748b; margin-top:.4rem; }
+
+    /* ── Email composer ────────────────────────────────────────── */
+    .email-mode-toggle { display:flex; flex-wrap:wrap; gap:.4rem; }
+
+    /* ── Page loading overlay (blocks double clicks while saving) ── */
+    .page-loading { position:fixed; inset:0; z-index:2000; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.45); backdrop-filter:blur(2px); cursor:progress; }
+    .page-loading.show { display:flex; }
+    .page-loading-box { background:#fff; border-radius:14px; padding:1.4rem 2rem; display:flex; flex-direction:column; align-items:center; gap:.75rem; box-shadow:0 20px 60px rgba(0,0,0,.25); font-weight:600; color:#0f172a; font-size:.9rem; }
+
+    /* ── Application details modal ─────────────────────────────── */
+    .ad-head { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem .85rem; margin-bottom:1rem; }
+    .ad-name { font-size:1.15rem; font-weight:800; color:#0f172a; }
+    .ad-meta { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; }
+    .ad-section { border:1px solid #e2e8f0; border-radius:12px; padding:.85rem 1rem; margin-bottom:.8rem; background:#fff; }
+    .ad-title { font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:#475569; margin-bottom:.65rem; padding-left:.6rem; border-left:3px solid #3b82f6; display:flex; align-items:center; gap:.4rem; }
+    .ad-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.7rem 1rem; }
+    .ad-full { grid-column:1 / -1; }
+    .ad-label { font-size:.65rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#94a3b8; }
+    .ad-value { font-size:.85rem; font-weight:600; color:#1e293b; word-break:break-word; }
+    .ad-empty { color:#cbd5e1; font-weight:400; font-size:.82rem; }
+    .ad-pre   { white-space:pre-wrap; word-break:break-word; font-size:.84rem; color:#1e293b; }
+    .ad-chip  { border:1px solid #e2e8f0; border-radius:8px; padding:.45rem .65rem; margin-bottom:.4rem; font-size:.8rem; background:#f8fafc; }
+    .ad-k     { font-weight:700; text-transform:capitalize; color:#475569; }
+    .ad-reject { border:1px solid #fecaca; background:#fef2f2; border-radius:12px; padding:.8rem 1rem; margin-bottom:.8rem; }
+    .ad-reject-title { font-size:.7rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:#b91c1c; margin-bottom:.35rem; display:flex; align-items:center; gap:.4rem; }
+    .ad-file { display:flex; align-items:center; gap:.6rem; padding:.5rem .75rem; border:1px solid #e2e8f0; border-radius:10px; margin-bottom:.4rem; text-decoration:none; color:#1e293b; font-size:.82rem; }
+    .ad-file:hover { background:#f1f5f9; }
     .app-row:hover td { background: rgba(67,128,226,.04); }
 
     /* ── Transfer button ───────────────────────────────────────── */
@@ -723,18 +1212,30 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
   <div class="page-header">
     <div>
       <div class="page-title">Job Applications</div>
-      <div class="page-subtitle">Review, filter, and manage all incoming applicants</div>
+<div class="page-subtitle">Review, filter, and manage all incoming applicants</div>
+      <?php if (rbac_can_access('careers_admin')): ?>
+      <a href="<?= route('careers_admin') ?>" class="btn btn-outline-secondary btn-sm mt-2">
+        <i class="bi bi-briefcase-fill me-1"></i> Careers Admin
+      </a>
+      <?php endif; ?>
     </div>
-    <?php if ($isAdmin && $activeTab !== 'pending'): ?>
+    <?php if (($isAdmin && $activeTab !== 'pending') || $activeTab === 'walkin'): ?>
     <div class="page-actions">
-      <?php if (!$viewAll): ?>
-        <a href="?tab=<?= htmlspecialchars($activeTab) ?>&view_all=1" class="btn btn-outline-primary btn-sm">
-          <i class="bi bi-globe2 me-1"></i> View All Departments
-        </a>
-      <?php else: ?>
-        <a href="?tab=<?= htmlspecialchars($activeTab) ?>&view_all=0" class="btn btn-warning btn-sm">
-          <i class="bi bi-building me-1"></i> Back to My Department
-        </a>
+      <?php if ($activeTab === 'walkin'): ?>
+        <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addWalkinModal">
+          <i class="bi bi-person-plus-fill me-1"></i> Add Applicant
+        </button>
+      <?php endif; ?>
+      <?php if ($isAdmin && $activeTab !== 'pending'): ?>
+        <?php if (!$viewAll): ?>
+          <a href="?<?= htmlspecialchars(http_build_query(array_merge(array_diff_key($paginationParams, ['dept' => 1]), ['view_all' => 1]))) ?>" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-globe2 me-1"></i> View All Departments
+          </a>
+        <?php else: ?>
+          <a href="?<?= htmlspecialchars(http_build_query(array_merge(array_diff_key($paginationParams, ['dept' => 1]), ['view_all' => 0]))) ?>" class="btn btn-warning btn-sm">
+            <i class="bi bi-building me-1"></i> Back to My Department
+          </a>
+        <?php endif; ?>
       <?php endif; ?>
     </div>
     <?php endif; ?>
@@ -761,8 +1262,8 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
     <?php foreach ($tabDisplayNames as $tabKey => $label): ?>
       <a href="?tab=<?= htmlspecialchars($tabKey) ?>" class="app-tab <?= $activeTab === $tabKey ? 'active' : '' ?>">
         <i class="bi <?= htmlspecialchars($tabIcons[$tabKey] ?? 'bi-kanban-fill') ?>"></i> <?= htmlspecialchars($label) ?>
-        <?php if (!empty($tabCounts[$tabKey])): ?>
-          <span class="<?= $activeTab === $tabKey ? 'tab-badge-white' : 'tab-badge-red' ?>"><?= $tabCounts[$tabKey] ?></span>
+        <?php $nc = $tabNewCounts[$tabKey] ?? 0; if ($nc > 0): ?>
+          <span class="<?= $activeTab === $tabKey ? 'tab-badge-white' : 'tab-badge-red' ?>" title="<?= $nc ?> new"><?= $nc ?></span>
         <?php endif; ?>
       </a>
     <?php endforeach; ?>
@@ -773,6 +1274,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
   <div class="filter-card">
     <form method="get">
       <input type="hidden" name="tab" value="<?= htmlspecialchars($activeTab) ?>">
+      <?php if ($showAll): ?><input type="hidden" name="range" value="all"><?php endif; ?>
       <div class="filter-row">
 
         <div class="record-info">
@@ -788,7 +1290,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <?php endif; ?>
         </div>
 
-        <?php if ($activeTab !== 'pending'): ?>
+        <?php if (true): // date range now applies to every tab (30-day default) ?>
           <span class="filter-label">From</span>
           <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>"
                  class="form-control" style="max-width:145px;">
@@ -823,6 +1325,14 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <div class="filter-divider"></div>
         <?php endif; ?>
 
+        <select name="type" class="form-select" style="max-width:140px;">
+          <option value="">All Types</option>
+          <?php foreach ($validTypes as $t): ?>
+            <option value="<?= htmlspecialchars($t) ?>" <?= $typeFilter === $t ? 'selected' : '' ?>><?= htmlspecialchars($t) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <div class="filter-divider"></div>
+
         <div style="position:relative;">
           <i class="bi bi-search" style="position:absolute;left:.65rem;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:.8rem;pointer-events:none;"></i>
           <input type="text" name="search" value="<?= htmlspecialchars($search) ?>"
@@ -832,6 +1342,9 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
         <button type="submit" class="btn btn-primary"><i class="bi bi-funnel-fill"></i> Apply</button>
         <a href="?tab=<?= htmlspecialchars($activeTab) ?>" class="btn btn-secondary"><i class="bi bi-x-circle"></i> Clear</a>
+        <?php if ($dateDefaulted): ?>
+          <a href="?<?= htmlspecialchars(http_build_query(array_merge($paginationParams, ['range' => 'all']))) ?>" class="btn btn-outline-secondary" title="Currently showing the last 30 days"><i class="bi bi-calendar-range"></i> Show all time</a>
+        <?php endif; ?>
 
       </div>
     </form>
@@ -842,11 +1355,17 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
       $stageBaseParams = [
           'tab'       => 'interview',
           'search'    => $search,
-          'date_from' => $dateFrom,
+          'date_from' => $dateDefaulted ? '' : $dateFrom,
           'date_to'   => $dateTo,
       ];
+      if ($showAll) {
+          $stageBaseParams['range'] = 'all';
+      }
       if ($viewAll && $deptFilter !== '') {
           $stageBaseParams['dept'] = $deptFilter;
+      }
+      if ($typeFilter !== '') {
+          $stageBaseParams['type'] = $typeFilter;
       }
   ?>
   <div class="filter-card" style="padding:0.75rem 1rem 0.75rem 1rem; margin-bottom:1rem;">
@@ -874,6 +1393,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             <th>Applicant</th>
             <th>Contact</th>
             <th>Position &amp; Department</th>
+            <th>Type</th>
             <th>Date Applied</th>
             <th>Files</th>
             <th>Interview</th>
@@ -902,13 +1422,36 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             $bgColor   = appAvatarColor($fullName, $avatarColors);
             $initials  = appInitials($fullName);
         ?>
-          <tr class="app-row" <?= deptRowStyle($app['DepartmentName'] ?? null, $color) ?>>
+                    <tr class="app-row<?= isset($newIdSet[$app['ApplicationID']]) ? ' is-new' : '' ?>" data-app-id="<?= (int)$app['ApplicationID'] ?>" <?= deptRowStyle($app['DepartmentName'] ?? null, $color) ?>>
             <!-- Applicant column: avatar + name + dept badge -->
             <td>
               <div class="app-name-wrap">
                 <div class="app-avatar" style="background:<?= $bgColor ?>;"><?= htmlspecialchars($initials) ?></div>
                 <div>
-                  <div class="app-name"><?= htmlspecialchars($fullName) ?></div>
+                  <div class="app-name"><?= htmlspecialchars($fullName) ?><?php if (isset($newIdSet[$app['ApplicationID']])): ?> <span class="new-chip">NEW</span><?php endif; ?></div>
+                  <?php if (isset($empMatches[$app['ApplicationID']])):
+                      $m   = $empMatches[$app['ApplicationID']];
+                      $matchPayload = htmlspecialchars(json_encode([
+                          'applicant'   => $fullName,
+                          'blacklisted' => $m['Blacklisted'],
+                          'records'     => $m['Records'] ?? [],
+                      ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE), ENT_QUOTES, 'UTF-8');
+                      $tip = 'Matched by name, please verify. File No ' . ($m['FileNo'] ?: '—')
+                           . ' · ' . ($m['Department'] ?: '—')
+                           . ' · ' . ($m['Position'] ?: '—')
+                           . ($m['HiredDate'] ? ' · Hired ' . $m['HiredDate'] : '');
+                  ?>
+                  <div class="emp-flags">
+                    <span class="emp-flag <?= $m['Active'] ? 'ef-current' : 'ef-former' ?>" title="Click to view details" data-bs-toggle="modal" data-bs-target="#empMatchModal" data-match="<?= $matchPayload ?>">
+                      <i class="bi bi-person-badge"></i> <?= $m['Active'] ? 'Current Employee' : 'Former Employee' ?>
+                    </span>
+                    <?php if ($m['Blacklisted']): ?>
+                    <span class="emp-flag ef-blacklisted" title="Click to view details" data-bs-toggle="modal" data-bs-target="#empMatchModal" data-match="<?= $matchPayload ?>">
+                      <i class="bi bi-slash-circle-fill"></i> Blacklisted
+                    </span>
+                    <?php endif; ?>
+                  </div>
+                  <?php endif; ?>
                   <?php if ($app['DepartmentName']): ?>
                     <span <?= deptBadgeStyle($app['DepartmentName'], $color) ?>>
                       <i class="bi bi-building" style="font-size:.6rem;"></i>
@@ -944,6 +1487,9 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
               <div class="app-sub"><?= htmlspecialchars($app['DepartmentName'] ?: '—') ?></div>
             </td>
 
+            <!-- Application Type -->
+            <td><?= appTypeBadge($app['ApplicationType'] ?? 'Online') ?></td>
+
             <!-- Date Applied -->
             <td class="date-cell">
               <?php if ($app['DateApplied'] instanceof DateTime): ?>
@@ -953,7 +1499,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             </td>
 
             <!-- Files -->
-            <td><?= renderFiles($app['Files']) ?></td>
+            <td><?= renderFiles($app['Files'], $sv === 7) ?></td>
 
             <!-- Interview -->
             <td>
@@ -970,14 +1516,32 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
             <!-- Status pill -->
             <td style="text-align:center;">
+              <?php if (in_array($sv, [6, 7], true)): ?>
+                <span class="status-pill is-locked <?= htmlspecialchars($pillClass) ?>" title="Final status. Cannot be changed">
+                  <span class="dot"></span><?= htmlspecialchars($labelText) ?>
+                  <i class="bi bi-lock-fill" style="font-size:.6rem;opacity:.5;"></i>
+                </span>
+                <?php if ($sv === 7 && trim((string)($app['RejectionRemarks'] ?? '')) !== ''): ?>
+                  <div class="rej-remark" title="<?= htmlspecialchars($app['RejectionRemarks']) ?>">
+                    <i class="bi bi-chat-left-text"></i> <?= htmlspecialchars(mb_strimwidth(trim($app['RejectionRemarks']), 0, 60, '…', 'UTF-8')) ?>
+                  </div>
+                <?php endif; ?>
+              <?php else: ?>
               <button type="button" class="status-pill <?= htmlspecialchars($pillClass) ?>"
                 data-bs-toggle="modal" data-bs-target="#updateStatusModal"
                 data-id="<?= $app['ApplicationID'] ?>"
                 data-status="<?= $sv ?>"
-                data-department="<?= (int)($app['DepartmentID'] ?? 0) ?>">
+                data-department="<?= (int)($app['DepartmentID'] ?? 0) ?>"
+                data-email="<?= htmlspecialchars($app['Email'] ?? '') ?>">
                 <span class="dot"></span><?= htmlspecialchars($labelText) ?>
                 <i class="bi bi-pencil-fill" style="font-size:.6rem;opacity:.5;"></i>
               </button>
+              <?php endif; ?>
+              <?php if (trim((string)($app['HRRemarks'] ?? '')) !== ''): ?>
+                <div class="hr-remark" title="<?= htmlspecialchars($app['HRRemarks']) ?>">
+                  <i class="bi bi-bookmark-star-fill"></i> <?= htmlspecialchars(mb_strimwidth(trim($app['HRRemarks']), 0, 60, '…', 'UTF-8')) ?>
+                </div>
+              <?php endif; ?>
             </td>
 
             <!-- Transfer button — Hired tab only -->
@@ -998,7 +1562,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             <?php endif; ?>
           </tr>
         <?php endforeach; else: ?>
-          <tr><td colspan="<?= $activeTab === 'hired' ? 8 : 7 ?>">
+          <tr><td colspan="<?= $activeTab === 'hired' ? 9 : 8 ?>">
             <div class="empty-state"><i class="bi bi-folder2-open"></i><p>No applications found for the selected filters.</p></div>
           </td></tr>
         <?php endif; ?>
@@ -1010,6 +1574,117 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
 </div><!-- /.main-wrapper -->
 
+
+<!-- ══ ADD WALK-IN MODAL ═══════════════════════════════════── -->
+<div class="modal fade" id="addWalkinModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <form id="addWalkinForm" method="post" action="add-walkin.php" enctype="multipart/form-data">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-person-plus-fill me-2" style="color:#2563eb;"></i>Add Applicant (Manual Entry)</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" style="padding:1.25rem 1.5rem;">
+          <div class="alert alert-info d-flex align-items-start gap-2 py-2 mb-3" style="font-size:.79rem;border-radius:10px;">
+            <i class="bi bi-info-circle-fill" style="margin-top:.1rem;flex-shrink:0;"></i>
+            <span>This creates a new application with status <strong>Manual Entry</strong>. It can be moved to any other stage afterward, same as an online application.</span>
+          </div>
+
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-tags"></i> Application Type <span style="color:#dc2626;">*</span></div>
+            <select class="form-select form-select-sm" name="application_type" required>
+              <option value="Walk-in" selected>Walk-in</option>
+              <option value="Job Fair">Job Fair</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-person-vcard"></i> Full Name</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Last Name <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="last_name" required>
+              </div>
+              <div>
+                <label class="tf-label">First Name <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="first_name" required>
+              </div>
+              <div>
+                <label class="tf-label">Middle Name</label>
+                <input type="text" class="form-control form-control-sm" name="middle_name">
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-briefcase"></i> Position &amp; Department</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Position <span style="color:#dc2626;">*</span></label>
+                <input type="text" class="form-control form-control-sm" name="position" required>
+              </div>
+              <div>
+                <label class="tf-label">Department <span style="color:#dc2626;">*</span></label>
+                <select class="form-select form-select-sm" name="department_id" required>
+                  <option value="">— Select Department —</option>
+                  <?php foreach ($departments as $d): ?>
+                    <option value="<?= (int)$d['DepartmentID'] ?>"><?= htmlspecialchars($d['DepartmentName']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-telephone"></i> Contact Information</div>
+            <div class="transfer-form-grid">
+              <div>
+                <label class="tf-label">Email <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
+                <input type="email" class="form-control form-control-sm" name="email">
+              </div>
+              <div>
+                <label class="tf-label">Mobile Number</label>
+                <input type="text" class="form-control form-control-sm" name="mobile">
+              </div>
+              <div class="tf-full">
+                <label class="tf-label">Present Address</label>
+                <input type="text" class="form-control form-control-sm" name="present_address">
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="tf-section-title"><i class="bi bi-paperclip"></i> Documents <span style="font-weight:400;color:#94a3b8;text-transform:none;">(optional)</span></div>
+            <div id="wkFileRows"></div>
+            <button type="button" id="wkAddFileRow" class="btn btn-sm btn-outline-secondary"><i class="bi bi-plus-lg"></i> Add file</button>
+            <template id="wkFileRowTemplate">
+              <div class="d-flex gap-2 align-items-center mb-2 wk-file-row">
+                <input type="file" name="files[]" class="form-control form-control-sm" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png">
+                <select name="category_id[]" class="form-select form-select-sm" style="max-width:170px;">
+                  <option value="">— Category —</option>
+                  <?php foreach ($fileCategories as $fc): ?>
+                    <option value="<?= (int)$fc['FileCategoryID'] ?>"><?= htmlspecialchars($fc['CategoryName']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+                <button type="button" class="btn btn-sm btn-outline-danger wk-remove-row"><i class="bi bi-x-lg"></i></button>
+              </div>
+            </template>
+          </div>
+
+          <div class="mb-0">
+            <div class="tf-section-title"><i class="bi bi-journal-text"></i> Notes</div>
+            <textarea class="form-control form-control-sm" name="notes" rows="2" placeholder="Anything HR should know about this walk-in"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-check2"></i> Add Applicant</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
 
 <!-- ══ FILES PREVIEW MODAL ═══════════════════════════════════─ -->
 <div class="modal fade" id="filesModal" tabindex="-1" aria-hidden="true">
@@ -1050,7 +1725,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
           <div class="mb-3">
             <label class="form-label">Status</label>
             <select name="status" id="modalStatus" class="form-select" required>
-              <?php foreach ($statusLabels as $code => $label): ?>
+              <?php foreach ($statusLabels as $code => $label): if ($code === 8) continue; ?>
                 <option value="<?= $code ?>"><?= htmlspecialchars($label) ?></option>
               <?php endforeach; ?>
             </select>
@@ -1071,6 +1746,44 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
             <div id="deptHint" style="display:none;font-size:.75rem;color:#dc2626;margin-top:.3rem;">
               <i class="bi bi-info-circle"></i> Please assign a department when moving from Pending.
             </div>
+          </div>
+
+          <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" name="sendEmail" id="modalSendEmail" value="1" checked>
+            <label class="form-check-label" for="modalSendEmail" style="font-size:.85rem;">
+              Send email notification to the applicant
+            </label>
+          </div>
+
+          <!-- Email options — shown only while "Send email" is ticked -->
+          <div id="emailOptions" class="mb-3">
+            <div class="email-mode-toggle">
+              <input type="radio" class="btn-check" name="emailMode" id="emailModeTemplate" value="template" checked>
+              <label class="btn btn-outline-primary btn-sm" for="emailModeTemplate"><i class="bi bi-file-earmark-text"></i> Use template</label>
+              <input type="radio" class="btn-check" name="emailMode" id="emailModeCustom" value="custom">
+              <label class="btn btn-outline-primary btn-sm" for="emailModeCustom"><i class="bi bi-pencil-square"></i> Compose my own</label>
+            </div>
+            <div id="customEmailBox" style="display:none;" class="interview-fields-box mt-2">
+              <div class="ibox-title"><i class="bi bi-envelope-paper"></i> Your Email</div>
+              <div class="mb-2">
+                <label class="form-label" for="emailSubject">Subject</label>
+                <input type="text" class="form-control" name="emailSubject" id="emailSubject" maxlength="200" placeholder="e.g. Update on your application">
+              </div>
+              <div>
+                <label class="form-label" for="emailBody">Message</label>
+                <textarea class="form-control" name="emailBody" id="emailBody" rows="7" maxlength="5000" placeholder="Write your message to the applicant…"></textarea>
+                <div style="font-size:.72rem;color:var(--text-muted);margin-top:.3rem;">
+                  Sent as written. For interview statuses, the date, venue and HR contact you select below are added under your message automatically, so there's no need to type them.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Rejection remarks — status 7 only (internal, never emailed) -->
+          <div id="rejectFields" style="display:none;" class="mb-3">
+            <label class="form-label" for="rejectionRemarks">Rejection Remarks <span style="color:#dc2626;">*</span></label>
+            <textarea class="form-control" name="rejectionRemarks" id="rejectionRemarks" rows="3" maxlength="1000"
+                      placeholder="Why is this applicant being rejected? (internal reminder for HR, not sent to the applicant)"></textarea>
           </div>
 
           <!-- Interview details — visible for statuses 2, 3, 4, 5 -->
@@ -1114,6 +1827,51 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
       </div>
     </form>
+  </div>
+</div>
+
+<!-- ══ EMPLOYEE MATCH MODAL ══ -->
+<div class="modal fade" id="empMatchModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-person-badge me-2" style="color:#b45309;"></i>Employee Record Match</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-warning py-2 mb-3" style="font-size:.79rem;border-radius:10px;">
+          <i class="bi bi-info-circle-fill me-1"></i>
+          <strong id="empMatchApplicant"></strong> matched the record(s) below by <strong>name only</strong>. Please confirm it is the same person before acting on this.
+        </div>
+        <div id="empMatchBody"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ APPLICATION DETAILS MODAL ══ -->
+<div id="pageLoading" class="page-loading" role="status" aria-live="polite">
+  <div class="page-loading-box">
+    <div class="spinner-border text-primary" aria-hidden="true"></div>
+    <div id="pageLoadingText">Please wait…</div>
+  </div>
+</div>
+
+<div class="modal fade" id="appDetailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-person-lines-fill me-2"></i>Application Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="appDetailBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1405,6 +2163,300 @@ document.addEventListener('DOMContentLoaded', () => {
   const filesModalBody = document.getElementById('filesModalBody');
   const INTERVIEW_STATUSES = [2, 3, 4, 5];
 
+  // ── Page loading overlay + double-submit lock ──────────────
+  const loadingEl   = document.getElementById('pageLoading');
+  const loadingText = document.getElementById('pageLoadingText');
+  let submitLocked  = false;
+  let loadingTimer  = null;
+
+  function resetLoading() {
+    clearTimeout(loadingTimer);
+    if (loadingEl) loadingEl.classList.remove('show');
+    submitLocked = false;
+    document.querySelectorAll('form button[type="submit"]').forEach(b => {
+      if (b.id !== 'transferSubmitBtn') b.disabled = false;
+    });
+  }
+  function showLoading(msg) {
+    if (loadingText) loadingText.textContent = msg || 'Please wait…';
+    if (loadingEl) loadingEl.classList.add('show');
+    clearTimeout(loadingTimer);
+    loadingTimer = setTimeout(resetLoading, 60000);   // safety net if the request never leaves
+  }
+  // Back/forward cache can restore the page mid-"loading"
+  window.addEventListener('pageshow', e => { if (e.persisted) resetLoading(); });
+
+  // ── Row click → full application details ───────────────────
+  const detailModalEl = document.getElementById('appDetailModal');
+  const detailBody    = document.getElementById('appDetailBody');
+  if (detailModalEl && detailBody) {
+    let detailReq = 0;
+    const VA_CSRF = <?= json_encode($_SESSION['va_csrf'] ?? '') ?>;
+    const adEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const adField = (label, val, full = false) => `
+      <div class="ad-field${full ? ' ad-full' : ''}">
+        <div class="ad-label">${adEsc(label)}</div>
+        <div class="ad-value">${val ? adEsc(val) : '<span class="ad-empty">—</span>'}</div>
+      </div>`;
+    const adSection = (icon, title, inner) => `
+      <div class="ad-section">
+        <div class="ad-title"><i class="bi ${icon}"></i> ${adEsc(title)}</div>
+        ${inner}
+      </div>`;
+    const adText = val => val ? `<div class="ad-pre">${adEsc(val)}</div>` : '<span class="ad-empty">—</span>';
+    const adHref = u => /^\s*(javascript|data|vbscript):/i.test(String(u || '')) ? '#' : String(u || '#');
+
+    // Educational_Background may be plain text or JSON from the wizard form — handle both
+    const adFlex = raw => {
+      const txt = String(raw ?? '').trim();
+      if (!txt) return '<span class="ad-empty">—</span>';
+      if (txt[0] === '[' || txt[0] === '{') {
+        try {
+          const parsed = JSON.parse(txt);
+          const items  = Array.isArray(parsed) ? parsed : [parsed];
+          if (!items.length) return '<span class="ad-empty">—</span>';
+          return items.map(it => {
+            if (it && typeof it === 'object') {
+              const lines = Object.entries(it)
+                .filter(([, v]) => v !== null && v !== '')
+                .map(([k, v]) => `<div><span class="ad-k">${adEsc(k.replace(/_/g, ' '))}:</span> ${adEsc(typeof v === 'object' ? JSON.stringify(v) : v)}</div>`)
+                .join('');
+              return `<div class="ad-chip">${lines}</div>`;
+            }
+            return `<div class="ad-chip">${adEsc(it)}</div>`;
+          }).join('');
+        } catch (err) { /* not JSON, fall through to plain text */ }
+      }
+      return `<div class="ad-pre">${adEsc(txt)}</div>`;
+    };
+
+    const renderDetail = d => {
+      const st = parseInt(d.Status, 10);
+
+      const canEdit = !!d.CanEditRemarks;
+      const remarkBox = (field, cls, icon, title, val, emptyTxt, meta) => `
+        <div class="${cls}" data-remark-box="${field}" data-app="${d.ApplicationID}" data-empty="${adEsc(emptyTxt)}">
+          <div class="ad-reject-title"><i class="bi ${icon}"></i> ${title}
+            ${canEdit ? '<button type="button" class="ad-remark-edit" data-remark-edit><i class="bi bi-pencil-fill"></i> Edit</button>' : ''}
+          </div>
+          <div data-remark-view>${val ? `<div class="ad-pre">${adEsc(val)}</div>` : `<span class="ad-empty">${adEsc(emptyTxt)}</span>`}</div>
+          ${meta ? `<div class="ad-remark-meta">${adEsc(meta)}</div>` : ''}
+        </div>`;
+      detailBody._rm    = { hr: d.HRRemarks || '', rejection: d.RejectionRemarks || '' };
+      detailBody._dirty = false;
+      const rejectBox = st === 7
+        ? remarkBox('rejection', 'ad-reject', 'bi-x-octagon-fill', 'Rejection Remarks', d.RejectionRemarks, 'No remarks were recorded for this applicant.', '')
+        : '';
+      const hrBox = remarkBox('hr', 'ad-hr', 'bi-bookmark-star-fill', 'HR Remarks', d.HRRemarks,
+        'No HR remarks yet. Use Edit to flag or note this applicant.',
+        d.RemarksUpdatedBy ? `Last edited by ${d.RemarksUpdatedBy}${d.RemarksUpdatedAt ? ' · ' + d.RemarksUpdatedAt : ''}` : '');
+
+      const interviews = (d.Interviews || []).length
+        ? d.Interviews.map(i => `
+            <div class="ad-chip">
+              <div><i class="bi bi-calendar-event"></i> <strong>${adEsc(i.When || '—')}</strong></div>
+              ${i.Address   ? `<div><span class="ad-k">Location:</span> ${adEsc(i.Address)}</div>` : ''}
+              ${i.HRContact ? `<div><span class="ad-k">HR Contact:</span> ${adEsc(i.HRContact)}</div>` : ''}
+            </div>`).join('')
+        : '<span class="ad-empty">No interview scheduled yet.</span>';
+
+      let filesHtml;
+      if (d.FilesLocked) {
+        const n = d.FileCount || 0;
+        filesHtml = `<span class="ad-empty"><i class="bi bi-lock-fill"></i> Files are locked for rejected applications (${n} file${n === 1 ? '' : 's'} on record).</span>`;
+      } else if (!(d.Files || []).length) {
+        filesHtml = '<span class="ad-empty">No files uploaded.</span>';
+      } else {
+        filesHtml = d.Files.map(f => `
+          <a class="ad-file" href="${adEsc(adHref(f.FilePath))}" target="_blank" rel="noreferrer noopener">
+            <i class="bi bi-paperclip"></i>
+            <span><strong>${adEsc(f.FileCategory)}</strong> · ${adEsc(f.FileName)}</span>
+          </a>`).join('');
+      }
+
+      detailBody.innerHTML = `
+        <div class="ad-head">
+          <div class="ad-name">${adEsc(d.FullName || 'Unnamed applicant')}</div>
+          <div class="ad-meta">
+            <span class="status-pill s-${st}"><span class="dot"></span>${adEsc(d.StatusLabel)}</span>
+            ${d.Transferred ? '<span class="badge-transferred"><span class="tf-checkmark"><i class="bi bi-check-lg"></i></span> Transferred</span>' : ''}
+          </div>
+        </div>
+        ${rejectBox}
+        ${hrBox}
+        ${adSection('bi-briefcase-fill', 'Application', `<div class="ad-grid">
+          ${adField('Position', d.Position)}
+          ${adField('Department', d.DepartmentName)}
+          ${adField('Application Type', d.ApplicationType)}
+          ${adField('Date Applied', d.DateApplied)}
+        </div>`)}
+        ${adSection('bi-telephone-fill', 'Contact', `<div class="ad-grid">
+          ${adField('Email', d.Email)}
+          ${adField('Phone', d.Phone)}
+          ${adField('Mobile', d.Mobile_Number)}
+        </div>`)}
+        ${adSection('bi-person-vcard-fill', 'Personal Information', `<div class="ad-grid">
+          ${adField('Birth Date', d.Birth_date)}
+          ${adField('Birth Place', d.Birth_Place)}
+          ${adField('Gender', d.Gender)}
+          ${adField('Civil Status', d.Civil_Status)}
+          ${adField('Nationality', d.Nationality)}
+          ${adField('Religion', d.Religion)}
+        </div>`)}
+        ${adSection('bi-geo-alt-fill', 'Address', `<div class="ad-grid">
+          ${adField('Present Address', d.Present_Address, true)}
+          ${adField('Permanent Address', d.Permanent_Address, true)}
+        </div>`)}
+        ${adSection('bi-card-heading', 'Government IDs', `<div class="ad-grid">
+          ${adField('SSS', d.SSS_Number)}
+          ${adField('TIN', d.TIN_Number)}
+          ${adField('PhilHealth', d.Philhealth_Number)}
+          ${adField('HDMF / Pag-IBIG', d.HDMF)}
+        </div>`)}
+        ${adSection('bi-telephone-inbound-fill', 'Emergency Contact', `<div class="ad-grid">
+          ${adField('Contact Person', d.Contact_Person)}
+          ${adField('Relationship', d.Relationship)}
+          ${adField('Contact Number', d.Contact_Number_Emergency)}
+        </div>`)}
+        ${adSection('bi-mortarboard-fill', 'Educational Background', adFlex(d.Educational_Background))}
+        ${adSection('bi-journal-text', 'Notes', adText(d.Notes))}
+        ${adSection('bi-calendar-event', 'Interview History', interviews)}
+        ${adSection('bi-paperclip', 'Uploaded Files', filesHtml)}
+      `;
+    };
+
+    const openDetail = async appId => {
+      const my = ++detailReq;   // ignore stale responses if another row is clicked meanwhile
+      detailBody.innerHTML = '<div style="text-align:center;padding:2.5rem;color:#94a3b8;"><div class="spinner-border spinner-border-sm me-2"></div>Loading details…</div>';
+      bootstrap.Modal.getOrCreateInstance(detailModalEl).show();
+      try {
+        const res  = await fetch(`?_action=view_applicant&application_id=${encodeURIComponent(appId)}`, { credentials: 'same-origin' });
+        const data = await res.json();
+        if (my !== detailReq) return;
+        if (!data.success) {
+          detailBody.innerHTML = `<div class="alert alert-danger mb-0">${adEsc(data.message || 'Could not load the application details.')}</div>`;
+          return;
+        }
+        renderDetail(data);
+      } catch (err) {
+        if (my !== detailReq) return;
+        console.error('Application details error:', err);
+        detailBody.innerHTML = '<div class="alert alert-danger mb-0">Could not load the application details. Please try again.</div>';
+      }
+    };
+
+    detailModalEl.addEventListener('hidden.bs.modal', () => { if (detailBody._dirty) location.reload(); });
+
+    detailBody.addEventListener('click', async e => {
+      const box = e.target.closest('[data-remark-box]');
+      if (!box) return;
+      const editBtn = box.querySelector('[data-remark-edit]');
+      const field   = box.dataset.remarkBox;
+      const view    = box.querySelector('[data-remark-view]');
+      const rm      = detailBody._rm || (detailBody._rm = {});
+      const paint   = () => {
+        const v = rm[field] || '';
+        view.innerHTML = v ? `<div class="ad-pre">${adEsc(v)}</div>` : `<span class="ad-empty">${adEsc(box.dataset.empty)}</span>`;
+        if (editBtn) editBtn.style.display = '';
+      };
+
+      if (e.target.closest('[data-remark-edit]')) {
+        view.innerHTML = `<textarea class="form-control form-control-sm" rows="3" maxlength="1000">${adEsc(rm[field] || '')}</textarea>
+          <div class="ad-remark-actions">
+            <button type="button" class="btn btn-sm btn-primary" data-remark-save>Save</button>
+            <button type="button" class="btn btn-sm btn-light" data-remark-cancel>Cancel</button>
+          </div>`;
+        editBtn.style.display = 'none';
+        view.querySelector('textarea').focus();
+        return;
+      }
+      if (e.target.closest('[data-remark-cancel]')) { paint(); return; }
+
+      const saveBtn = e.target.closest('[data-remark-save]');
+      if (!saveBtn) return;
+      const ta = view.querySelector('textarea');
+      if (field === 'rejection' && !ta.value.trim()) {
+        Swal.fire({ icon: 'warning', title: 'Remarks required', text: 'Rejection remarks cannot be empty.' });
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        const fd = new FormData();
+        fd.append('_action', 'save_remarks');
+        fd.append('csrf', VA_CSRF);
+        fd.append('application_id', box.dataset.app);
+        fd.append('field', field);
+        fd.append('remarks', ta.value);
+        const res  = await fetch(window.location.href, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json();
+        if (!data.success) {
+          Swal.fire({ icon: 'error', title: 'Could not save', text: data.message || 'Please try again.' });
+          saveBtn.disabled = false;
+          return;
+        }
+        rm[field] = data.remarks || '';
+        detailBody._dirty = true;   // list snippet refreshes when the modal closes
+        paint();
+      } catch (err) {
+        console.error('Save remarks error:', err);
+        Swal.fire({ icon: 'error', title: 'Could not save', text: 'Network error. Please try again.' });
+        saveBtn.disabled = false;
+      }
+    });
+
+    document.getElementById('applicantsTable')?.addEventListener('click', e => {
+      // Don't hijack clicks on buttons/links/pills/flags, or when the user is selecting text to copy
+      if (e.target.closest('a, button, input, select, textarea, label, .emp-flag, [data-bs-toggle]')) return;
+      if (String(window.getSelection ? window.getSelection() : '').trim() !== '') return;
+      const row = e.target.closest('tr.app-row');
+      if (row && row.dataset.appId) openDetail(row.dataset.appId);
+    });
+  }
+
+  // ── Employee match modal ───────────────────────────────────
+  const empMatchModal = document.getElementById('empMatchModal');
+  if (empMatchModal) {
+    const escH = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const field = (label, val) => val ? `
+      <div>
+        <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;">${label}</div>
+        <div style="font-size:.85rem;font-weight:600;color:#1e293b;">${escH(val)}</div>
+      </div>` : '';
+
+    empMatchModal.addEventListener('show.bs.modal', e => {
+      let data = {};
+      try { data = JSON.parse(e.relatedTarget?.dataset?.match || '{}'); } catch (err) {}
+      document.getElementById('empMatchApplicant').textContent = data.applicant || 'This applicant';
+      const body = document.getElementById('empMatchBody');
+      const recs = data.records || [];
+
+      if (!recs.length) {
+        body.innerHTML = '<div style="text-align:center;padding:1.5rem;color:#94a3b8;">No details available.</div>';
+        return;
+      }
+
+      body.innerHTML = recs.map(r => `
+        <div style="border:1px solid ${r.Blacklisted ? '#fecaca' : '#e2e8f0'};background:${r.Blacklisted ? '#fef2f2' : '#fff'};border-radius:12px;padding:.85rem 1rem;margin-bottom:.75rem;">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.65rem;">
+            <div style="font-weight:800;font-size:.95rem;color:#0f172a;">${escH(r.Name)}</div>
+            <div style="display:flex;gap:.35rem;flex-wrap:wrap;">
+              <span class="emp-flag ${r.Active ? 'ef-current' : 'ef-former'}" style="cursor:default;">${r.Active ? 'Active' : 'Inactive'}</span>
+              ${r.Blacklisted ? '<span class="emp-flag ef-blacklisted" style="cursor:default;"><i class="bi bi-slash-circle-fill"></i> Blacklisted</span>' : ''}
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.7rem;">
+            ${field('File No', r.FileNo)}
+            ${field('Department', r.Department)}
+            ${field('Branch', r.Branch)}
+            ${field('Position', r.Position)}
+            ${field('Job Title', r.JobTitle)}
+            ${field('Employee Status', r.EmployeeStatus)}
+            ${field('Hired Date', r.HiredDate)}
+          </div>
+        </div>`).join('');
+    });
+  }
+
  // ── Uploaded files modal ───────────────────────────────────
 if (filesModal && filesModalBody) {
   filesModal.addEventListener('show.bs.modal', e => {
@@ -1550,26 +2602,83 @@ if (filesModal && filesModalBody) {
     document.getElementById('modalAppID').value = btn.dataset.id     || '';
     modalStatus.value                           = btn.dataset.status || '0';
     if (btn.dataset.department) modalDept.value = btn.dataset.department;
+    const sendEmailChk = document.getElementById('modalSendEmail');
+    if (sendEmailChk) {
+      const hasEmail = !!(btn.dataset.email && btn.dataset.email.trim());
+      sendEmailChk.checked  = hasEmail;
+      sendEmailChk.disabled = !hasEmail;
+    }
     document.getElementById('InterviewDateTime').value       = '';
     document.getElementById('OfficeAddress').value           = '';
     document.getElementById('HRContactFileNo').selectedIndex = 0;
+    document.getElementById('rejectionRemarks').value    = '';
+    document.getElementById('emailSubject').value        = '';
+    document.getElementById('emailBody').value           = '';
+    document.getElementById('emailModeTemplate').checked = true;
+    toggleReject(modalStatus.value);
+    syncEmailUI();
     toggleInterview(modalStatus.value);
     updateDeptHint(modalStatus.value);
   });
 
   modalStatus.addEventListener('change', function () {
     toggleInterview(this.value);
+    toggleReject(this.value);
     updateDeptHint(this.value);
   });
   modalDept.addEventListener('change', () => updateDeptHint(modalStatus.value));
+
+  // ── Rejection remarks (status 7 only) ──────────────────────
+  function toggleReject(status) {
+    const show = parseInt(status, 10) === 7;
+    document.getElementById('rejectFields').style.display = show ? 'block' : 'none';
+    document.getElementById('rejectionRemarks').required  = show;
+  }
+
+  // ── Email composer (template vs. compose my own) ───────────
+  function syncEmailUI() {
+    const chk        = document.getElementById('modalSendEmail');
+    const on         = !!chk && chk.checked && !chk.disabled;
+    const showCustom = on && document.getElementById('emailModeCustom').checked;
+    document.getElementById('emailOptions').style.display   = on ? 'block' : 'none';
+    document.getElementById('customEmailBox').style.display = showCustom ? 'block' : 'none';
+    document.getElementById('emailSubject').required = showCustom;
+    document.getElementById('emailBody').required    = showCustom;
+  }
+  document.getElementById('modalSendEmail').addEventListener('change', syncEmailUI);
+  document.querySelectorAll('input[name="emailMode"]').forEach(r => r.addEventListener('change', syncEmailUI));
 
   // ── Submit — warn if no dept ───────────────────────────────
   document.getElementById('updateStatusForm').addEventListener('submit', function (e) {
     e.preventDefault();
     const form       = this;
+    if (submitLocked) return;
+    const remarksEl = document.getElementById('rejectionRemarks');
+    if (parseInt(modalStatus.value, 10) === 7 && !remarksEl.value.trim()) {
+      Swal.fire({
+        icon: 'warning', title: 'Remarks required',
+        text: 'Please enter the reason for rejecting this applicant.',
+        confirmButtonColor: '#ca8a04', background: '#fff', color: '#0f172a',
+      }).then(() => remarksEl.focus());
+      return;
+    }
+    const customOn = document.getElementById('customEmailBox').style.display !== 'none';
+    if (customOn && (!document.getElementById('emailSubject').value.trim() || !document.getElementById('emailBody').value.trim())) {
+      Swal.fire({
+        icon: 'warning', title: 'Email incomplete',
+        text: 'Please enter both a subject and a message, or switch back to the template.',
+        confirmButtonColor: '#ca8a04', background: '#fff', color: '#0f172a',
+      });
+      return;
+    }
     const notPending = parseInt(modalStatus.value) !== 0;
     const noDept     = !modalDept.value;
     const proceed    = () => {
+      if (submitLocked) return;
+      submitLocked = true;
+      form.querySelectorAll('button[type="submit"]').forEach(b => b.disabled = true);
+      const mailChk = document.getElementById('modalSendEmail');
+      showLoading(mailChk && mailChk.checked && !mailChk.disabled ? 'Saving, Please wait…' : 'Saving changes…');
       bootstrap.Modal.getInstance(modalEl).hide();
       setTimeout(() => form.submit(), 300);
     };
@@ -1751,11 +2860,41 @@ if (filesModal && filesModalBody) {
         background: '#fff', color: '#0f172a',
       }).then(r => {
         if (r.isConfirmed) {
+          if (submitLocked) return;
+          submitLocked = true;
+          showLoading('Transferring applicant…');
           bootstrap.Modal.getInstance(transferModalEl).hide();
           setTimeout(() => form.submit(), 300);
         }
       });
     });
+  }
+
+  // ══ Add Walk-in Modal ══════════════════════════════════════
+  const walkinForm = document.getElementById('addWalkinForm');
+  if (walkinForm) {
+    walkinForm.addEventListener('submit', e => {
+      if (submitLocked) { e.preventDefault(); return; }
+      submitLocked = true;
+      showLoading('Adding applicant…');
+      setTimeout(() => walkinForm.querySelectorAll('button[type="submit"]').forEach(b => b.disabled = true), 0);
+    });
+  }
+
+  const wkTemplate = document.getElementById('wkFileRowTemplate');
+  const wkRows      = document.getElementById('wkFileRows');
+  const wkAddBtn    = document.getElementById('wkAddFileRow');
+  if (wkTemplate && wkRows && wkAddBtn) {
+    function wkAddRow() {
+      if (wkRows.children.length >= 5) return;
+      const clone = wkTemplate.content.cloneNode(true);
+      clone.querySelector('.wk-remove-row').addEventListener('click', ev => {
+        ev.target.closest('.wk-file-row').remove();
+      });
+      wkRows.appendChild(clone);
+    }
+    wkAddBtn.addEventListener('click', wkAddRow);
+    wkAddRow();
   }
 });
 </script>

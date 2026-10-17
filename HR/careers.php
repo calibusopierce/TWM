@@ -53,6 +53,49 @@ sqlsrv_free_stmt($stmt);
   <!-- Careers CSS -->
   <link href="../assets/css/styles.css" rel="stylesheet">
 
+  <!-- Responsive overrides (scoped to this page; loaded after styles.css) -->
+  <style>
+    body.index-page { overflow-x: hidden; }
+    body.index-page img { max-width: 100%; }
+
+    @media (max-width: 767.98px) {
+      body.index-page .careers-hero { padding-top: 2.5rem; padding-bottom: 2.5rem; }
+      body.index-page .careers-hero .hero-inner { padding-left: 1.25rem; padding-right: 1.25rem; }
+      body.index-page .careers-hero .hero-title { font-size: clamp(1.6rem, 7vw, 2.4rem); line-height: 1.2; }
+      body.index-page .careers-hero .hero-desc { font-size: .95rem; }
+      body.index-page .careers-main { padding-left: 1rem; padding-right: 1rem; }
+
+      body.index-page .section-head { flex-wrap: wrap; gap: .75rem; }
+      body.index-page .section-title { font-size: 1.3rem; }
+    }
+
+    @media (max-width: 575.98px) {
+      /* One card per row, never wider than the screen */
+      body.index-page .careers-grid { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+      body.index-page .career-card { min-width: 0; }
+      body.index-page .card-body-content { min-width: 0; }
+      body.index-page .card-title { overflow-wrap: anywhere; }
+      body.index-page .card-footer-row { flex-wrap: wrap; gap: .5rem; }
+    }
+
+    /* Top bar: long email / phone / messenger row must wrap instead of overflowing */
+    @media (max-width: 767.98px) {
+      .header .topbar { height: auto !important; padding: 6px 0; }
+      .header .topbar .contact-info { flex-wrap: wrap; justify-content: center; row-gap: 2px; }
+      .header .topbar .contact-info i { font-size: 12px; }
+      .header .topbar .contact-info i span { font-size: 12px; overflow-wrap: anywhere; }
+      .header .topbar .contact-info .ms-4 { margin-left: .75rem !important; }
+    }
+    @media (max-width: 575.98px) {
+      .header .topbar .contact-info .bi-messenger { display: none !important; }
+    }
+
+    /* Footer: long email text and columns */
+    @media (max-width: 767.98px) {
+      .footer .footer-contact p { overflow-wrap: anywhere; }
+      .footer .footer-top { padding-left: 1rem; padding-right: 1rem; }
+    }
+  </style>
 </head>
 
 <body class="index-page">

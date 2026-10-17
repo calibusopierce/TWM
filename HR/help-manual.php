@@ -101,6 +101,8 @@ body{font-size:15px}
       <div class="hn-group-body" id="grp-applications">
         <a href="#app-overview"  class="hn-link"><i class="bi bi-people"></i> Applications Page</a>
         <a href="#app-status"    class="hn-link"><i class="bi bi-tag"></i> Application Statuses</a>
+        <a href="#app-walkin"    class="hn-link"><i class="bi bi-person-walking"></i> Manual Entry (Walk-in / Job Fair)</a>
+        <a href="#app-email"     class="hn-link"><i class="bi bi-envelope"></i> Email Notifications</a>
         <a href="#app-files"     class="hn-link"><i class="bi bi-paperclip"></i> Viewing Files</a>
         <a href="#app-apply"     class="hn-link"><i class="bi bi-file-earmark-person"></i> Submitting (Applicant)</a>
       </div>
@@ -217,20 +219,25 @@ body{font-size:15px}
     <!-- ── APPLICATIONS ─────────────────────────────────── -->
     <div class="help-section" id="app-overview">
       <div class="help-section-header"><span class="help-section-icon">👥</span><div class="help-section-title">Applications Page</div></div>
-      <div class="help-intro">Shows all job applications submitted through the public careers page, organized into <strong>tabs by stage</strong> — Pending, Evaluating, Interview, Hired, and Rejected — so you can focus on one group at a time.</div>
+      <div class="help-intro">Shows all job applications submitted through the public careers page, organized into <strong>tabs by stage</strong> — Pending, Evaluating, Interview, Hired, Rejected, and Manual Entry — so you can focus on one group at a time. Manual Entry applicants are added by HR (see <a href="#app-walkin">Manual Entry</a>).</div>
       <table class="col-table">
         <thead><tr><th>Column</th><th>What it means</th></tr></thead>
         <tbody>
           <tr><td>Applicant</td><td>The applicant's full name and the department they applied to</td></tr>
           <tr><td>Contact</td><td>The applicant's email address and phone number</td></tr>
           <tr><td>Position</td><td>Which job posting they applied for</td></tr>
+          <tr><td>Type</td><td>Where the application came from: <strong>Online</strong> (applied through the careers page), <strong>Walk-in</strong>, <strong>Job Fair</strong>, or <strong>Other</strong> (the last three are entered manually by HR). Use the <strong>Type</strong> filter at the top to show only one kind.</td></tr>
           <tr><td>Date Applied</td><td>When they submitted their application</td></tr>
           <tr><td>Files</td><td>Attached files grouped by category (e.g. Resume/CV, NBI Clearance) — click to view or download each file</td></tr>
           <tr><td>Interview</td><td>Shows the scheduled interview date, time, and office address if one has been set</td></tr>
-          <tr><td>Status</td><td>The current stage — click the status badge to update it</td></tr>
+          <tr><td>Status</td><td>The current stage — click the status badge to update it. <strong>Hired</strong> and <strong>Rejected</strong> show a lock icon and can no longer be changed.</td></tr>
+          <tr><td>Action (Hired tab only)</td><td><strong>Add to Employee List</strong> opens the employee form pre-filled with the applicant's details. Once added, the button changes to a <strong>Transferred</strong> badge.</td></tr>
         </tbody>
       </table>
       <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>Use the <strong>date range</strong>, <strong>status</strong>, and <strong>search</strong> filters at the top to quickly find specific applicants.</span></div>
+      <div class="tip-box"><i class="bi bi-calendar-range"></i><span><strong>Date range:</strong> Every tab shows the <strong>last 30 days</strong> by default. Click <strong>Show all time</strong> to see older applications, or set your own From/To dates.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>New applicants:</strong> A red number on a tab shows how many applications arrived since you last opened it. New rows are highlighted with a <strong>NEW</strong> tag. This resets when you log out and back in.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Departments:</strong> Pending shows every department. All other tabs show only your own department's applicants. Administrators can use <strong>View All Departments</strong> (and <strong>Back to My Department</strong>) at the top right.</span></div>
       <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span><strong>Interview Tab:</strong> When moving an applicant to <strong>For Interview</strong> or <strong>Final Interview</strong>, you'll be asked to fill in the interview date &amp; time, office address, and HR contact. These details appear in the applicant's row under the Interview column.</span></div>
       <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span><strong>Department Assignment:</strong> When moving an applicant out of Pending, assign them a department so HR staff from that department can see and manage the application.</span></div>
     </div>
@@ -248,10 +255,45 @@ body{font-size:15px}
           <tr><td>Re-schedule Interview</td><td>The original interview was moved — a new schedule is being arranged</td></tr>
           <tr><td>Final Interview</td><td>Applicant passed the first interview and is being called for a final round</td></tr>
           <tr><td>Final Interview Rescheduled</td><td>The final interview was moved — a new schedule is being arranged</td></tr>
-          <tr><td>Hired</td><td>Applicant has been accepted and will be onboarded</td></tr>
-          <tr><td>Rejected</td><td>Applicant was not selected for this position</td></tr>
+          <tr><td>Hired</td><td>Applicant has been accepted and will be onboarded. <strong>Final — cannot be changed afterward.</strong></td></tr>
+          <tr><td>Rejected</td><td>Applicant was not selected for this position. <strong>Final — cannot be changed afterward</strong>, and the applicant's files are locked.</td></tr>
+          <tr><td>Manual Entry</td><td>Starting status for applicants added manually by HR (walk-ins, job fairs, others). It appears only in the Manual Entry tab and cannot be picked from the status dropdown — move the applicant to any other stage when ready. The applicant's <strong>Type</strong> stays with them through every stage.</td></tr>
         </tbody>
       </table>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Double-check before setting <strong>Hired</strong> or <strong>Rejected</strong>. These statuses are locked and cannot be edited afterward.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="app-walkin">
+      <div class="help-section-header"><span class="help-section-icon">🚶</span><div class="help-section-title">Manual Entry (Walk-in / Job Fair)</div></div>
+      <div class="help-intro">Use the <strong>Manual Entry</strong> tab to record applicants who did not apply through the public careers page, such as walk-ins or people met at a job fair. They then go through the same stages as online applicants.</div>
+      <div class="step-list">
+        <div class="step-item"><div class="step-num">1</div><div class="step-text">Open the <strong>Manual Entry</strong> tab and click <strong>Add Applicant</strong> at the top right.</div></div>
+        <div class="step-item"><div class="step-num">2</div><div class="step-text">Choose the <strong>Application Type</strong>: <strong>Walk-in</strong>, <strong>Job Fair</strong>, or <strong>Other</strong>.</div></div>
+        <div class="step-item"><div class="step-num">3</div><div class="step-text">Fill in the required fields: <strong>Last Name</strong>, <strong>First Name</strong>, <strong>Position</strong>, and <strong>Department</strong>. Middle name is optional.</div></div>
+        <div class="step-item"><div class="step-num">4</div><div class="step-text">Optionally add an <strong>Email</strong>, <strong>Mobile Number</strong>, <strong>Present Address</strong>, and <strong>Notes</strong>.</div></div>
+        <div class="step-item"><div class="step-num">5</div><div class="step-text">Optionally attach documents with <strong>Add file</strong>. Each file needs a <strong>category</strong>. Up to 5 files (PDF, DOC, DOCX, JPG, PNG), 10 MB each.</div></div>
+        <div class="step-item"><div class="step-num">6</div><div class="step-text">Click <strong>Add Applicant</strong>. The applicant appears in the Manual Entry tab with the type you chose.</div></div>
+      </div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Choose the correct <strong>Department</strong>. Each department's HR only sees its own applicants, so an applicant filed under another department will not show in your tab.</span></div>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>To move an applicant forward, click its status badge and choose the next stage (e.g. Evaluating or For Interview). Once moved, it leaves the Manual Entry tab and appears in the tab for its new stage.</span></div>
+    </div>
+    <hr class="help-divider">
+
+    <div class="help-section" id="app-email">
+      <div class="help-section-header"><span class="help-section-icon">✉️</span><div class="help-section-title">Email Notifications</div></div>
+      <div class="help-intro">When you update an application, the <strong>Update Application</strong> window has a checkbox: <strong>Send email notification to the applicant</strong>. It is ticked by default, so the applicant is emailed about the change. Untick it to update the status silently.</div>
+      <table class="col-table">
+        <thead><tr><th>Situation</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td>Box ticked</td><td>The applicant receives an email matching the new status (Evaluating, For Interview, Re-schedule, Final Interview, Final Interview Rescheduled, Hired, or Rejected). Interview emails include the date, time, venue, and the HR contact you selected.</td></tr>
+          <tr><td>Box unticked</td><td>The status is updated and <strong>no email is sent</strong>. Useful for duplicate applications or internal corrections.</td></tr>
+          <tr><td>Box greyed out</td><td>The applicant has no email address on file, so no email can be sent.</td></tr>
+          <tr><td>Moving to Pending</td><td>No email is sent for this status.</td></tr>
+        </tbody>
+      </table>
+      <div class="tip-box"><i class="bi bi-lightbulb-fill"></i><span>The checkbox resets to <strong>ticked</strong> every time you open the window, so untick it each time you want a silent update.</span></div>
+      <div class="tip-box warn"><i class="bi bi-exclamation-triangle-fill"></i><span>Unticking the box for <strong>Hired</strong> or <strong>Rejected</strong> also skips the congratulations or regret email. Those statuses cannot be changed afterward, so the email cannot be resent from here.</span></div>
     </div>
     <hr class="help-divider">
 
@@ -634,7 +676,7 @@ body{font-size:15px}
 <script>
 const sectionGroup={
   'careers-overview':'careers','careers-add':'careers','careers-edit':'careers','careers-public':'careers',
-  'app-overview':'applications','app-status':'applications','app-files':'applications','app-apply':'applications',
+  'app-overview':'applications','app-status':'applications','app-walkin':'applications','app-email':'applications','app-files':'applications','app-apply':'applications',
   'uni-overview':'uniform','uni-items':'uniform','uni-issue':'uniform','uni-return':'uniform',
   'uni-history':'uniform','uni-po':'uniform','uni-receiving':'uniform','uni-print':'uniform',
   'emp-list':'employees','emp-inactive':'employees','emp-blacklisted':'employees',

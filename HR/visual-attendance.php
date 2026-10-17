@@ -503,7 +503,7 @@ function rowOffline(r) {
     const lat = r.Latitude, lng = r.Longitude;
     const hasMap = lat && lng && (parseFloat(lng) !== 0);
     const mapBtn = hasMap
-        ? `<a class="va-map-btn" href="https://www.google.com/maps/place/${lng}+${lat}" target="_blank"><i class="bi bi-map-fill"></i> Map</a>`
+        ? `<a class="va-map-btn" href="https://www.google.com/maps/place/${lat}+${lng}" target="_blank"><i class="bi bi-map-fill"></i> Map</a>`
         : '<span style="color:var(--text-muted,#94a3b8);font-size:.85rem">—</span>';
     return `<tr>
       <td>${thumbHtml(r.Picture, r.EmployeeName)}</td>

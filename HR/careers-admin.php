@@ -8,6 +8,22 @@ auth_check();
 
 rbac_gate($pdo, 'careers_admin');
 
+// --- IMAGE ENDPOINT: serves one job image so blobs stay out of the page HTML ---
+if (isset($_GET['img'])) {
+    session_write_close(); // don't let image requests queue on the session lock
+    $imgId   = intval($_GET['img']);
+    $imgStmt = sqlsrv_query($conn, "SELECT JobImage FROM Careers WHERE CareerID=?", [$imgId]);
+    $imgRow  = $imgStmt ? sqlsrv_fetch_array($imgStmt, SQLSRV_FETCH_ASSOC) : null;
+    while (ob_get_level()) ob_end_clean();
+    if (!$imgRow || empty($imgRow['JobImage'])) { http_response_code(404); exit; }
+    $mime = class_exists('finfo') ? ((new finfo(FILEINFO_MIME_TYPE))->buffer($imgRow['JobImage']) ?: 'image/jpeg') : 'image/jpeg';
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . strlen($imgRow['JobImage']));
+    header('Cache-Control: private, max-age=86400');
+    echo $imgRow['JobImage'];
+    exit;
+}
+
 $messages = [];
 
 // --- DELETE ---
@@ -68,7 +84,7 @@ if (isset($_POST['save'])) {
 }
 
 // --- FETCH ALL CAREERS ---
-$sql  = "SELECT CareerID, JobTitle, Department, Location, Qualifications, JobDescription, JobImage, IsActive FROM Careers ORDER BY CareerID DESC";
+$sql  = "SELECT CareerID, JobTitle, Department, Location, Qualifications, JobDescription, ISNULL(DATALENGTH(JobImage), 0) AS ImgLen, IsActive FROM Careers ORDER BY CareerID DESC";
 $stmt = sqlsrv_query($conn, $sql);
 
 $rows = [];
@@ -77,17 +93,21 @@ $rowCount = count($rows);
 
 // ── Fetch department color map ─────────────────────────────
 $deptColorMap = [];
+$allDepts = [];
+$deptStmt = sqlsrv_query($conn, "SELECT DepartmentName, ColorCode FROM Departments WHERE Status = 1");
+if ($deptStmt) {
+    while ($d = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC)) $allDepts[] = $d;
+    sqlsrv_free_stmt($deptStmt);
+}
 foreach ($rows as $career) {
     $dept = trim($career['Department'] ?? '');
-    if (empty($dept) || isset($deptColorMap[$dept])) continue;
-
-    $deptStmt = sqlsrv_query($conn,
-        "SELECT TOP 1 ColorCode FROM Departments WHERE DepartmentName LIKE ? AND Status = 1",
-        ['%' . $dept . '%']);
-    if ($deptStmt) {
-        $r = sqlsrv_fetch_array($deptStmt, SQLSRV_FETCH_ASSOC);
-        $deptColorMap[$dept] = $r['ColorCode'] ?? '#64748b';
-        sqlsrv_free_stmt($deptStmt);
+    if ($dept === '' || isset($deptColorMap[$dept])) continue;
+    $deptColorMap[$dept] = '#64748b';
+    foreach ($allDepts as $d) {
+        if (stripos($d['DepartmentName'] ?? '', $dept) !== false) {
+            $deptColorMap[$dept] = $d['ColorCode'] ?: '#64748b';
+            break;
+        }
     }
 }
 
@@ -116,7 +136,12 @@ foreach ($rows as $career) {
   <div class="page-header">
     <div>
       <div class="page-title">Careers Admin Panel</div>
-      <div class="page-subtitle">Manage active job postings and career listings</div>
+<div class="page-subtitle">Manage active job postings and career listings</div>
+      <?php if (rbac_can_access('view_applications')): ?>
+      <a href="<?= route('view_applications') ?>" class="btn btn-outline-primary btn-sm mt-2">
+        <i class="bi bi-people-fill me-1"></i> View Applications
+      </a>
+      <?php endif; ?>
     </div>
     <button class="btn btn-add" data-bs-toggle="modal" data-bs-target="#careerModal" id="addCareerBtn">
       <i class="bi bi-plus-lg"></i> Add New Career
@@ -161,7 +186,8 @@ foreach ($rows as $career) {
             $isActive   = $row['IsActive'] ?? 1;
             $qualEnc    = base64_encode($row['Qualifications'] ?? '');
             $descEnc    = base64_encode($row['JobDescription'] ?? '');
-            $imgBase    = !empty($row['JobImage']) ? base64_encode($row['JobImage']) : '';
+            $imgLen     = (int)($row['ImgLen'] ?? 0);
+            $imgUrl     = $imgLen > 0 ? route('careers_admin') . '?img=' . urlencode($id) . '&v=' . $imgLen : '';
         ?>
           <tr>
             <td style="color:var(--text-muted);font-size:.8rem;font-weight:600;">#<?= htmlspecialchars($id) ?></td>
@@ -204,11 +230,12 @@ foreach ($rows as $career) {
             </td>
 
             <td>
-              <?php if ($imgBase): ?>
-                <img src="data:image/jpeg;base64,<?= $imgBase ?>"
+              <?php if ($imgUrl): ?>
+                <img src="<?= htmlspecialchars($imgUrl) ?>"
                      alt="Job Preview"
+                     loading="lazy"
                      class="job-thumb img-preview-trigger"
-                     data-full-src="data:image/jpeg;base64,<?= $imgBase ?>"
+                     data-full-src="<?= htmlspecialchars($imgUrl) ?>"
                      title="Click to preview">
               <?php else: ?>
                 <div class="no-image-placeholder">
@@ -250,7 +277,7 @@ foreach ($rows as $career) {
                   data-qualifications="<?= htmlspecialchars($qualEnc, ENT_QUOTES) ?>"
                   data-jobdescription="<?= htmlspecialchars($descEnc, ENT_QUOTES) ?>"
                   data-isactive="<?= $isActive ?>"
-                  <?= $imgBase ? 'data-image="' . htmlspecialchars($imgBase, ENT_QUOTES) . '"' : '' ?>
+                  <?= $imgUrl ? 'data-image="' . htmlspecialchars($imgUrl, ENT_QUOTES) . '"' : '' ?>
                   title="Edit">
                   <i class="bi bi-pencil-fill"></i>
                 </button>
@@ -286,7 +313,7 @@ foreach ($rows as $career) {
 
 <!-- ══ ADD / EDIT MODAL ════════════════════════ -->
 <div class="modal fade" id="careerModal" tabindex="-1" aria-labelledby="careerModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
+  <div class="modal-dialog modal-xl">
     <div class="modal-content">
       <form method="post" enctype="multipart/form-data" id="careerModalForm">
 
@@ -427,7 +454,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function resetImagePanel(imgBase64) {
     if (imgBase64) {
-      imagePreview.src = 'data:image/jpeg;base64,' + imgBase64;
+      imagePreview.src = imgBase64; // now a URL, not base64
       imagePreviewWrapper.style.display = 'block';
       noImgPlaceholder.style.display = 'none';
     } else {

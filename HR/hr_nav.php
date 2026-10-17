@@ -15,8 +15,45 @@
 // $hr_active must be set by the including page BEFORE require-ing this file.
 // e.g. $hr_active = 'attendance';
 $hr_active = $hr_active ?? '';
+$hr_is_super = in_array($_SESSION['UserType'] ?? '', rbac_superadmin_roles());
+if (!$hr_is_super && isset($pdo)) {
+    rbac_load_permissions($pdo, $_SESSION['UserType'] ?? '');
+}
+
+// Grouped menu. 'key' = rbac_modules.module_key (link via route() + permission filter).
+// 'match' = extra $hr_active values that should highlight the item.
 $hr_menu = [
-    'payroll_dashboard'    => ['icon' => 'bi-cash-stack',          'label' => 'Payroll Dashboard'],
+    'Overview' => [
+        'payroll_dashboard' => ['icon' => 'bi-cash-stack', 'label' => 'Payroll Dashboard', 'key' => 'payroll_dashboard'],
+    ],
+    'Employees' => [
+        'employee-list'     => ['icon' => 'bi-people-fill', 'label' => 'Employee List', 'key' => 'employee_list',
+                                'match' => ['employee-inactive', 'employee-blacklist']],
+    ],
+    'Attendance & Leave' => [
+        'attendance'         => ['icon' => 'bi-clock-fill', 'label' => 'Attendance Monitoring', 'key' => 'attendance'],
+        'visual-attendance'  => ['icon' => 'bi-camera-fill', 'label' => 'Visual Attendance'],
+        'attendance_present' => ['icon' => 'bi-calendar-check-fill', 'label' => 'Attendance Present', 'key' => 'attendance_present'],
+        'override_attendance_approval' => ['icon' => 'bi-check2-square', 'label' => 'Override Approval', 'key' => 'override_attendance_approval'],
+        'leave_management'   => ['icon' => 'bi-gear-fill', 'label' => 'Leave Management', 'key' => 'leave_management'],
+        'leave'              => ['icon' => 'bi-calendar2-check-fill', 'label' => 'Leave for Approval', 'key' => 'leave_approval'],
+    ],
+    'Loans & Vale' => [
+        'employee_loans'      => ['icon' => 'bi-cash-coin', 'label' => 'Employee Loans', 'key' => 'employee_loans'],
+        'cash_advance_record' => ['icon' => 'bi-receipt', 'label' => 'Cash Advance Approval', 'key' => 'cash_advance_record'],
+    ],
+    'Payroll' => [
+        'payroll_cutoff' => ['icon' => 'bi-calendar-range-fill', 'label' => 'Payroll Cutoff', 'key' => 'payroll_cutoff'],
+        'weekly_payroll' => ['icon' => 'bi-calendar-week-fill', 'label' => 'Weekly Payroll', 'key' => 'weekly_payroll'],
+    ],
+    'Help' => [
+        'help-manual' => ['icon' => 'bi-book-fill', 'label' => 'Help Manual'],
+    ],
+];
+
+// Old flat menu, no longer used. Safe to delete this whole block later.
+$hr_menu_old = [
+    'payroll_dashboard'    => ['icon' => 'bi-cash-stack',          'label' => 'Payroll Dashboard', 'href' => 'HR/PAYROLL/payroll_dashboard.php'],
     'employee-list'        => ['icon' => 'bi-people-fill',         'label' => 'Employees'],
     'attendance'           => ['icon' => 'bi-clock-fill',          'label' => 'Attendance'],
     'visual-attendance'    => ['icon' => 'bi-camera-fill',         'label' => 'Visual Attendance'],
@@ -82,6 +119,7 @@ $hr_menu = [
 .hr-nav-pip{position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:60%;background:#6366f1;border-radius:0 4px 4px 0;}
 
 .hr-sidebar-footer{padding:.6rem;border-top:1px solid #eef0f3;flex-shrink:0;}
+.hr-nav-group{font-size:.68rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:.9rem .7rem .3rem;}
 
 /* Content is offset by the sidebar's width via margin-left since the
    sidebar itself is fixed and out of normal flow. */
@@ -149,9 +187,17 @@ $hr_menu = [
       <span class="hr-sidebar-title">HR <span>Module</span></span>
     </div>
     <nav class="hr-nav" role="navigation" aria-label="HR sections">
-      <?php foreach ($hr_menu as $slug => $item):
-        $isActive = ($hr_active === $slug);
-        $href     = base_url($item['href'] ?? "HR/{$slug}.php");
+      <?php foreach ($hr_menu as $groupLabel => $items):
+        $visible = array_filter($items, function ($it) use ($hr_is_super) {
+            return $hr_is_super || !isset($it['key']) || rbac_can($it['key']);
+        });
+        if (!$visible) continue;
+      ?>
+      <div class="hr-nav-group"><?= htmlspecialchars($groupLabel) ?></div>
+      <?php foreach ($visible as $slug => $item):
+        $ids      = array_filter(array_merge([$slug, $item['key'] ?? ''], $item['match'] ?? []));
+        $isActive = in_array($hr_active, $ids, true);
+        $href     = isset($item['key']) ? route($item['key']) : base_url($item['href'] ?? "HR/{$slug}.php");
       ?>
       <a href="<?= $href ?>"
          class="hr-nav-item<?= $isActive ? ' active' : '' ?>"
@@ -164,11 +210,12 @@ $hr_menu = [
         <?php endif; ?>
       </a>
       <?php endforeach; ?>
+      <?php endforeach; ?>
     </nav>
     <div class="hr-sidebar-footer">
-      <a href="<?= base_url('index.php') ?>" class="hr-nav-item" title="Back to TWM">
+      <a href="<?= base_url('home.php') ?>" class="hr-nav-item" title="Back to TWM">
         <i class="bi bi-arrow-left-circle-fill" aria-hidden="true"></i>
-        <span class="hr-nav-label">Back to TWM</span>
+        <span class="hr-nav-label">Back to Home</span>
       </a>
     </div>
   </aside>

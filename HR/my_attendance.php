@@ -43,8 +43,8 @@ $dtrSql = "
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
            AMLate, PMLate, Late1, MorningTotalHours, AfternoonTotalHours,
-           MorningAfternoonTotal, TotalHours
-    FROM View_ATtendanceTimeInTimeOut2
+           MorningAfternoonTotal, TotalHours, Status
+    FROM View_ATtendanceTimeInTimeOut2_Override
     WHERE EmployeeID = ? AND ADate BETWEEN ? AND ?
     ORDER BY ADate DESC
 ";
@@ -93,7 +93,7 @@ if ($logStmt) {
 ----------------------------------------------------------- */
 $attendanceMap    = []; // 'Y-m-d' => ['daycount' => float, 'late' => int]
 $attStmt = sqlsrv_query($conn, "
-    SELECT ADate, DayCount, Late1
+    SELECT ADate, DayCount
     FROM View_Attendance_Record_Daily
     WHERE EmployeeID = ? AND ADate BETWEEN ? AND ?
 ", [$empId, $dateFrom, $dateTo]);
@@ -102,10 +102,9 @@ if ($attStmt) {
         $d = $ar['ADate'];
         if ($d instanceof DateTime) $d = $d->format('Y-m-d');
         $d = substr((string)$d, 0, 10);
-        $late = (int)($ar['Late1'] ?? 0);
         $attendanceMap[$d] = [
             'daycount' => (float)($ar['DayCount'] ?? 0),
-            'late'     => $late,
+            'late'     => 0, // filled in below from View_ATtendanceTimeInTimeOut2
         ];
     }
     sqlsrv_free_stmt($attStmt);
@@ -113,6 +112,32 @@ if ($attStmt) {
 } else {
     $debugLog['calendar'] = sqlsrv_errors();
     error_log('my_attendance.php attStmt failed: ' . print_r(sqlsrv_errors(), true));
+}
+
+/* -----------------------------------------------------------
+   Late minutes + Total Hours for the calendar — sourced from
+   View_ATtendanceTimeInTimeOut2 (Late1 / TotalHours), the SAME
+   view + columns the HR attendance monitoring calendar uses,
+   so both screens always agree.
+----------------------------------------------------------- */
+$hoursMap = []; // 'Y-m-d' => float TotalHours
+$hrsStmt = sqlsrv_query($conn, "
+    SELECT ADate, TotalHours, Late1
+    FROM View_ATtendanceTimeInTimeOut2
+    WHERE EmployeeID = ? AND CAST(ADate AS DATE) BETWEEN ? AND ?
+", [$empId, $dateFrom, $dateTo]);
+if ($hrsStmt) {
+    while ($hr = sqlsrv_fetch_array($hrsStmt, SQLSRV_FETCH_ASSOC)) {
+        $d = $hr['ADate']; if ($d instanceof DateTime) $d = $d->format('Y-m-d');
+        $d = substr((string)$d, 0, 10);
+        $hoursMap[$d] = (float)($hr['TotalHours'] ?? 0);
+        if (isset($attendanceMap[$d])) {
+            $attendanceMap[$d]['late'] = (int)($hr['Late1'] ?? 0);
+        }
+    }
+    sqlsrv_free_stmt($hrsStmt);
+} else {
+    error_log('my_attendance.php hrsStmt failed: ' . print_r(sqlsrv_errors(), true));
 }
 
 /* -----------------------------------------------------------
@@ -156,7 +181,7 @@ if ($leaveStmt) {
    Calendar day status resolver.
    Priority: Sunday > future(unknown) > Leave > Present/Half-day(+Late) > Absent
 ----------------------------------------------------------- */
-function maDayStatus(string $dateStr, string $today, array $attendanceMap, array $leaveMap): array {
+function maDayStatus(string $dateStr, string $today, array $attendanceMap, array $leaveMap, array $hoursMap = []): array {
     $dow = (int)date('w', strtotime($dateStr)); // 0 = Sunday
     if ($dow === 0) {
         return ['status' => 'sunday'];
@@ -169,12 +194,13 @@ function maDayStatus(string $dateStr, string $today, array $attendanceMap, array
     }
     if (isset($attendanceMap[$dateStr])) {
         $dc   = $attendanceMap[$dateStr]['daycount'];
-        $late = $attendanceMap[$dateStr]['late'];
+        $late  = $attendanceMap[$dateStr]['late'];
+        $hours = $hoursMap[$dateStr] ?? null;
         if ($dc >= 1) {
-            return ['status' => 'present', 'late' => $late];
+            return ['status' => 'present', 'late' => $late, 'hours' => $hours];
         }
         if ($dc > 0) {
-            return ['status' => 'halfday', 'late' => $late];
+            return ['status' => 'halfday', 'late' => $late, 'hours' => $hours];
         }
         // DayCount of 0 with a row present — fall through to absent below.
     }
@@ -314,8 +340,44 @@ function maDirBadge(?string $dir): string {
 function maLateBadge($mins): string {
     $m = (float)($mins ?? 0);
     return $m > 0
-        ? '<span class="ma-badge ma-badge-out">⚠ ' . h($mins) . ' min</span>'
-        : '<span class="ma-badge ma-badge-in">On Time</span>';
+        ? '<span class="ma-badge ma-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>' . h((string)$m) . ' min</span>'
+        : '<span class="ma-time" style="color:#cbd5e1;font-weight:400;">—</span>';
+}
+// Work Status badge for the DTR table — same icon/color map as the
+// monitoring page's FIELD_STATUS_MAP (reads the view's Status column).
+function maStatusBadge(?string $status): string {
+    static $map = [
+        'absent'     => ['bi-x-circle-fill',     '#dc2626', 'Absent'],
+        'halfday'    => ['bi-circle-half',       '#f97316', 'Halfday'],
+        'half day'   => ['bi-circle-half',       '#f97316', 'Halfday'],
+        'late'       => ['bi-clock-fill',        '#ca8a04', 'Late'],
+        'overtime'   => ['bi-stopwatch',         '#2563eb', 'Overtime'],
+        'present'    => ['bi-check-circle-fill', '#16a34a', 'Present'],
+        'undertime'  => ['bi-clock-fill',        '#7c3aed', 'Undertime'],
+        'incomplete' => ['bi-dash-circle-fill',  '#6b7280', 'Incomplete'],
+    ];
+    $raw = trim($status ?? '');
+    if ($raw === '') return '<span class="ma-badge">—</span>';
+    $e = $map[strtolower($raw)] ?? null;
+    if (!$e) return '<span class="ma-badge">' . h($raw) . '</span>';
+    [$icon, $color, $label] = $e;
+    return '<span class="ma-badge" style="background:' . $color . '1a;color:' . $color . ';"><i class="bi ' . $icon . '" style="margin-right:.35rem;"></i>' . h($label) . '</span>';
+}
+// Calendar-cell work status — hours-only, identical thresholds to
+// calWorkStatusBadge() in attendance.php (>=10 OT, 8–9.99 Reg, >4 UT, else ½ Day).
+function maWorkStatusBadge($hours): string {
+    if ($hours === null || $hours === '') return '';
+    $h = (float)$hours;
+    if ($h >= 10) {
+        return '<div class="ma-cal-workstatus ma-cal-ws-overtime" title="Overtime"><i class="bi bi-stopwatch" style="margin-right:.3rem;"></i>OT</div>';
+    }
+    if ($h >= 8 && $h < 10) {
+        return '<div class="ma-cal-workstatus ma-cal-ws-regular" title="Regular"><i class="bi bi-check-circle-fill" style="margin-right:.3rem;"></i>Reg</div>';
+    }
+    if ($h > 4 && $h < 8) {
+        return '<div class="ma-cal-workstatus ma-cal-ws-undertime" title="Undertime"><i class="bi bi-clock-fill" style="margin-right:.3rem;"></i>UT</div>';
+    }
+    return '<div class="ma-cal-workstatus ma-cal-ws-halfday" title="Halfday"><i class="bi bi-circle-half" style="margin-right:.3rem;"></i>½ Day</div>';
 }
 function maSourceBadge(?string $src): string {
     $src = trim($src ?? '');
@@ -404,6 +466,7 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
 .ma-badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.75rem; font-weight:600; background:#f1f5f9; color:#64748b; }
 .ma-badge-in { background:#dbeafe; color:#1d4ed8; }
 .ma-badge-out { background:#fee2e2; color:#dc2626; }
+.ma-badge-present { background:#dcfce7; color:#16a34a; }
 
 .ma-empty { padding:2.5rem 1rem; text-align:center; color:#94a3b8; }
 .ma-empty i { font-size:2rem; display:block; margin-bottom:.5rem; opacity:.4; }
@@ -462,12 +525,19 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
 .ma-cal-mark-absent  { color:#dc2626; }
 .ma-cal-mark-leave   { color:#a16207; }
 .ma-cal-mark-sunday  { color:#94a3b8; }
-.ma-cal-late { font-size:.63rem; font-weight:700; color:#dc2626; line-height:1.2; }
+.ma-cal-late { font-size:.63rem; font-weight:700; color:#ca8a04; line-height:1.2; }
+.ma-cal-workstatus { font-size:.6rem; font-weight:700; line-height:1.2; }
+.ma-cal-ws-overtime  { color:#2563eb; }
+.ma-cal-ws-regular   { color:#16a34a; }
+.ma-cal-ws-undertime { color:#7c3aed; }
+.ma-cal-ws-halfday   { color:#f97316; }
+.ma-badge-late { background:#fef9c3; color:#a16207; }
 
 @media (max-width:640px) {
     .ma-cal-cell { min-height:48px; padding:3px 4px; }
     .ma-cal-mark { font-size:.6rem; }
     .ma-cal-late { font-size:.55rem; }
+    .ma-cal-workstatus { font-size:.55rem; }
 }
 
 @media print {
@@ -558,7 +628,7 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
             <tr>
               <th>Date</th><th>Sched. AM In</th><th>AM In</th><th>AM Out</th><th>AM Hours</th><th>AM Late</th>
               <th>Sched. PM In</th><th>PM In</th><th>PM Out</th><th>PM Hours</th><th>PM Late</th>
-              <th>Daily Total</th><th>Total Late</th>
+              <th>Daily Total</th><th>Total Late</th><th>Work Status</th>
             </tr>
           </thead>
           <tbody>
@@ -581,6 +651,7 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
   <td><?= maLateBadge($r['PMLate'] ?? 0) ?></td>
   <td class="ma-time"><?= $dayTotal !== null ? number_format($dayTotal, 2) . ' hrs' : '—' ?></td>
   <td><?= maLateBadge($r['Late1'] ?? 0) ?></td>
+  <td><?= maStatusBadge($r['Status'] ?? '') ?></td>
 </tr>
 <?php endforeach; ?>
 
@@ -675,7 +746,16 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
               <td><?= h(trim($r['Aday'] ?? '')) ?: '—' ?></td>
               <td class="ma-time"><?= h(maTime($r['AtimeIn'])) ?></td>
               <td class="ma-time"><?= h(maTime($r['AtimeOut'])) ?></td>
-              <td><?= ((float)($r['Late'] ?? 0)) > 0 ? '<span class="ma-badge ma-badge-out">⚠ ' . h($r['Late']) . ' min</span>' : '<span class="ma-badge ma-badge-in">On Time</span>' ?></td>
+              <td><?php
+                $gl = $r['Late'] ?? null;
+                if ($gl === null || $gl === '') {
+                    echo '—';
+                } elseif ((float)$gl > 0) {
+                    echo '<span class="ma-badge ma-badge-late"><i class="bi bi-clock-fill" style="margin-right:.35rem;"></i>' . h((string)$gl) . ' min</span>';
+                } else {
+                    echo '<span class="ma-badge ma-badge-present">On Time</span>';
+                }
+              ?></td>
               <td><?= h(trim($r['Department'] ?? '')) ?: '—' ?></td>
               <td><?= h(trim($r['Branch'] ?? '')) ?: '—' ?></td>
               <td><?= h(trim($r['Area'] ?? '')) ?: '—' ?></td>
@@ -709,7 +789,8 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
       <span><i class="ma-dot ma-dot-absent"></i> Absent</span>
       <span><i class="ma-dot ma-dot-leave"></i> Leave</span>
       <span><i class="ma-dot ma-dot-sunday"></i> Sunday</span>
-      <span><i class="bi bi-alarm-fill" style="color:#dc2626;"></i> Late (mins shown)</span>
+      <span><i class="bi bi-clock-fill" style="color:#ca8a04;"></i> Late (mins shown)</span>
+      <span><i class="bi bi-speedometer2" style="color:#2563eb;"></i> Work Status (Present / Absent / OT / Late / UT / Incomplete / Halfday)</span>
     </div>
 
     <?php foreach (maCalendarMonths($dateFrom, $dateTo) as $mo):
@@ -735,7 +816,7 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
                 echo '<div class="ma-cal-cell ma-cal-unfiltered"><div class="ma-cal-daynum">' . $day . '</div></div>';
                 continue;
             }
-            $st = maDayStatus($dateStr, $today, $attendanceMap, $leaveMap);
+            $st = maDayStatus($dateStr, $today, $attendanceMap, $leaveMap, $hoursMap);
             $cls = 'ma-cal-cell ma-cal-' . $st['status'];
             $title = date('M j, Y', strtotime($dateStr));
         ?>
@@ -744,13 +825,15 @@ function maCalendarMonths(string $dateFrom, string $dateTo): array {
             <?php if ($st['status'] === 'present'): ?>
               <div class="ma-cal-mark ma-cal-mark-present"><i class="bi bi-check-lg"></i></div>
               <?php if (!empty($st['late'])): ?>
-                <div class="ma-cal-late">⏰ <?= (int)$st['late'] ?>m late</div>
+                <div class="ma-cal-late"><i class="bi bi-clock-fill" style="margin-right:.25rem;"></i><?= (int)$st['late'] ?>m late</div>
               <?php endif; ?>
+              <?= maWorkStatusBadge($st['hours'] ?? null) ?>
             <?php elseif ($st['status'] === 'halfday'): ?>
               <div class="ma-cal-mark ma-cal-mark-halfday"><i class="bi bi-check-lg"></i> ½</div>
               <?php if (!empty($st['late'])): ?>
-                <div class="ma-cal-late">⏰ <?= (int)$st['late'] ?>m late</div>
+                <div class="ma-cal-late"><i class="bi bi-clock-fill" style="margin-right:.25rem;"></i><?= (int)$st['late'] ?>m late</div>
               <?php endif; ?>
+              <?= maWorkStatusBadge($st['hours'] ?? null) ?>
             <?php elseif ($st['status'] === 'absent'): ?>
               <div class="ma-cal-mark ma-cal-mark-absent">A</div>
             <?php elseif ($st['status'] === 'leave'): ?>

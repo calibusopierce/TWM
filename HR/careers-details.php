@@ -27,6 +27,53 @@ include("../test_sqlsrv.php");
 
   <!-- Careers CSS -->
   <link href="../assets/css/styles.css" rel="stylesheet">
+  <!-- Responsive overrides (scoped to this page; loaded after styles.css) -->
+  <style>
+    body.service-details-page { overflow-x: hidden; }
+
+    /* Sidebar + main panel stack on tablets and phones */
+    @media (max-width: 991.98px) {
+      body.service-details-page .details-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+      body.service-details-page .details-layout > * { min-width: 0; }
+      /* Job image + Apply button first, details below */
+      body.service-details-page .main-panel { order: -1; }
+    }
+
+    @media (max-width: 767.98px) {
+      body.service-details-page .page-hero .hero-inner { flex-direction: column; align-items: flex-start; gap: .75rem; padding-left: 1.25rem; padding-right: 1.25rem; }
+      body.service-details-page .page-hero-title { font-size: clamp(1.4rem, 6vw, 2rem); line-height: 1.25; overflow-wrap: anywhere; }
+      body.service-details-page .page-hero-sub { flex-wrap: wrap; line-height: 1.6; }
+      body.service-details-page .breadcrumb-nav { flex-wrap: wrap; }
+      body.service-details-page .details-main { padding-left: 1rem; padding-right: 1rem; }
+      body.service-details-page .desc-text,
+      body.service-details-page .qual-list span { overflow-wrap: anywhere; }
+    }
+
+    @media (max-width: 575.98px) {
+      body.service-details-page .job-image-card img { width: 100%; height: auto; }
+      /* Apply card: text above, full-width button below */
+      body.service-details-page .apply-card { flex-direction: column; align-items: stretch; text-align: center; gap: 1rem; }
+      body.service-details-page .btn-apply { width: 100%; justify-content: center; }
+    }
+
+    /* Top bar: long email / phone / messenger row must wrap instead of overflowing */
+    @media (max-width: 767.98px) {
+      .header .topbar { height: auto !important; padding: 6px 0; }
+      .header .topbar .contact-info { flex-wrap: wrap; justify-content: center; row-gap: 2px; }
+      .header .topbar .contact-info i { font-size: 12px; }
+      .header .topbar .contact-info i span { font-size: 12px; overflow-wrap: anywhere; }
+      .header .topbar .contact-info .ms-4 { margin-left: .75rem !important; }
+    }
+    @media (max-width: 575.98px) {
+      .header .topbar .contact-info .bi-messenger { display: none !important; }
+    }
+
+    /* Footer: long email text and columns */
+    @media (max-width: 767.98px) {
+      .footer .footer-contact p { overflow-wrap: anywhere; }
+      .footer .footer-top { padding-left: 1rem; padding-right: 1rem; }
+    }
+  </style>
 </head>
 
 <body class="service-details-page">
@@ -82,6 +129,13 @@ if (!$job) { die("Job not found."); }
 
     <!-- Content -->
     <div class="details-main">
+
+      <!-- Back to Home -->
+      <a href="https://122.52.195.3/" class="count-badge" style="margin-bottom:1rem; text-decoration:none; cursor:pointer;">
+        <i class="bi bi-arrow-left" style="font-size:.8rem; color:#4f46e5;"></i>
+        Back to Home
+      </a>
+
       <div class="details-layout">
 
         <!-- Sidebar -->
@@ -171,7 +225,7 @@ if (!$job) { die("Job not found."); }
         <div class="col-lg-2 col-md-3 footer-links">
           <h4>Useful Links</h4>
           <ul>
-            <li><i class="bi bi-chevron-right"></i> <a href="tradewell.php">Home</a></li>
+            <li><i class="bi bi-chevron-right"></i> <a href="https://122.52.195.3/">Home</a></li>
             <li><i class="bi bi-chevron-right"></i> <a href="#">About us</a></li>
             <li><i class="bi bi-chevron-right"></i> <a href="careers.php">Careers</a></li>
           </ul>

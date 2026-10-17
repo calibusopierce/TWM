@@ -87,8 +87,6 @@ function h($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); }
 <?php
 $topbar_page = 'override_attendance';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php';
-$hr_active = 'override_attendance';
-require_once __DIR__ . '/hr_nav.php';
 ?>
 
 <div class="oea-wrap">
@@ -298,8 +296,6 @@ require_once __DIR__ . '/hr_nav.php';
 
 </div> <!-- /.oea-wrap -->
 
-  </main>
-</div> <!-- /.hr-shell (opened by hr_nav.php) -->
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {

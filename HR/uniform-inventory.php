@@ -14,9 +14,10 @@ rbac_gate($pdo, 'uniform_inventory');
 
 $currentUser = $_SESSION['DisplayName'] ?? $_SESSION['Username'] ?? 'System';
 $messages    = [];
-$tab         = $_GET['tab'] ?? 'stocks';
-$validTabs   = ['stocks','stockview','released','requests','po','receiving','returns','pending_inspection','report'];
-if (!in_array($tab, $validTabs)) $tab = 'stocks';
+ $tab         = $_GET['tab'] ?? 'requests';
+if ($tab === 'pending_inspection') $tab = 'returns'; // old bookmarks: Pending Inspection now lives inside Returns
+$validTabs   = ['requests','released','stocks','stockview','po','receiving','returns','report'];
+if (!in_array($tab, $validTabs)) $tab = 'requests';
 // Editable Stocks tab is restricted to full-access users; view-only users
 // get bounced to the read-only Stock Overview tab further down, once
 // $canManageStock is resolved (right after department scope detection).
@@ -80,6 +81,15 @@ function fmtDate($v) {
 }
 function safe($s) { return htmlspecialchars($s??'',ENT_QUOTES,'UTF-8'); }
 
+// "LastName, FirstName MiddleName" from a TBL_HREmployeeList row
+function hrFullName(array $e): string {
+    $ln = trim((string)($e['LastName']   ?? ''));
+    $fn = trim((string)($e['FirstName']  ?? ''));
+    $mn = trim((string)($e['MiddleName'] ?? ''));
+    $given = trim($fn . ' ' . $mn);
+    return trim($ln . ($ln !== '' && $given !== '' ? ', ' : '') . $given);
+}
+
 // ── Build a WHERE/AND clause fragment for dept scoping ─────────
 // $prefix: table alias prefix e.g. '' or 'r.'
 function deptWhere(string $deptScope, string $prefix='', bool $asAnd=false): string {
@@ -127,25 +137,6 @@ if (isset($_POST['save_stock'])) {
         $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to update stock.']:['type'=>'success','text'=>"Stock updated: {$type} {$size}."];
     }
     $tab='stocks';
-}
-
-// ── POST: Save Released ────────────────────────────────────────
-if (isset($_POST['save_released'])) {
-    $emp =trim($_POST['EmployeeName']??''); $ut=trim($_POST['UniformType']??'');
-    $us  =trim($_POST['UniformSize']??'');  $qty=intval($_POST['Quantity']??3);
-    $dept=trim($_POST['Department']??'');   $dg=trim($_POST['DateGiven']??date('Y-m-d'));
-    $rb  =trim($_POST['RequestedBy']??'');  $rem=trim($_POST['Remarks']??'');
-    if (!$emp||!$ut||!$us) { $messages[]=['type'=>'danger','text'=>'Name, type and size are required.']; }
-    else {
-        $stmt=@sqlsrv_query($conn,
-            "INSERT INTO [dbo].[UniformReleased](EmployeeName,UniformType,UniformSize,Quantity,Department,DateGiven,RequestedBy,Remarks,CreatedBy) VALUES(?,?,?,?,?,?,?,?,?)",
-            [$emp,$ut,$us,$qty,$dept,$dg,$rb,$rem,$currentUser]);
-        if($stmt!==false){
-            @sqlsrv_query($conn,"UPDATE [dbo].[UniformStock] SET LessStock=LessStock+?,UpdatedAt=GETDATE(),UpdatedBy=? WHERE UniformType=? AND Size=?",[$qty,$currentUser,$ut,$us]);
-            $messages[]=['type'=>'success','text'=>"Released {$qty}x {$ut} ({$us}) to {$emp}."];
-        } else { $messages[]=['type'=>'danger','text'=>'Failed to save release.']; }
-    }
-    $tab='released';
 }
 
 // ── POST: Delete Released ──────────────────────────────────────
@@ -206,11 +197,17 @@ if (isset($_POST['edit_released'])) {
 
 // ── POST: Requests ─────────────────────────────────────────────
 if (isset($_POST['save_request'])) {
-    $rb  = trim($_POST['RequestedBy']   ?? '');
+    // Employee + HR requester are picked from TBL_HREmployeeList; the names are
+    // resolved server-side from the posted EmployeeIDs (typed text is ignored).
+    $empId = trim($_POST['EmployeeID']    ?? '');
+    $rbId  = trim($_POST['RequestedByID'] ?? '');
+    $empRow = $empId !== '' ? rq($conn,"SELECT TOP 1 LastName,FirstName,MiddleName FROM [dbo].[TBL_HREmployeeList] WHERE EmployeeID=? AND Active = 1",[$empId]) : [];
+    $rbRow  = $rbId  !== '' ? rq($conn,"SELECT TOP 1 LastName,FirstName,MiddleName FROM [dbo].[TBL_HREmployeeList] WHERE EmployeeID=? AND Active = 1 AND Position_held LIKE '%HR%'",[$rbId]) : [];
+    $emp = !empty($empRow) ? hrFullName($empRow[0]) : '';
+    $rb  = !empty($rbRow)  ? hrFullName($rbRow[0])  : '';
     $ut  = trim($_POST['UniformType']   ?? '');
     $us  = trim($_POST['UniformSize']   ?? '');
     $qty = intval($_POST['Quantity']    ?? 3);
-    $emp = trim($_POST['EmployeeName']  ?? '');
     $dept= trim($_POST['Department']    ?? '');
     $rem = trim($_POST['Remarks']       ?? '');
 
@@ -218,8 +215,8 @@ if (isset($_POST['save_request'])) {
     $drRaw = trim($_POST['DateRequested'] ?? date('Y-m-d'));
     $dr    = !empty($drRaw) ? $drRaw : date('Y-m-d');
 
-    if (!$rb || !$ut || !$us) {
-        $messages[] = ['type'=>'danger','text'=>'Requested by, type and size are required.'];
+    if (!$emp || !$rb || !$ut || !$us) {
+        $messages[] = ['type'=>'danger','text'=>'Employee and Requested by (HR) must be picked from the HR employee list, and type and size are required.'];
     } else {
         $params = [
             [$emp,  SQLSRV_PARAM_IN, null, SQLSRV_SQLTYPE_NVARCHAR(255)],
@@ -262,7 +259,7 @@ if (isset($_POST['mark_given'])) {
             $empName = trim($req['EmployeeName'] ?? '');
             if($empName === '') $empName = 'From Request #'.$id;
             $stockRow = rq($conn,
-                "SELECT (PreviousStock + AdditionalStock - LessStock) AS CurrentStock
+                "SELECT (PreviousStock + AdditionalStock + ReturnStock - LessStock) AS CurrentStock
                  FROM [dbo].[UniformStock] WHERE UniformType=? AND Size=?",
                 [$req['UniformType'], $req['UniformSize']]);
             $currentStock = intval($stockRow[0]['CurrentStock'] ?? 0);
@@ -294,8 +291,13 @@ if (isset($_POST['mark_given'])) {
 
 if (isset($_POST['delete_request'])) {
     $id=intval($_POST['RequestID']??0);
-    if($id>0){ $stmt=@sqlsrv_query($conn,"DELETE FROM [dbo].[UniformRequests] WHERE RequestID=?",[$id]);
-        $messages[]=$stmt===false?['type'=>'danger','text'=>'Failed to delete.']:['type'=>'success','text'=>'Request deleted.']; }
+    if($id>0){
+        // Given requests are locked — they are the source of a Released record.
+        $stmt=@sqlsrv_query($conn,"DELETE FROM [dbo].[UniformRequests] WHERE RequestID=? AND IsGiven=0",[$id]);
+        if($stmt===false)                          $messages[]=['type'=>'danger','text'=>'Failed to delete.'];
+        elseif(sqlsrv_rows_affected($stmt)<1)      $messages[]=['type'=>'danger','text'=>'Given requests cannot be deleted. To undo one, use Return to Pending on the Uniforms Released tab.'];
+        else                                       $messages[]=['type'=>'success','text'=>'Request deleted.'];
+    }
     $tab='requests';
 }
 
@@ -588,7 +590,7 @@ if (isset($_POST['save_return'])) {
 if (isset($_POST['inspect_return'])) {
     $id       = intval($_POST['ReturnID'] ?? 0);
     $decision = $_POST['Decision'] ?? '';
-    $validDecisions = ['Returned'=>'ReturnedStock','Cleaning/Repair'=>'CleaningStock','Disposed'=>'DisposedStock'];
+    $validDecisions = ['Returned'=>'ReturnedStock','Disposed'=>'DisposedStock'];
     if (!$canManageStock) {
         $messages[] = ['type'=>'danger','text'=>'You do not have permission to inspect returns.'];
     } elseif ($id<=0 || !isset($validDecisions[$decision])) {
@@ -842,9 +844,30 @@ if (!in_array($reqDept,  $depts))                  $reqDept  = '';
 // If dept-scoped, force their dept (overrides any filter selection)
 $effectiveReqDept = $deptScope !== '' ? $deptScope : $reqDept;
 
+// Extra filters — same set the Uniforms Released tab has
+$reqSearch   = trim($_GET['rqsearch']   ?? '');
+$reqSize     = trim($_GET['rqsize']     ?? '');
+$reqReqBy    = trim($_GET['rqreqby']    ?? '');
+$reqDateFrom = trim($_GET['rqdatefrom'] ?? '');
+$reqDateTo   = trim($_GET['rqdateto']   ?? '');
+$reqByRows2  = rq($conn,"SELECT DISTINCT RequestedBy FROM [dbo].[UniformRequests] WHERE RequestedBy IS NOT NULL AND RequestedBy <> '' ORDER BY RequestedBy ASC");
+$reqReqByList = array_map(fn($r)=>$r['RequestedBy'], $reqByRows2);
+if (!in_array($reqSize, $sizes))                       $reqSize     = '';
+if (!in_array($reqReqBy, $reqReqByList, true))         $reqReqBy    = '';
+if ($reqDateFrom !== '' && !strtotime($reqDateFrom))   $reqDateFrom = '';
+if ($reqDateTo   !== '' && !strtotime($reqDateTo))     $reqDateTo   = '';
+
 $reqConditions = ["r.IsGiven = " . ($reqStatus === 'given' ? '1' : '0')];
+if ($reqSearch !== '') {
+    $s = str_replace("'","''",$reqSearch);
+    $reqConditions[] = "(r.EmployeeName LIKE '%{$s}%' OR r.RequestedBy LIKE '%{$s}%')";
+}
 if ($reqUType !== '') $reqConditions[] = "r.UniformType = '" . str_replace("'","''",$reqUType) . "'";
 if ($effectiveReqDept !== '') $reqConditions[] = "r.Department = '" . str_replace("'","''",$effectiveReqDept) . "'";
+if ($reqSize !== '')  $reqConditions[] = "r.UniformSize = '" . str_replace("'","''",$reqSize) . "'";
+if ($reqReqBy !== '') $reqConditions[] = "r.RequestedBy = '" . str_replace("'","''",$reqReqBy) . "'";
+if ($reqDateFrom !== '') $reqConditions[] = "r.DateRequested >= '" . date('Y-m-d',strtotime($reqDateFrom)) . "'";
+if ($reqDateTo   !== '') $reqConditions[] = "r.DateRequested <= '" . date('Y-m-d',strtotime($reqDateTo)) . "'";
 $reqWhere = 'WHERE ' . implode(' AND ', $reqConditions);
 
 $reqAll    = rq($conn,
@@ -863,6 +886,24 @@ $reqPendingTotal = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] W
 $reqGivenTotal   = rq($conn,"SELECT COUNT(*) AS N FROM [dbo].[UniformRequests] WHERE IsGiven=1{$badgeDeptAnd}");
 $reqPendingCount = intval($reqPendingTotal[0]['N'] ?? 0);
 $reqGivenCount   = intval($reqGivenTotal[0]['N']   ?? 0);
+
+// ── HR pickers for the Add Request modal ──────────────────────
+// Employee Name → all active employees in TBL_HREmployeeList
+// Requested By  → active employees whose Position_held is HR
+$hrEmpMap = []; $hrStaffMap = [];
+if ($tab === 'requests') {
+    $hrBase = "SELECT EmployeeID, LastName, FirstName, MiddleName
+               FROM [dbo].[TBL_HREmployeeList]
+               WHERE Active = 1";
+    foreach (rq($conn, $hrBase . " ORDER BY LastName, FirstName") as $e) {
+        $eid = trim((string)$e['EmployeeID']);
+        $hrEmpMap[hrFullName($e) . ' (' . $eid . ')'] = $eid;
+    }
+    foreach (rq($conn, $hrBase . " AND Position_held LIKE '%HR%' ORDER BY LastName, FirstName") as $e) {
+        $eid = trim((string)$e['EmployeeID']);
+        $hrStaffMap[hrFullName($e) . ' (' . $eid . ')'] = $eid;
+    }
+}
 
 // ── PO ────────────────────────────────────────────────────────
 $poAll   = rq($conn,"SELECT p.*,(SELECT COUNT(*) FROM [dbo].[UniformPOItems] i WHERE i.POID=p.POID) AS ItemCount FROM [dbo].[UniformPO] p ORDER BY PODate DESC");
@@ -1210,16 +1251,15 @@ if ($tab === 'report') {
 </div>
 
 <div class="tab-bar">
+  <a href="?tab=requests"  class="tab-btn <?= $tab==='requests' ?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
+  <a href="?tab=released"  class="tab-btn <?= $tab==='released' ?'active':'' ?>"><i class="bi bi-send-fill"></i> Uniforms Released</a>
   <?php if($canManageStock): ?>
   <a href="?tab=stocks"    class="tab-btn <?= $tab==='stocks'   ?'active':'' ?>"><i class="bi bi-boxes"></i> Stocks</a>
   <?php endif; ?>
   <a href="?tab=stockview" class="tab-btn <?= $tab==='stockview'?'active':'' ?>"><i class="bi bi-eye-fill"></i> Stock Overview</a>
-  <a href="?tab=released"  class="tab-btn <?= $tab==='released' ?'active':'' ?>"><i class="bi bi-send-fill"></i> Uniforms Released</a>
-  <a href="?tab=requests"  class="tab-btn <?= $tab==='requests' ?'active':'' ?>"><i class="bi bi-clipboard-check"></i> Requested List</a>
   <a href="?tab=po"        class="tab-btn <?= $tab==='po'       ?'active':'' ?>"><i class="bi bi-file-earmark-text-fill"></i> PO Form</a>
   <a href="?tab=receiving" class="tab-btn <?= $tab==='receiving'?'active':'' ?>"><i class="bi bi-box-seam-fill"></i> Receiving Form</a>
-  <a href="?tab=returns"   class="tab-btn <?= $tab==='returns'  ?'active':'' ?>"><i class="bi bi-arrow-return-left"></i> Returns</a>
-  <a href="?tab=pending_inspection" class="tab-btn <?= $tab==='pending_inspection' ?'active':'' ?>"><i class="bi bi-hourglass-split"></i> Pending Inspection<?php if($pendingInspectionCountAll>0): ?> <span style="background:#fde047;color:#854d0e;border-radius:10px;padding:0 .45rem;font-size:.68rem;font-weight:800;margin-left:.15rem;"><?= $pendingInspectionCountAll ?></span><?php endif; ?></a>
+  <a href="?tab=returns"   class="tab-btn <?= $tab==='returns'  ?'active':'' ?>"><i class="bi bi-arrow-return-left"></i> Returns<?php if($pendingInspectionCountAll>0): ?> <span style="background:#fde047;color:#854d0e;border-radius:10px;padding:0 .45rem;font-size:.68rem;font-weight:800;margin-left:.15rem;"><?= $pendingInspectionCountAll ?></span><?php endif; ?></a>
   <a href="?tab=report"    class="tab-btn <?= $tab==='report'   ?'active':'' ?>"><i class="bi bi-bar-chart-fill"></i> Reports</a>
 </div>
 
@@ -1493,7 +1533,7 @@ elseif($tab==='released'): ?>
           </select>
         </div>
         <div class="col-md-3"><label class="form-label">Date Given</label><input type="date" name="DateGiven" class="form-control" value="<?= $erDate ?>"></div>
-        <div class="col-md-4"><label class="form-label">Requested By (HR)</label><input type="text" name="RequestedBy" class="form-control" value="<?= safe($er['RequestedBy']??'') ?>" placeholder="e.g. Ma'am Niera"></div>
+        <div class="col-md-4"><label class="form-label">Requested By (HR)</label><input type="text" name="RequestedBy" class="form-control" value="<?= safe($er['RequestedBy']??'') ?>" placeholder="e.g. Ma'am "></div>
         <div class="col-md-2" style="display:flex;align-items:flex-end;"><button type="submit" class="btn-add w-100"><i class="bi bi-floppy-fill"></i> Save</button></div>
         <div class="col-12"><label class="form-label">Remarks</label><textarea name="Remarks" class="form-control" rows="2"><?= safe($er['Remarks']??'') ?></textarea></div>
       </div>
@@ -1507,9 +1547,6 @@ elseif($tab==='released'): ?>
     <div class="panel-title"><i class="bi bi-send-fill" style="color:var(--primary-light)"></i> Uniforms Released / Sent</div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
       <div style="background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:.2rem .75rem;font-size:.75rem;font-weight:700;">Total Given: <?= number_format($totalGivenCount) ?> pcs<?= $deptScope!==''?' ('.$deptScope.')':'' ?></div>
-      <?php if($canManageStock): ?>
-      <button class="btn-add" data-bs-toggle="modal" data-bs-target="#releasedModal"><i class="bi bi-plus-lg"></i> Add</button>
-      <?php endif; ?>
     </div>
   </div>
 
@@ -1611,6 +1648,11 @@ elseif($tab==='requests'):
 $reqBaseParams = ['tab'=>'requests','rstatus'=>$reqStatus];
 if($reqUType!=='') $reqBaseParams['rutype']=$reqUType;
 if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
+if($reqSearch!=='')   $reqBaseParams['rqsearch']=$reqSearch;
+if($reqSize!=='')     $reqBaseParams['rqsize']=$reqSize;
+if($reqReqBy!=='')    $reqBaseParams['rqreqby']=$reqReqBy;
+if($reqDateFrom!=='') $reqBaseParams['rqdatefrom']=$reqDateFrom;
+if($reqDateTo!=='')   $reqBaseParams['rqdateto']=$reqDateTo;
 ?>
 <div class="panel">
   <div class="panel-hdr" style="flex-wrap:wrap;gap:.6rem;">
@@ -1644,17 +1686,36 @@ if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
       </a>
     </div>
 
-    <!-- Dropdown filters -->
-    <form method="GET" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;">
+    <!-- Filters (same set as Uniforms Released) -->
+    <form method="GET" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;flex:1;justify-content:flex-end;">
       <input type="hidden" name="tab"     value="requests">
       <input type="hidden" name="rstatus" value="<?= safe($reqStatus) ?>">
       <input type="hidden" name="reqpage" value="1">
+
+      <div class="sbar" style="flex:1;min-width:160px;"><i class="bi bi-search"></i><input type="text" name="rqsearch" placeholder="Employee or HR name…" value="<?= safe($reqSearch) ?>"></div>
 
       <select name="rutype" class="form-select" style="width:175px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
         <option value="" <?= $reqUType===''?'selected':'' ?>>All Uniform Types</option>
         <option value="TSHIRT"    <?= $reqUType==='TSHIRT'   ?'selected':'' ?>>👕 T-Shirt (Logistics)</option>
         <option value="POLOSHIRT" <?= $reqUType==='POLOSHIRT'?'selected':'' ?>>👔 Polo Shirt (Office/Sales)</option>
       </select>
+
+      <select name="rqsize" class="form-select" style="width:110px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $reqSize===''?'selected':'' ?>>All Sizes</option>
+        <?php foreach($sizes as $sz): ?>
+        <option value="<?= $sz ?>" <?= $reqSize===$sz?'selected':'' ?>><?= $sz ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <select name="rqreqby" class="form-select" style="width:170px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
+        <option value="" <?= $reqReqBy===''?'selected':'' ?>>All Requested By</option>
+        <?php foreach($reqReqByList as $rb): ?>
+        <option value="<?= safe($rb) ?>" <?= $reqReqBy===$rb?'selected':'' ?>><?= safe($rb) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <input type="date" name="rqdatefrom" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($reqDateFrom) ?>" title="Date Requested — from">
+      <input type="date" name="rqdateto" class="form-control" style="width:145px;font-size:.78rem;padding:.3rem .55rem;" value="<?= safe($reqDateTo) ?>" title="Date Requested — to">
 
       <?php if($deptScope===''): ?>
       <select name="rdept" class="form-select" style="width:165px;font-size:.78rem;padding:.3rem .55rem;" onchange="this.form.submit()">
@@ -1667,7 +1728,8 @@ if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
       <span style="background:rgba(59,130,246,.09);color:var(--primary);border:1px solid rgba(59,130,246,.2);border-radius:7px;padding:.3rem .65rem;font-size:.75rem;font-weight:700;white-space:nowrap;"><i class="bi bi-building"></i> <?= safe($deptScope) ?></span>
       <?php endif; ?>
 
-      <?php if($reqUType!=='' || ($deptScope==='' && $reqDept!=='')): ?>
+      <button type="submit" class="btn-add" style="padding:.38rem .8rem;"><i class="bi bi-search"></i></button>
+      <?php if($reqSearch!==''||$reqUType!==''||$reqSize!==''||$reqReqBy!==''||$reqDateFrom!==''||$reqDateTo!==''||($deptScope==='' && $reqDept!=='')): ?>
       <a href="?tab=requests&rstatus=<?= $reqStatus ?>" class="btn-sm-action btn-del" style="padding:.38rem .65rem;" title="Clear filters"><i class="bi bi-x-lg"></i></a>
       <?php endif; ?>
     </form>
@@ -1741,11 +1803,15 @@ if($deptScope==='' && $reqDept!=='') $reqBaseParams['rdept']=$reqDept;
           <?php endif; ?>
         </form>
         <?php endif; ?>
+        <?php if(!$r['IsGiven']): ?>
         <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Delete Request?','This will permanently delete this request. Continue?','#dc2626')">
           <input type="hidden" name="delete_request" value="1">
           <input type="hidden" name="RequestID"      value="<?= $r['RequestID'] ?>">
           <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i></button>
         </form>
+        <?php else: ?>
+        <span style="color:var(--text-muted);font-size:.72rem;">Given</span>
+        <?php endif; ?>
         <?php else: ?>
         <span style="color:var(--text-muted);font-size:.72rem;"><?= $r['IsGiven'] ? 'Given' : 'Pending' ?></span>
         <?php endif; ?>
@@ -2374,7 +2440,7 @@ elseif($tab==='returns'):
           </select>
         </div>
         <div class="col-md-3"><label class="form-label">Date Returned</label><input type="date" name="DateReturned" class="form-control" value="<?= $erDate ?>"></div>
-        <div class="col-md-4"><label class="form-label">Returned To (UTC Staff)</label><input type="text" name="ReturnedTo" class="form-control" value="<?= safe($er['ReturnedTo']??'') ?>" placeholder="e.g. Ma'am Niera"></div>
+        <div class="col-md-4"><label class="form-label">Returned To (UTC Staff)</label><input type="text" name="ReturnedTo" class="form-control" value="<?= safe($er['ReturnedTo']??'') ?>" placeholder="e.g. Ma'am  "></div>
         <div class="col-md-2" style="display:flex;align-items:flex-end;"><button type="submit" class="btn-add w-100"><i class="bi bi-floppy-fill"></i> Save</button></div>
         <div class="col-12"><label class="form-label">Remarks</label><textarea name="ReturnRemarks" class="form-control" rows="2"><?= safe($er['Remarks']??'') ?></textarea></div>
       </div>
@@ -2383,6 +2449,46 @@ elseif($tab==='returns'):
 </div>
 <?php endif; ?>
 
+
+<!-- ── Pending Inspection (moved here from its own tab) ── -->
+<div class="panel" style="border:1.5px solid #fde047;">
+  <div class="panel-hdr" style="background:rgba(234,179,8,.08);">
+    <div class="panel-title" style="color:#854d0e;"><i class="bi bi-hourglass-split"></i> Pending Inspection (<?= count($pendingInspectionList) ?>)</div>
+  </div>
+  <?php if(empty($pendingInspectionList)): ?>
+  <div class="empty-st"><i class="bi bi-hourglass-split"></i><p>No returns awaiting inspection.</p></div>
+  <?php else: ?>
+  <div style="overflow-x:auto;">
+  <table class="utbl">
+    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Reported</th><th>Date</th><?php if($canManageStock): ?><th style="text-align:center;">Inspect</th><?php endif; ?></tr></thead>
+    <tbody>
+    <?php foreach($pendingInspectionList as $p): ?>
+    <tr>
+      <td style="font-weight:700;"><?= safe($p['EmployeeName']) ?></td>
+      <td><span class="bdg <?= $p['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $p['UniformType'] ?></span></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($p['UniformSize']) ?></td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($p['Quantity']) ?></td>
+      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($p['Condition']??'—') ?></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($p['DateReturned']) ?></td>
+      <?php if($canManageStock): ?>
+      <td style="text-align:center;white-space:nowrap;">
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Confirm this item is Returned?','It will be HELD as confirmed-good, but not yet counted as Available. Use Add to Stock afterward to make it available.','#4338ca')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Returned">
+          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Returned</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Dispose this item?','It will be permanently removed from stock.','#dc2626')">
+          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Disposed">
+          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i> Dispose</button>
+        </form>
+      </td>
+      <?php endif; ?>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+  <?php endif; ?>
+</div>
 
 <?php if(!empty($cleaningList)): ?>
 <div class="panel" style="border:1.5px solid #5eead4;">
@@ -2580,54 +2686,6 @@ elseif($tab==='returns'):
   </table>
   </div>
   <?= paginationBar('retpage',$retPage,$retPages,$retTotal,['tab'=>'returns','retsearch'=>$retSearch,'rettype'=>$retUType,'retdept'=>($deptScope!==''?'':$retDept),'retsize'=>$retSize,'retreturnedto'=>$retReturnedTo,'retdatefrom'=>$retDateFrom,'retdateto'=>$retDateTo]) ?>
-  <?php endif; ?>
-</div>
-
-<?php
-// ═══ TAB: PENDING INSPECTION ═══════════════════════════════════
-elseif($tab==='pending_inspection'):
-?>
-
-<div class="panel" style="border:1.5px solid #fde047;">
-  <div class="panel-hdr" style="background:rgba(234,179,8,.08);">
-    <div class="panel-title" style="color:#854d0e;"><i class="bi bi-hourglass-split"></i> Pending Inspection (<?= count($pendingInspectionList) ?>)</div>
-  </div>
-  <?php if(empty($pendingInspectionList)): ?>
-  <div class="empty-st"><i class="bi bi-hourglass-split"></i><p>No returns awaiting inspection.</p></div>
-  <?php else: ?>
-  <div style="overflow-x:auto;">
-  <table class="utbl">
-    <thead><tr><th>Employee</th><th>Type</th><th>Size</th><th>Qty</th><th>Reported</th><th>Date</th><?php if($canManageStock): ?><th style="text-align:center;">Inspect</th><?php endif; ?></tr></thead>
-    <tbody>
-    <?php foreach($pendingInspectionList as $p): ?>
-    <tr>
-      <td style="font-weight:700;"><?= safe($p['EmployeeName']) ?></td>
-      <td><span class="bdg <?= $p['UniformType']==='TSHIRT'?'bdg-tshirt':'bdg-polo' ?>"><?= $p['UniformType'] ?></span></td>
-      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= safe($p['UniformSize']) ?></td>
-      <td style="font-family:'DM Mono',monospace;font-weight:700;"><?= intval($p['Quantity']) ?></td>
-      <td style="font-size:.76rem;color:var(--text-muted);"><?= safe($p['Condition']??'—') ?></td>
-      <td style="font-family:'DM Mono',monospace;font-size:.76rem;white-space:nowrap;"><?= fmtDate($p['DateReturned']) ?></td>
-      <?php if($canManageStock): ?>
-      <td style="text-align:center;white-space:nowrap;">
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Confirm this item is Returned?','It will be HELD as confirmed-good, but not yet counted as Available. Use Add to Stock afterward to make it available.','#4338ca')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Returned">
-          <button type="submit" class="btn-sm-action" style="background:rgba(67,56,202,.1);color:#4338ca;border:1px solid #a5b4fc;"><i class="bi bi-check-circle-fill"></i> Mark Returned</button>
-        </form>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Send for cleaning/repair?','It will be held out of available stock until marked repaired.','#0d9488')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Cleaning/Repair">
-          <button type="submit" class="btn-sm-action" style="background:rgba(13,148,136,.1);color:#0d9488;border:1px solid #5eead4;"><i class="bi bi-droplet-fill"></i> Cleaning</button>
-        </form>
-        <form method="POST" style="display:inline;" onsubmit="return confirmAction(event,'Dispose this item?','It will be permanently removed from stock.','#dc2626')">
-          <input type="hidden" name="inspect_return" value="1"><input type="hidden" name="ReturnID" value="<?= $p['ReturnID'] ?>"><input type="hidden" name="Decision" value="Disposed">
-          <button type="submit" class="btn-sm-action btn-del"><i class="bi bi-trash3-fill"></i> Dispose</button>
-        </form>
-      </td>
-      <?php endif; ?>
-    </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  </div>
   <?php endif; ?>
 </div>
 
@@ -3115,59 +3173,6 @@ elseif($tab==='report'):
 
 </div><!-- /container -->
 
-<!-- ══ MODAL: Release Uniform ══════════════════════════════════ -->
-<div class="modal fade" id="releasedModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <form method="POST">
-        <input type="hidden" name="save_released" value="1">
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-send-fill" style="color:var(--primary)"></i> Release Uniform to Employee</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body" style="padding:1.25rem;">
-          <div class="row g-3">
-            <div class="col-md-6"><label class="form-label">Employee Name <span style="color:#dc2626">*</span></label><input type="text" name="EmployeeName" class="form-control" placeholder="Full name" required></div>
-            <div class="col-md-3">
-              <label class="form-label">Uniform Type <span style="color:#dc2626">*</span></label>
-              <select name="UniformType" id="relType" class="form-select" required onchange="autoType(this.value)">
-                <option value="">— Select —</option>
-                <option value="TSHIRT">T-Shirt (Logistics)</option>
-                <option value="POLOSHIRT">Polo Shirt (Office/Sales)</option>
-              </select>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Size <span style="color:#dc2626">*</span></label>
-              <select name="UniformSize" class="form-select" required>
-                <option value="">— Select —</option>
-                <?php foreach($sizes as $sz): ?><option><?= $sz ?></option><?php endforeach; ?>
-              </select>
-            </div>
-            <div class="col-md-2"><label class="form-label">Quantity</label><input type="number" name="Quantity" class="form-control" value="3" min="1"></div>
-            <div class="col-md-3">
-              <label class="form-label">Department</label>
-              <select name="Department" class="form-select">
-                <option value="">— Select —</option>
-                <?php foreach($depts as $d): ?><option><?= $d ?></option><?php endforeach; ?>
-              </select>
-            </div>
-            <div class="col-md-3"><label class="form-label">Date Given</label><input type="date" name="DateGiven" class="form-control" value="<?= date('Y-m-d') ?>"></div>
-            <div class="col-md-4"><label class="form-label">Requested By (HR)</label><input type="text" name="RequestedBy" class="form-control" placeholder="e.g. Ma'am Niera"></div>
-            <div class="col-12"><label class="form-label">Remarks</label><textarea name="Remarks" class="form-control" rows="2" placeholder="Optional notes…"></textarea></div>
-          </div>
-          <div id="typeHint" style="display:none;margin-top:.75rem;padding:.55rem .85rem;border-radius:8px;font-size:.78rem;font-weight:600;background:var(--primary-glow);color:var(--primary);border:1px solid rgba(59,130,246,.2);">
-            <i class="bi bi-info-circle-fill"></i> <span id="typeHintText"></span>
-          </div>
-        </div>
-        <div class="modal-footer" style="border-top:1px solid var(--border);">
-          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn-add"><i class="bi bi-check-circle-fill"></i> Confirm Release</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
 <!-- ══ MODAL: Add Request ════════════════════════════════════ -->
 <div class="modal fade" id="requestModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
@@ -3180,8 +3185,18 @@ elseif($tab==='report'):
         </div>
         <div class="modal-body" style="padding:1.25rem;">
           <div class="row g-3">
-            <div class="col-md-6"><label class="form-label">Employee Name <span style="color:#dc2626">*</span></label><input type="text" name="EmployeeName" class="form-control" placeholder="Full name of employee" required></div>
-            <div class="col-md-6"><label class="form-label">Requested By (HR) <span style="color:#dc2626">*</span></label><input type="text" name="RequestedBy" class="form-control" placeholder="HR name e.g. Ma'am Niera" required></div>
+            <div class="col-md-6">
+              <label class="form-label">Employee Name <span style="color:#dc2626">*</span></label>
+              <input type="text" id="reqEmpInput" class="form-control" list="hrEmpList" placeholder="Type to search employee…" autocomplete="off" required>
+              <input type="hidden" name="EmployeeID" id="reqEmpId">
+              <datalist id="hrEmpList"><?php foreach(array_keys($hrEmpMap) as $lbl): ?><option value="<?= safe($lbl) ?>"></option><?php endforeach; ?></datalist>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Requested By (HR) <span style="color:#dc2626">*</span></label>
+              <input type="text" id="reqHrInput" class="form-control" list="hrStaffList" placeholder="Type to search HR staff…" autocomplete="off" required>
+              <input type="hidden" name="RequestedByID" id="reqHrId">
+              <datalist id="hrStaffList"><?php foreach(array_keys($hrStaffMap) as $lbl): ?><option value="<?= safe($lbl) ?>"></option><?php endforeach; ?></datalist>
+            </div>
             <div class="col-md-6">
               <label class="form-label">Uniform Type <span style="color:#dc2626">*</span></label>
               <select name="UniformType" class="form-select" required>
@@ -3314,7 +3329,7 @@ elseif($tab==='report'):
             </div>
             <div class="col-md-4">
               <label class="form-label">Returned To (UTC Staff)</label>
-              <input type="text" name="ReturnedTo" class="form-control" placeholder="e.g. Ma'am Niera">
+              <input type="text" name="ReturnedTo" class="form-control" placeholder="e.g. Ma'am  ">
             </div>
             <div class="col-md-2">
               <label class="form-label">Linked Release ID <span style="color:var(--text-muted);font-weight:400;">(optional)</span></label>
@@ -3437,6 +3452,23 @@ function printReceiving(recId){
 function printReport(){
   window.print();
 }
+
+// ── Add Request modal: employee / HR pickers (TBL_HREmployeeList) ──
+const HR_EMP   = <?= json_encode($hrEmpMap,   JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_INVALID_UTF8_SUBSTITUTE|JSON_FORCE_OBJECT) ?: '{}' ?>;
+const HR_STAFF = <?= json_encode($hrStaffMap, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_INVALID_UTF8_SUBSTITUTE|JSON_FORCE_OBJECT) ?: '{}' ?>;
+function bindHrPicker(inputId, hiddenId, map){
+  const inp = document.getElementById(inputId), hid = document.getElementById(hiddenId);
+  if(!inp || !hid) return;
+  const sync = () => {
+    const id = Object.prototype.hasOwnProperty.call(map, inp.value) ? map[inp.value] : '';
+    hid.value = id;
+    inp.setCustomValidity(id ? '' : 'Please pick a name from the suggestion list.');
+  };
+  inp.addEventListener('input', sync);
+  inp.addEventListener('change', sync);
+}
+bindHrPicker('reqEmpInput','reqEmpId',HR_EMP);
+bindHrPicker('reqHrInput','reqHrId',HR_STAFF);
 
 document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('.po-req,.po-add').forEach(el=>el.addEventListener('input',recalcPO));

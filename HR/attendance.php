@@ -55,8 +55,8 @@ $tab = isset($_GET['tab']) && in_array($_GET['tab'], $validTabs) ? $_GET['tab'] 
 // ── Category filter ──────────────────────────────────────────
 // $filterCategory (and Cut off/Branch/Employee Status) is 'generated'-tab-only
 // — used against View_AttendanceRecord (see $categoryList/$extraFilters below).
-// The Time In/Out tab is hardcoded to Category = 'OP' (see below) so it no
-// longer needs its own category filter/dropdown.
+// The Time In/Out tab also reads ?category=, but only accepts the values in
+// $tioCategories below (OP / DP / DSP); anything else is ignored.
 $filterCutOff    = isset($_GET['cutoff'])    && $_GET['cutoff']    !== '' ? trim($_GET['cutoff'])    : '';
 $filterCategory  = isset($_GET['category'])  && $_GET['category']  !== '' ? trim($_GET['category'])  : '';
 $filterBranch    = isset($_GET['branch'])    && $_GET['branch']    !== '' ? trim($_GET['branch'])    : '';
@@ -66,6 +66,10 @@ $filterCutOffSafe    = str_replace("'", "''", $filterCutOff);
 $filterCategorySafe  = str_replace("'", "''", $filterCategory);
 $filterBranchSafe    = str_replace("'", "''", $filterBranch);
 $filterEmpStatusSafe = str_replace("'", "''", $filterEmpStatus);
+
+// Time In/Out tab: allowed categories (also the dropdown options).
+$tioCategories = ['OP', 'DP', 'DSP'];
+$tioCategory   = in_array($filterCategory, $tioCategories, true) ? $filterCategory : '';
 
 // Dropdown option lists — only queried when the tab is actually open,
 // same lazy pattern as $deptList above.
@@ -117,10 +121,11 @@ $debugLog = []; // tab => sqlsrv_errors() when a query fails, surfaced in an HTM
 
 if ($tab === 'timeinout') {
     $dc = dc($filterDeptSafe);
-    // This tab is Office Personnel only — Field Staff (tab: fieldstaff) already
-    // covers every non-OP category via View_ATtendanceTimeInTimeOut_Field, and
-    // DP has its own dedicated weekly view, so Time In/Out is scoped to OP here
-    // to avoid the two tabs overlapping.
+    // Time In/Out covers OP, DP and DSP. A selected category narrows it to that
+    // one; blank = all three. $tioCategory is whitelisted, so it's safe to inline.
+    $catSql = $tioCategory !== ''
+        ? "AND RTRIM(Category) = '$tioCategory'"
+        : "AND RTRIM(Category) IN ('" . implode("','", $tioCategories) . "')";
     $timeinoutStmt = sqlsrv_query($conn, "
     SELECT EmployeeID, Department, EmployeeName, Category, ADate,
            MorningIn, MorningOut, AfternoonIn, AfternoonOut, TimeIn, TimeInPM,
@@ -128,7 +133,7 @@ if ($tab === 'timeinout') {
            MorningAfternoonTotal, TotalHours, Status
     FROM View_ATtendanceTimeInTimeOut2_Override
     WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
-          AND RTRIM(Category) = 'OP'
+$catSql
     ORDER BY ADate DESC, MorningIn DESC
 ");
     if ($timeinoutStmt === false) { $debugLog['timeinout'] = sqlsrv_errors(); }
@@ -155,7 +160,7 @@ if ($tab === 'timeinout') {
 } elseif ($tab === 'devicelog') {
     $dc = dc($filterDeptSafe);
     $logRows = fetchAll(sqlsrv_query($conn, "
-        SELECT DataFrom, Department, EmployeeID, EmployeeName, Position_Held, ADate, CheckIn, ATime, Area, Category, Direction, Late
+        SELECT DataFrom, Department, EmployeeID, EmployeeName, Position_Held, ADate, CheckIn, ATime, Area, Category, Direction, Late, From1
         FROM View_Attendance_Log2
         WHERE CAST(ADate AS DATE) BETWEEN '$dateFromSafe' AND '$dateToSafe' $dc
         ORDER BY ADate DESC, ATime DESC
@@ -664,6 +669,17 @@ require_once __DIR__ . '/hr_nav.php';
       </div>
     </div>
     <?php endif; ?>
+    <?php if ($tab === 'timeinout'): ?>
+    <div class="hr-filter-group">
+      <label>Category</label>
+      <select name="category" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:130px;">
+        <option value="">— All —</option>
+        <?php foreach ($tioCategories as $c): ?>
+        <option value="<?= htmlspecialchars($c) ?>" <?= ($tioCategory === $c) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <?php endif; ?>
     <?php if ($tab === 'generated'): ?>
     <div class="hr-filter-group">
       <label>Cut Off</label>
@@ -885,12 +901,29 @@ require_once __DIR__ . '/hr_nav.php';
       </button>
     </div>
   </div>
+  <div style="display:flex;align-items:flex-end;gap:.8rem;flex-wrap:wrap;padding:.7rem 1.1rem;border-bottom:1px solid var(--border);">
+    <div class="hr-filter-group">
+      <label>Category</label>
+      <select id="logFCategory" onchange="tableSearch('log')" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:140px;"><option value="">— All —</option></select>
+    </div>
+    <div class="hr-filter-group">
+      <label>Area</label>
+      <select id="logFArea" onchange="tableSearch('log')" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:140px;"><option value="">— All —</option></select>
+    </div>
+    <div class="hr-filter-group">
+      <label>Device</label>
+      <select id="logFDevice" onchange="tableSearch('log')" style="padding:0 .6rem;height:2.1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:.82rem;min-width:140px;"><option value="">— All —</option></select>
+    </div>
+    <button type="button" class="hr-btn hr-btn-ghost" onclick="resetLogFilters()">
+      <i class="bi bi-x-circle"></i> Clear
+    </button>
+  </div>
   <div class="hr-table-scroll">
     <table class="att-table" id="logTable">
       <thead>
         <tr>
           <th>Employee ID</th><th>Name</th><th>Department</th><th>Position Held</th><th>Area</th><th>Date</th>
-          <th>Check In</th><th>Time</th><th>Category</th><th>Direction</th><th>Late</th><th>Source</th>
+          <th>Check In</th><th>Time</th><th>Category</th><th>Direction</th><th>Late</th><th>Source</th><th>Device</th>
         </tr>
       </thead>
       <tbody id="logBody"></tbody>
@@ -1362,6 +1395,7 @@ function rowLog(r) {
       <td>${dirBadge(r.Direction||'')}</td>
       <td>${lateMinsBadge(r.Late)}</td>
       <td>${sourceBadge(r.DataFrom)}</td>
+      <td>${sourceBadge(r.From1)}</td>
     </tr>`;
 }
 
@@ -1496,9 +1530,43 @@ function goPage(id, p) {
 }
 
 // ── Search (across all loaded records) ────────────────────
+// ── Integrated Log: Category / Area / Device filters (client-side) ──
+const LOG_FILTERS = {
+    category: ['logFCategory', 'Category'],
+    area:     ['logFArea',     'Area'],
+    device:   ['logFDevice',   'From1']
+};
+
+function logVal(v) { return String(v ?? '').trim(); }
+
+function initLogFilters() {
+    Object.values(LOG_FILTERS).forEach(([selId, key]) => {
+        const sel = document.getElementById(selId);
+        if (!sel) return;
+        const vals = [...new Set((DATA.log || []).map(r => logVal(r[key])).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b));
+        sel.innerHTML = '<option value="">— All —</option>' +
+            vals.map(v => `<option value="${esc(v).replace(/"/g,'&quot;')}">${esc(v)}</option>`).join('');
+    });
+}
+
+function resetLogFilters() {
+    Object.values(LOG_FILTERS).forEach(([selId]) => {
+        const s = document.getElementById(selId);
+        if (s) s.value = '';
+    });
+    tableSearch('log');
+}
+
 function tableSearch(id) {
     const q = (document.getElementById(id + 'Search')?.value || '').toLowerCase().trim();
-    const all = DATA[id] || [];
+    let all = DATA[id] || [];
+    if (id === 'log') {
+        Object.values(LOG_FILTERS).forEach(([selId, key]) => {
+            const v = document.getElementById(selId)?.value || '';
+            if (v) all = all.filter(r => logVal(r[key]) === v);
+        });
+    }
     state[id].filtered = q ? all.filter(r =>
         Object.values(r).some(v => String(v||'').toLowerCase().includes(q))
     ) : all;
@@ -1544,7 +1612,7 @@ function printTable(id, title) {
       </style>
     </head><body>
       <h3>Urban Tradewell Corporation — ${title}</h3>
-      <p>Department: <?= deptLabel($filterDept) ?> &nbsp;|&nbsp; <?= htmlspecialchars($dateFrom) ?> → <?= htmlspecialchars($dateTo) ?> &nbsp;|&nbsp; Printed: <?= date('Y-m-d H:i') ?></p>
+      <p>Department: <?= deptLabel($filterDept) ?> &nbsp;|&nbsp; <?= $tab === 'timeinout' ? 'Category: ' . ($tioCategory !== '' ? htmlspecialchars($tioCategory) : 'OP, DP, DSP') . ' &nbsp;|&nbsp; ' : '' ?> <?= htmlspecialchars($dateFrom) ?> → <?= htmlspecialchars($dateTo) ?> &nbsp;|&nbsp; Printed: <?= date('Y-m-d H:i') ?></p>
       ${table.outerHTML}
     </body></html>`);
     win.document.close(); win.focus(); win.print(); win.close();
@@ -1562,6 +1630,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <?php elseif ($tab === 'fieldstaff'): ?>
     renderTable('field');
 <?php elseif ($tab === 'devicelog'): ?>
+    initLogFilters();
     renderTable('log');
 <?php elseif ($tab === 'toplates'): ?>
     renderTable('lates');

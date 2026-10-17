@@ -54,13 +54,16 @@ function buildWhere(bool $viewAll, string $userDept, string $search, string $dep
 
     // Search
     if ($search !== '') {
-        $sp = "%{$search}%";
-        $where .= " AND (
-            e.LastName      LIKE ? OR e.FirstName     LIKE ? OR
-            e.EmployeeID    LIKE ? OR e.Department    LIKE ? OR
-            e.Position_held LIKE ? OR e.Branch        LIKE ?
-        )";
-        array_push($params, $sp, $sp, $sp, $sp, $sp, $sp);
+        $terms = preg_split('/\s+/', trim($search), -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($terms as $term) {
+            $sp = "%{$term}%";
+            $where .= " AND (
+                e.LastName      LIKE ? OR e.FirstName     LIKE ? OR
+                e.EmployeeID    LIKE ? OR e.Department    LIKE ? OR
+                e.Position_held LIKE ? OR e.Branch        LIKE ?
+            )";
+            array_push($params, $sp, $sp, $sp, $sp, $sp, $sp);
+        }
     }
 
     return $where;
@@ -325,6 +328,10 @@ if ($viewAll && $deptFilter !== '') $paginationParams['dept'] = $deptFilter;
       font-size: .83rem; color: #7f1d1d; font-weight: 500;
       white-space: pre-wrap; word-break: break-word;
     }
+
+    .page-btn.active { background: var(--primary,#2563eb); color: #fff; border-color: var(--primary,#2563eb); font-weight: 700; }
+    .page-ellipsis { padding: 0 .35rem; color: #94a3b8; }
+    .detail-modal .modal-dialog { max-width: min(95vw, 1100px); }
   </style>
 </head>
 <body>
@@ -540,13 +547,28 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
     <!-- Pagination -->
     <?php if ($totalPages > 1):
-      $urlBase = fn($p) => '?' . http_build_query(array_merge($paginationParams, ['page' => $p]));
+      $urlBase    = fn($p) => '?' . http_build_query(array_merge($paginationParams, ['page' => $p]));
+      $winSize    = 2;
+      $rangeStart = max(1, $page - $winSize);
+      $rangeEnd   = min($totalPages, $page + $winSize);
     ?>
     <nav class="pagination-wrap d-flex justify-content-between align-items-center" aria-label="Pagination">
       <a class="page-btn <?= $page <= 1 ? 'disabled' : '' ?>" href="<?= $page > 1 ? $urlBase($page - 1) : '#' ?>">
         <i class="bi bi-chevron-left"></i> Prev
       </a>
-      <span class="page-info">Page <?= $page ?> of <?= $totalPages ?></span>
+      <div class="page-numbers d-flex align-items-center" style="gap:.25rem;">
+        <?php if ($rangeStart > 1): ?>
+          <a class="page-btn" href="<?= $urlBase(1) ?>">1</a>
+          <?php if ($rangeStart > 2): ?><span class="page-ellipsis">…</span><?php endif; ?>
+        <?php endif; ?>
+        <?php for ($p = $rangeStart; $p <= $rangeEnd; $p++): ?>
+          <a class="page-btn <?= $p === $page ? 'active' : '' ?>" href="<?= $urlBase($p) ?>"><?= $p ?></a>
+        <?php endfor; ?>
+        <?php if ($rangeEnd < $totalPages): ?>
+          <?php if ($rangeEnd < $totalPages - 1): ?><span class="page-ellipsis">…</span><?php endif; ?>
+          <a class="page-btn" href="<?= $urlBase($totalPages) ?>"><?= $totalPages ?></a>
+        <?php endif; ?>
+      </div>
       <a class="page-btn <?= $page >= $totalPages ? 'disabled' : '' ?>" href="<?= $page < $totalPages ? $urlBase($page + 1) : '#' ?>">
         Next <i class="bi bi-chevron-right"></i>
       </a>
@@ -559,7 +581,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/topbar.php'; ?>
 
 <!-- ══ EMPLOYEE DETAIL MODAL ══════════════════════════════════ -->
 <div class="modal fade detail-modal" id="empDetailModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+  <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
     <div class="modal-content">
 
       <div class="modal-header">

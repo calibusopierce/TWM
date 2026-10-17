@@ -1,6 +1,11 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/includes/nav.php';
+if (session_status() === PHP_SESSION_NONE) session_start();
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/auth_check.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/RBAC/rbac_helper.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/TWM/test_sqlsrv.php';
+auth_check();
+rbac_gate($pdo, 'view_applications');
 
 // Status constants — must match DB values and $statusLabels in view-applications.php
 define('S_PENDING',       0);
@@ -11,6 +16,7 @@ define('S_FINAL',         4);
 define('S_FINAL_RESCHED', 5);
 define('S_HIRED',         6);
 define('S_REJECTED',      7);
+define('S_WALKIN',        8);
 
 $interviewStatuses = [S_FOR_INTERVIEW, S_RESCHEDULE, S_FINAL, S_FINAL_RESCHED];
 
@@ -30,7 +36,7 @@ $returnAliases = ['active' => 'interview'];
 if (isset($returnAliases[$returnTab])) {
     $returnTab = $returnAliases[$returnTab];
 }
-$validReturnTabs = ['pending', 'evaluating', 'interview', 'hired', 'rejected'];
+$validReturnTabs = ['pending', 'evaluating', 'interview', 'hired', 'rejected', 'walkin'];
 if (!in_array($returnTab, $validReturnTabs, true)) {
     $returnTab = 'pending';
 }
@@ -39,9 +45,30 @@ if (!in_array($returnTab, $validReturnTabs, true)) {
 $interviewDT   = trim($_POST['InterviewDateTime'] ?? '');
 $officeAddress = trim($_POST['OfficeAddress'] ?? '');
 $hrContactNo   = trim($_POST['HRContactFileNo'] ?? '');
+$sendEmail     = !empty($_POST['sendEmail']);
+
+// Email mode: 'template' (built-in per-status email) or 'custom' (HR-written)
+$emailMode     = (($_POST['emailMode'] ?? 'template') === 'custom') ? 'custom' : 'template';
+$customSubject = mb_substr(trim(str_replace(["\r", "\n"], ' ', (string)($_POST['emailSubject'] ?? ''))), 0, 200, 'UTF-8');
+$customBody    = mb_substr(trim((string)($_POST['emailBody'] ?? '')), 0, 5000, 'UTF-8');
+
+// Internal reminder of why an applicant was rejected (never emailed)
+$rejectionRemarks = mb_substr(trim((string)($_POST['rejectionRemarks'] ?? '')), 0, 1000, 'UTF-8');
 
 if (!$applicationID || $status === null) {
     header('Location: view-applications.php?tab='.$returnTab.'&updated=0&error=invalid_input');
+    exit;
+}
+if ($status === S_WALKIN) {
+    header('Location: view-applications.php?tab='.$returnTab.'&updated=0&error=walkin_not_selectable');
+    exit;
+}
+if ($status === S_REJECTED && $rejectionRemarks === '') {
+    header('Location: view-applications.php?tab='.$returnTab.'&updated=0&error=remarks_required');
+    exit;
+}
+if ($sendEmail && $emailMode === 'custom' && ($customSubject === '' || $customBody === '')) {
+    header('Location: view-applications.php?tab='.$returnTab.'&updated=0&error=email_incomplete');
     exit;
 }
 
@@ -74,6 +101,13 @@ try {
     $departmentName = $applicant['DepartmentName'] ?? '';
     sqlsrv_free_stmt($fetchStmt);
 
+    // Final statuses are locked: Hired (6) and Rejected (7) can't be changed
+    if (in_array($currentStatus, [S_HIRED, S_REJECTED], true)) {
+        sqlsrv_rollback($conn);
+        header('Location: view-applications.php?tab='.$returnTab.'&updated=0&error=status_locked');
+        exit;
+    }
+
     // No meaningful change — skip DB write
     if ($currentStatus === $status && !in_array($status, $interviewStatuses)) {
         sqlsrv_rollback($conn);
@@ -82,9 +116,15 @@ try {
     }
 
     // ── Update status + department ─────────────────────────────
-    $updateStmt = sqlsrv_query($conn,
-        "UPDATE JobApplications SET Status = ?, DepartmentID = ? WHERE ApplicationID = ?",
-        [$status, $departmentID, $applicationID]);
+    if ($status === S_REJECTED) {
+        $updateStmt = sqlsrv_query($conn,
+            "UPDATE JobApplications SET Status = ?, DepartmentID = COALESCE(?, DepartmentID), RejectionRemarks = ? WHERE ApplicationID = ?",
+            [$status, $departmentID, $rejectionRemarks, $applicationID]);
+    } else {
+        $updateStmt = sqlsrv_query($conn,
+            "UPDATE JobApplications SET Status = ?, DepartmentID = COALESCE(?, DepartmentID) WHERE ApplicationID = ?",
+            [$status, $departmentID, $applicationID]);
+    }
     if ($updateStmt === false) {
         throw new Exception('status_update_failed');
     }
@@ -160,6 +200,13 @@ try {
 
 // ── Email setup ────────────────────────────────────────────────
 date_default_timezone_set('Asia/Manila');
+
+// Escape applicant/HR-supplied text before it goes into the HTML email
+$fullname      = htmlspecialchars((string)$fullname,      ENT_QUOTES, 'UTF-8');
+$position      = htmlspecialchars((string)$position,      ENT_QUOTES, 'UTF-8');
+$officeAddress = htmlspecialchars((string)$officeAddress, ENT_QUOTES, 'UTF-8');
+$hrName        = htmlspecialchars((string)$hrName,        ENT_QUOTES, 'UTF-8');
+$hrDepartment  = htmlspecialchars((string)$hrDepartment,  ENT_QUOTES, 'UTF-8');
 
 $subject          = '';
 $bodyContent      = '';
@@ -273,10 +320,43 @@ switch ($status) {
 }
 
 // ── Send email ─────────────────────────────────────────────────
-if (!empty($subject) && !empty($bodyContent) && !empty($email)) {
+// HR composed their own email: replace the template subject/body (works for any status)
+if ($sendEmail && $emailMode === 'custom') {
+    $subject     = htmlspecialchars($customSubject, ENT_QUOTES, 'UTF-8');
+    // Interview statuses: append the interview card + HR contact below HR's message,
+    // same look as the templates, so HR doesn't have to retype what they selected.
+    $detailsHtml = '';
+    $signatureHtml = '';
+    if (in_array($status, $interviewStatuses, true)) {
+        if ($interviewDT !== '') {
+            $cardStyles = [
+                S_FOR_INTERVIEW => ['#f0f9ff', '#bae6fd', '#0369a1', 'Interview Details'],
+                S_RESCHEDULE    => ['#fffbeb', '#fde68a', '#92400e', 'New Interview Schedule'],
+                S_FINAL         => ['#f0fdf4', '#86efac', '#15803d', 'Final Interview Details'],
+                S_FINAL_RESCHED => ['#fffbeb', '#fde68a', '#92400e', 'New Final Interview Schedule'],
+            ];
+            [$cBg, $cBorder, $cTitle, $cLabel] = $cardStyles[$status];
+            $detailsHtml = "<div style='background:{$cBg};border:1px solid {$cBorder};border-radius:6px;padding:12px 16px;margin:16px 0;'>
+                <p style='margin:0 0 6px;font-weight:700;color:{$cTitle};'>📅 {$cLabel}</p>
+                <p style='margin:0 0 4px;'><strong>Date &amp; Time:</strong> {$interviewDateStr}</p>"
+                . ($officeAddress ? "<p style='margin:0;'><strong>Venue:</strong> {$officeAddress}</p>" : "")
+                . "</div>";
+        }
+        $signatureHtml = $hrSignature;
+    }
+
+    $bodyContent = "<div style='font-size:14px;line-height:1.6;color:#333;'>"
+                 . nl2br(htmlspecialchars($customBody, ENT_QUOTES, 'UTF-8'))
+                 . "</div>"
+                 . $detailsHtml
+                 . $signatureHtml;
+}
+
+if ($sendEmail && !empty($subject) && !empty($bodyContent) && !empty($email)) {
     $fromName  = 'Urban Tradewell Corporation';
     $host      = $_SERVER['HTTP_HOST'] ?? 'example.com';
     $fromEmail = 'no-reply@' . preg_replace('/[^a-z0-9.\-]/i', '', $host);
+    $year = date('Y');
 
     $htmlMessage = <<<HTML
 <!doctype html>
@@ -307,7 +387,7 @@ if (!empty($subject) && !empty($bodyContent) && !empty($email)) {
           </div>
         </td></tr>
         <tr><td style="background:#f1f3f5;padding:15px 30px;color:#666;font-size:13px;text-align:center;">
-          Urban Tradewell Corporation &copy; <?= date('Y') ?><br>
+          Urban Tradewell Corporation &copy; {$year}<br>
           Sta. Monica Street Lourdes Subdivision, Phase 2 Ibabang Iyam, Lucena City, Quezon 4301<br>
           <a href="mailto:hr.tradewell@gmail.com" style="color:#1e3799;text-decoration:none;">hr_tradewell@yahoo.com, hr.tradewell@gmail.com</a> | (042) 719-1306
         </td></tr>
@@ -322,7 +402,10 @@ HTML;
     $headers .= "Content-type: text/html; charset=UTF-8\r\n";
     $headers .= "From: {$fromName} <{$fromEmail}>\r\n";
     $headers .= "Reply-To: hr.tradewell@gmail.com\r\n";
-    @mail($email, $subject, $htmlMessage, $headers);
+    $encSubject = '=?UTF-8?B?' . base64_encode(html_entity_decode($subject, ENT_QUOTES, 'UTF-8')) . '?=';
+    if (!mail($email, $encSubject, $htmlMessage, $headers)) {
+        error_log('[update-status] mail() failed for status ' . $status . ' to ' . $email);
+    }
 }
 
 // ── Redirect ───────────────────────────────────────────────────

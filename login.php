@@ -377,7 +377,7 @@ if (isset($_POST['login'])) {
 
       <div class="back-wrap">
         <!-- ✅ FIX: route() instead of hardcoded path -->
-        <a href="<?= route('careers') ?>" class="back-link">
+        <a href="https://122.52.195.3" class="back-link">
           <i class="bi bi-arrow-left"></i> Back to Website
         </a>
       </div>

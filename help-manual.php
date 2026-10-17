@@ -86,6 +86,16 @@ $guide_registry = [
         'color' => '#0891b2',
     ],
     [
+        'keys'  => ['qr_untagged_map'],
+        'href'  => base_url('QR/help-manual-qr.php'),
+        'emoji' => '📍',
+        'cat'   => 'Field Operations',
+        'title' => 'QR Code Tagging',
+        'desc'  => 'Match field-scanned QR codes to customer records on the map — pick the true scan location, tag or override, sync pending tags, and void or delete bad scans.',
+        'chips' => ['Untagged Map', 'Tag / Override', 'Pending Sync', 'Void'],
+        'color' => '#dc2626',
+    ],
+    [
         'keys'  => ['RBAC'],
         'href'  => base_url('RBAC/help-manual.php'),
         'emoji' => '🔐',

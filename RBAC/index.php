@@ -135,6 +135,14 @@ foreach ($userAccessRaw as $row) {
 }
 $userAccessJson = json_encode($userAccessMap);
 
+// ── Active users (Module Holders tab) — assumes ViewUserLogIn exposes `id` ───
+$holderUsers = $pdo->query("
+    SELECT id, username, DisplayName, Department, user_type
+    FROM   ViewUserLogIn
+    WHERE  Active = 1
+")->fetchAll(PDO::FETCH_ASSOC);
+$holderUsersJson = json_encode($holderUsers, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+
 // ── Audit log (server-side paginated) ─────────────────────────────────────────
 $auditPerPage  = 20;
 $auditPage     = max(1, (int)($_GET['apage']   ?? 1));
@@ -324,6 +332,17 @@ $actionColors = [
     }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+
+    /* ══ MODULE HOLDERS ══════════════════════════════════════════════════════ */
+    .holder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem; }
+    .holder-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: .9rem 1rem; cursor: pointer; transition: border-color .2s, transform .2s;
+    }
+    .holder-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .holder-card-name  { font-size: .88rem; font-weight: 600; color: var(--white); }
+    .holder-card-key   { font-size: .7rem; color: var(--w40); font-family: monospace; margin-bottom: .5rem; }
+    .holder-card-count { font-size: .75rem; color: var(--w60); display: flex; align-items: center; gap: .35rem; }
 
     /* ══ ROLE CARDS ══════════════════════════════════════════════════════════ */
     .roles-grid {
@@ -984,6 +1003,9 @@ $actionColors = [
       <i class="bi bi-grid-fill"></i> Module Registry
       <span class="tab-badge" id="tabModBadge"><?= count($modules) ?></span>
     </button>
+    <button class="tab-btn" data-tab="holders">
+      <i class="bi bi-person-check-fill"></i> Module Holders
+    </button>
     <button class="tab-btn" data-tab="audit">
       <i class="bi bi-clock-history"></i> Audit Log
       <span class="tab-badge" style="background:#f87171"><?= $auditTotal ?></span>
@@ -1143,6 +1165,16 @@ $actionColors = [
   </div><!-- /tab-registry -->
 
   <!-- ══════════════════ TAB: AUDIT LOG ════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-holders">
+    <div class="filter-row">
+      <div class="search-box">
+        <i class="bi bi-search"></i>
+        <input type="text" id="holderSearch" placeholder="Search module name or key…">
+      </div>
+    </div>
+    <div class="holder-grid" id="holdersGrid"></div>
+  </div><!-- /tab-holders -->
+
   <div class="tab-panel" id="tab-audit">
 
     <div class="users-toolbar" style="margin-bottom:1.25rem">
@@ -1518,6 +1550,25 @@ $actionColors = [
 <!-- ══════════════════════════════════════════════════════════════════════════
      CONFIRM DELETE OVERLAY
 ══════════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="holdersModal">
+  <div class="modal" style="max-width:600px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+      <div>
+        <div class="ct-name" id="hm_title">—</div>
+        <div class="ct-meta" id="hm_sub">—</div>
+      </div>
+      <button class="drawer-close" id="closeHoldersModal"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="form-hint" style="margin-bottom:.6rem">
+      Direct access can be removed here. Role-based access is removed by editing the role or changing the user's type (Manage).
+    </div>
+    <input type="text" id="hm_search" placeholder="Search user, department, type…"
+           style="width:100%;padding:.4rem .6rem;border-radius:8px;border:1px solid var(--border);
+                  background:var(--surface);color:var(--w60);font-size:.8rem;margin-bottom:.6rem">
+    <div id="hm_list" style="max-height:380px;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
     <div class="confirm-box-icon"><i class="bi bi-trash3-fill"></i></div>
@@ -1645,6 +1696,7 @@ const ALL_DEPTS     = <?= $allDeptsJson ?>;
 let   deptAccessMap = <?= $deptAccessJson ?>;
 let   userAccessMap = <?= $userAccessJson ?>;
 const IS_VIEW_ONLY  = <?= $isViewOnlyJs ?>;
+const HOLDER_USERS  = <?= $holderUsersJson ?>;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // UTILITIES
@@ -3227,6 +3279,128 @@ document.getElementById('closeManageModal').addEventListener('click', e => {
   manageModal.classList.remove('open');
 });
 manageModal.addEventListener('click', e => { if (e.target === manageModal) manageModal.classList.remove('open'); });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MODULE HOLDERS TAB
+// ══════════════════════════════════════════════════════════════════════════════
+const holdersModal = document.getElementById('holdersModal');
+let holdersKey = null;
+
+// Everyone with access to a module: direct (rbac_user_access) and/or via role (rbac_permissions)
+function getModuleHolders(key) {
+  return HOLDER_USERS.map(u => {
+    const direct  = (userAccessMap[u.id] || {})[key] || null;
+    const viaRole = permsMap[(u.user_type || '') + '|' + key] || null;
+    return (direct || viaRole) ? { ...u, direct, viaRole } : null;
+  }).filter(Boolean);
+}
+
+function renderHolderCards() {
+  const q    = document.getElementById('holderSearch').value.trim().toLowerCase();
+  const mods = ALL_MODULES.filter(m =>
+    !q || m.module_name.toLowerCase().includes(q) || m.module_key.toLowerCase().includes(q));
+  document.getElementById('holdersGrid').innerHTML = mods.length
+    ? mods.map(m => {
+        const n = getModuleHolders(m.module_key).length;
+        return `<div class="holder-card" data-key="${escHtml(m.module_key)}">
+          <div class="holder-card-name">${escHtml(m.module_name)}</div>
+          <div class="holder-card-key">${escHtml(m.module_key)}</div>
+          <div class="holder-card-count"><i class="bi bi-people-fill"></i> ${n} user${n !== 1 ? 's' : ''}</div>
+        </div>`;
+      }).join('')
+    : '<div class="empty-state" style="grid-column:1/-1"><i class="bi bi-grid"></i>No modules found.</div>';
+}
+
+function renderHolderRows() {
+  if (!holdersKey) return;
+  const q    = document.getElementById('hm_search').value.trim().toLowerCase();
+  const all  = getModuleHolders(holdersKey);
+  const rows = q ? all.filter(u =>
+    (u.DisplayName || '').toLowerCase().includes(q) ||
+    (u.username    || '').toLowerCase().includes(q) ||
+    (u.Department  || '').toLowerCase().includes(q) ||
+    (u.user_type   || '').toLowerCase().includes(q)) : all;
+
+  document.getElementById('hm_sub').textContent =
+    all.length + ' user' + (all.length !== 1 ? 's' : '') + ' with access';
+
+  const lvl = v => v === 'view_only' ? 'View Only' : 'Full Access';
+  document.getElementById('hm_list').innerHTML = rows.length
+    ? rows.map(u => {
+        const dn   = u.DisplayName || u.username || '';
+        const pills = [];
+        if (u.direct)  pills.push(`<span class="rbac-role-pill"><i class="bi bi-key" style="font-size:.55rem"></i>Direct · ${lvl(u.direct)}</span>`);
+        if (u.viaRole) pills.push(`<span class="rbac-role-pill"><i class="bi bi-shield-check" style="font-size:.55rem"></i>Role: ${escHtml(u.user_type)} · ${lvl(u.viaRole)}</span>`);
+        return `<div class="udr-row">
+          <div class="udr-avatar">${escHtml(dn.slice(0, 2).toUpperCase())}</div>
+          <div style="flex:1;min-width:0">
+            <div class="udr-name">${escHtml(dn)}</div>
+            <div class="udr-meta">${escHtml(u.Department || '—')} · ${escHtml(u.user_type || '—')}</div>
+            <div class="udr-pills">${pills.join('')}</div>
+          </div>
+          <div style="display:flex;gap:.35rem">
+            ${!IS_VIEW_ONLY && u.direct
+              ? `<button class="btn btn-sm btn-danger hm-remove" data-id="${u.id}"><i class="bi bi-x-lg"></i> Remove</button>` : ''}
+            <button class="btn btn-sm btn-ghost hm-manage" data-id="${u.id}">
+              <i class="bi ${IS_VIEW_ONLY ? 'bi-eye' : 'bi-sliders'}"></i> ${IS_VIEW_ONLY ? 'View' : 'Manage'}
+            </button>
+          </div>
+        </div>`;
+      }).join('')
+    : '<div class="empty-state"><i class="bi bi-people"></i>No users found.</div>';
+}
+
+function openHoldersModal(key) {
+  holdersKey = key;
+  const mod = ALL_MODULES.find(m => m.module_key === key);
+  document.getElementById('hm_title').textContent = mod ? mod.module_name : key;
+  document.getElementById('hm_search').value = '';
+  renderHolderRows();
+  holdersModal.classList.add('open');
+}
+
+async function removeDirectAccess(uid) {
+  if (IS_VIEW_ONLY) { toast('You have view-only access — changes are not allowed.', 'error'); return; }
+  const u = HOLDER_USERS.find(x => String(x.id) === String(uid));
+  if (!u) return;
+  const name = u.DisplayName || u.username;
+  if (!await confirmDialog('Remove access?', `Remove direct "${holdersKey}" access from ${name}?`)) return;
+
+  const next = { ...(userAccessMap[uid] || {}) };
+  delete next[holdersKey];
+  const data = await apiPost({ action: 'assign_user_access', user_id: uid, modules: JSON.stringify(next) });
+  if (!data.ok) { toast(data.msg || 'Error removing access.', 'error'); return; }
+
+  userAccessMap[uid] = next;
+  renderHolderRows();
+  renderHolderCards();
+  toast(`Access removed from <strong>${escHtml(name)}</strong>.`);
+}
+
+document.getElementById('holdersGrid').addEventListener('click', e => {
+  const card = e.target.closest('.holder-card');
+  if (card) openHoldersModal(card.dataset.key);
+});
+
+document.getElementById('hm_list').addEventListener('click', e => {
+  const rm = e.target.closest('.hm-remove');
+  if (rm) { removeDirectAccess(rm.dataset.id); return; }
+  const mg = e.target.closest('.hm-manage');
+  if (mg) {
+    const u = HOLDER_USERS.find(x => String(x.id) === mg.dataset.id);
+    if (!u) return;
+    holdersModal.classList.remove('open');
+    openManageModal({ id: u.id, displayname: u.DisplayName || u.username,
+                      username: u.username, dept: u.Department || '', type: u.user_type || '' });
+  }
+});
+
+document.getElementById('hm_search').addEventListener('input', renderHolderRows);
+document.getElementById('holderSearch').addEventListener('input', renderHolderCards);
+document.getElementById('closeHoldersModal').addEventListener('click', () => holdersModal.classList.remove('open'));
+holdersModal.addEventListener('click', e => { if (e.target === holdersModal) holdersModal.classList.remove('open'); });
+document.querySelector('.tab-btn[data-tab="holders"]').addEventListener('click', renderHolderCards);
+renderHolderCards();
 
 // Save RBAC module access (button only exists in DOM for full-access users)
 // Grant All / Remove All — bulk-set the dropdowns locally; existing

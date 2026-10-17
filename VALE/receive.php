@@ -41,7 +41,7 @@ if ($current['Status'] !== 'Approved') {
 if (trim((string)$current['ApprovedByID']) !== trim((string)$_SESSION['EmployeeID'])) {
     echo json_encode([
         'success' => false,
-        'message' => 'DEBUG mismatch — ApprovedByID: [' . $current['ApprovedByID'] . '] SessionEmployeeID: [' . $_SESSION['EmployeeID'] . ']'
+        'message' => 'Only the approver who approved this request can mark it as received.'
     ]);
     exit;
 }

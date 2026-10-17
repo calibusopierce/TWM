@@ -13,6 +13,47 @@ $view_only = rbac_is_view_only('qr_untagged_map');
 if (session_status() !== PHP_SESSION_ACTIVE) session_start();
 if (empty($_SESSION['qut_csrf'])) $_SESSION['qut_csrf'] = bin2hex(random_bytes(32));
 
+// ---- AJAX: create / edit customer (shared with CUSTOMERS/customer_masterlist.php) ----
+require_once __DIR__ . '/../CUSTOMERS/customer_form_helper.php';
+cfh_handle_post($conn, $view_only, 'qut_csrf', true);
+$cf_options = cfh_options($conn);
+
+// ---- Audit trail helpers (Tbl_QRCode_Audit_Log) ----
+function qut_audit_user() {
+    // Adjust these keys to match your login session (see note below the code)
+    $id   = $_SESSION['user_id'] ?? $_SESSION['UserID'] ?? $_SESSION['userid'] ?? $_SESSION['id'] ?? null;
+    $name = $_SESSION['username'] ?? $_SESSION['user_name'] ?? $_SESSION['fullname'] ?? $_SESSION['name'] ?? null;
+    return [$id !== null ? (int)$id : null, $name !== null ? (string)$name : null];
+}
+
+// Call inside a transaction: reads the customer's current values and locks the row
+function qut_customer_snapshot($conn, $cid) {
+    $st = sqlsrv_query($conn, "
+        SELECT Code, CustomerName, QRCODE, Latitude, Longitude
+        FROM dbo.Tbl_Customer_Info WITH (UPDLOCK, ROWLOCK)
+        WHERE ID = ?", [$cid]);
+    if ($st === false) return null;
+    $r = sqlsrv_fetch_array($st, SQLSRV_FETCH_ASSOC);
+    return $r ?: null;
+}
+
+function qut_audit_log($conn, $action, $cid, $snap, $newQr, $newLat, $newLng, $note = null) {
+    [$uid, $uname] = qut_audit_user();
+    $s = fn($v) => ($v === null || trim((string)$v) === '') ? null : trim((string)$v);
+    $st = sqlsrv_query($conn, "
+        INSERT INTO dbo.Tbl_QRCode_Audit_Log
+            (CustomerID, CustomerCode, CustomerName, Action, OldQRCODE, NewQRCODE,
+             OldLatitude, OldLongitude, NewLatitude, NewLongitude, Note, UserID, UserName, IPAddress)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
+        $cid, $s($snap['Code'] ?? null), $s($snap['CustomerName'] ?? null), $action,
+        $s($snap['QRCODE'] ?? null), $s($newQr),
+        $s($snap['Latitude'] ?? null), $s($snap['Longitude'] ?? null), $s($newLat), $s($newLng),
+        $note, $uid, $uname, $_SERVER['REMOTE_ADDR'] ?? null
+    ]);
+    if ($st === false) { error_log('QR audit insert failed: ' . print_r(sqlsrv_errors(), true)); return false; }
+    return true;
+}
+
 // ---- AJAX: tag a scanned QRCODE to a customer ----
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'tag') {
     while (ob_get_level()) ob_end_clean();
@@ -37,16 +78,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'tag')
           AND NOT EXISTS (SELECT 1 FROM dbo.Tbl_Customer_Info WHERE QRCODE = ? AND ID <> ?)
           AND EXISTS (SELECT 1 FROM dbo.View_QRCode_Untagged WHERE QRCODE = ?)
     ";
+    sqlsrv_begin_transaction($conn);
+    $snap = qut_customer_snapshot($conn, $cid);
     $stmt = sqlsrv_query($conn, $sql, [$qr, $lat, $lng, $cid, $qr, $cid, $qr]);
     if ($stmt === false) {
+        sqlsrv_rollback($conn);
         error_log('QR tag failed: ' . print_r(sqlsrv_errors(), true));
         echo json_encode(['ok' => false, 'error' => 'Update failed.']);
         exit;
     }
     if (sqlsrv_rows_affected($stmt) < 1) {
+        sqlsrv_rollback($conn);
         echo json_encode(['ok' => false, 'error' => 'Not tagged. The customer or the QR code was already taken.']);
         exit;
     }
+    $hadQr = $snap && trim((string)$snap['QRCODE']) !== '';
+    if (!qut_audit_log($conn, $hadQr ? 'OVERRIDE' : 'TAG', $cid, $snap, $qr, $lat, $lng)) {
+        sqlsrv_rollback($conn);
+        echo json_encode(['ok' => false, 'error' => 'Could not write the audit log. Nothing was changed.']);
+        exit;
+    }
+    sqlsrv_commit($conn);
     echo json_encode(['ok' => true]);
     exit;
 }
@@ -66,12 +118,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'sync'
     if ($qr === '' || $cid <= 0) { echo json_encode(['ok' => false, 'error' => 'Missing QR code or customer.']); exit; }
 
     sqlsrv_begin_transaction($conn);
+    $snap = qut_customer_snapshot($conn, $cid);
 
     $upd1 = "
         UPDATE dbo.Tbl_Customer_Info
         SET QRCODE = ?, Latitude = ?, Longitude = ?
         WHERE ID = ?
-          AND QRCODE IS NULL
+          AND (QRCODE IS NULL OR LTRIM(RTRIM(QRCODE)) = '')
           AND NOT EXISTS (SELECT 1 FROM dbo.Tbl_Customer_Info WHERE QRCODE = ?)
     ";
     $s1 = sqlsrv_query($conn, $upd1, [$qr, $lat, $lng, $cid, $qr]);
@@ -95,6 +148,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'sync'
         exit;
     }
 
+    if (!qut_audit_log($conn, 'SYNC', $cid, $snap, $qr, $lat, $lng, 'From Pending Sync')) {
+        sqlsrv_rollback($conn);
+        echo json_encode(['ok' => false, 'error' => 'Could not write the audit log. Nothing was changed.']);
+        exit;
+    }
     sqlsrv_commit($conn);
     echo json_encode(['ok' => true]);
     exit;
@@ -155,6 +213,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'void_
     exit;
 }
 
+// ---- AJAX: remove the QR tag from a customer (optionally clearing location too) ----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'remove_qr') {
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/json');
+
+    $cid      = (int)($_POST['customer_id'] ?? 0);
+    $clearLoc = ($_POST['clear_loc'] ?? '0') === '1';
+
+    if ($view_only) { http_response_code(403); echo json_encode(['ok' => false, 'error' => 'View-only access.']); exit; }
+    if (!hash_equals($_SESSION['qut_csrf'], $_POST['csrf'] ?? '')) { http_response_code(403); echo json_encode(['ok' => false, 'error' => 'Session expired, reload the page.']); exit; }
+    if ($cid <= 0) { echo json_encode(['ok' => false, 'error' => 'Missing customer.']); exit; }
+
+    $sql = "UPDATE dbo.Tbl_Customer_Info
+            SET QRCODE = NULL" . ($clearLoc ? ", Latitude = NULL, Longitude = NULL" : "") . "
+            WHERE ID = ? AND QRCODE IS NOT NULL AND LTRIM(RTRIM(QRCODE)) <> ''";
+    sqlsrv_begin_transaction($conn);
+    $snap = qut_customer_snapshot($conn, $cid);
+    $stmt = sqlsrv_query($conn, $sql, [$cid]);
+    if ($stmt === false) {
+        sqlsrv_rollback($conn);
+        error_log('QR remove failed: ' . print_r(sqlsrv_errors(), true));
+        echo json_encode(['ok' => false, 'error' => 'Remove failed.']);
+        exit;
+    }
+    if (sqlsrv_rows_affected($stmt) < 1) {
+        sqlsrv_rollback($conn);
+        echo json_encode(['ok' => false, 'error' => 'Nothing removed. This customer may no longer have a QR code.']);
+        exit;
+    }
+    $newLat = $clearLoc ? null : ($snap['Latitude']  ?? null);
+    $newLng = $clearLoc ? null : ($snap['Longitude'] ?? null);
+    if (!qut_audit_log($conn, 'REMOVE', $cid, $snap, null, $newLat, $newLng, $clearLoc ? 'Location cleared' : 'Location kept')) {
+        sqlsrv_rollback($conn);
+        echo json_encode(['ok' => false, 'error' => 'Could not write the audit log. Nothing was changed.']);
+        exit;
+    }
+    sqlsrv_commit($conn);
+    echo json_encode(['ok' => true]);
+    exit;
+}
+
 $jf = JSON_HEX_TAG | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE;
 
 // Same lat/lng-swap auto-correction used on the GPS map pages
@@ -206,6 +305,7 @@ while ($row = sqlsrv_fetch_array($qrStmt, SQLSRV_FETCH_ASSOC)) {
     unset($g);
 }
 $qrList = array_values($qrGroups);
+usort($qrList, fn($a, $b) => strnatcasecmp($a['code'], $b['code']));
 
 // ---- Customers that still have no QR code (the tag targets) ----
 $custStmt = sqlsrv_query($conn, "
@@ -213,7 +313,7 @@ $custStmt = sqlsrv_query($conn, "
            ContactNo, ContactPerson, CustomerType, TIN, Status, Remarks,
            Picture, UserInputID, DateTimeInput, Latitude, Longitude
     FROM dbo.Tbl_Customer_Info
-    WHERE QRCODE IS NULL
+    WHERE QRCODE IS NULL OR LTRIM(RTRIM(QRCODE)) = ''
     ORDER BY CustomerName
 ");
 if ($custStmt === false) {
@@ -258,7 +358,7 @@ $taggedStmt = sqlsrv_query($conn, "
            ContactNo, ContactPerson, CustomerType, TIN, Status, Remarks,
            Picture, UserInputID, DateTimeInput, Latitude, Longitude, QRCODE
     FROM dbo.Tbl_Customer_Info
-    WHERE QRCODE IS NOT NULL
+    WHERE QRCODE IS NOT NULL AND LTRIM(RTRIM(QRCODE)) <> ''
     ORDER BY CustomerName
 ");
 if ($taggedStmt === false) {
@@ -302,8 +402,9 @@ while ($row = sqlsrv_fetch_array($taggedStmt, SQLSRV_FETCH_ASSOC)) {
 $pendStmt = sqlsrv_query($conn, "
     SELECT QRCODE, CustomerID, Department, Status, UserInput, DateTimeInput,
            Code, CustomerName, Address, Area, EmployeeName, Latitude, Longitude
-    FROM dbo.View_QRCode_Tag_Pending
+    FROM dbo.View_QRCode_Tag_Pending p
     WHERE Status = 2
+      AND NOT EXISTS (SELECT 1 FROM dbo.Tbl_Customer_Info c WHERE c.QRCODE = p.QRCODE)
     ORDER BY DateTimeInput ASC
 ");
 if ($pendStmt === false) {
@@ -326,6 +427,15 @@ while ($row = sqlsrv_fetch_array($pendStmt, SQLSRV_FETCH_ASSOC)) {
         'lng'      => ($lat != 0 && $lng != 0) ? $lng : null,
     ];
 }
+
+// Pending Sync: sort by QR code ascending
+usort($pendingList, fn($a, $b) => strnatcasecmp($a['qr'], $b['qr']));
+
+// Customers With QR: sort by QR code ascending (natural order, so 2 comes before 10)
+usort($taggedCustomers, fn($a, $b) => strnatcasecmp($a['qr'], $b['qr']));
+
+// Customers that have a QR code but no usable location (same rule as the SQL: NULL or 0)
+$qrNoLocation = array_values(array_filter($taggedCustomers, fn($c) => $c['qr'] !== '' && $c['lat'] === null));
 
 function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 ?>
@@ -384,6 +494,18 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 <div class="qsl-wrap">
   <div class="page-header">
     <h1 class="page-title">QR Code Tagging</h1>
+    <div class="d-flex align-items-center gap-2 ms-auto">
+      <select id="qslRptScope" class="form-select form-select-sm" style="width:auto;">
+        <option value="all">All tables</option>
+        <option value="both">Untagged + Pending Sync</option>
+        <option value="untagged">Untagged QR Codes only</option>
+        <option value="pending">Pending Sync only</option>
+        <option value="tagged">Registered / Tagged QR only</option>
+        <option value="noloc">QR with no location only</option>
+      </select>
+      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="qslReportPrint()"><i class="bi bi-printer"></i> Print</button>
+      <button type="button" class="btn btn-sm btn-outline-success" onclick="qslReportCsv()"><i class="bi bi-filetype-csv"></i> CSV</button>
+    </div>
   </div>
 
   <ul class="nav nav-tabs mb-2" id="qslTabs">
@@ -397,6 +519,16 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
         Pending Sync <span class="badge bg-warning text-dark ms-1" id="qslStatPending"><?php echo count($pendingList); ?></span>
       </button>
     </li>
+    <li class="nav-item">
+      <button type="button" class="nav-link" id="qslTabBtnTagged" onclick="qslSwitchTab('tagged')">
+        Customers With QR <span class="badge bg-success ms-1"><?php echo count($taggedCustomers); ?></span>
+      </button>
+    </li>
+    <li class="nav-item">
+      <button type="button" class="nav-link" id="qslTabBtnNoLoc" onclick="qslSwitchTab('noloc')">
+        QR, No Location <span class="badge bg-secondary ms-1"><?php echo count($qrNoLocation); ?></span>
+      </button>
+    </li>
   </ul>
   <p class="text-muted mb-3">
     <span id="qslStatCust"><?php echo count($customers); ?></span> customers without a QR code &middot;
@@ -406,7 +538,7 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
   <div id="qslTabUntagged" class="qsl-tab-pane">
   <?php if (!$qrList): ?>
     <div class="qsl-empty">No untagged QR codes. Everything scanned has been tagged.</div>
-  <?php else: ?>
+  <?php endif; ?>
     <div id="qslSoloBar" class="d-none align-items-center justify-content-between mb-2" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:8px 12px;font-size:13px;">
       <span>Showing only <strong id="qslSoloCode"></strong> on the map</span>
       <button type="button" class="btn btn-sm btn-outline-secondary" onclick="showAllQr()">Show all pins</button>
@@ -419,7 +551,6 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
     <div class="d-flex gap-2 mb-2" id="qslViewToggle">
       <button type="button" class="btn btn-sm btn-outline-danger active" onclick="qslSetView('untagged', this)"><span class="qsl-dot" style="background:#dc2626"></span>Untagged QR Codes</button>
       <button type="button" class="btn btn-sm btn-outline-secondary" onclick="qslSetView('noqr', this)"><span class="qsl-dot" style="background:#94a3b8"></span>Customers without QR</button>
-      <button type="button" class="btn btn-sm btn-outline-success" onclick="qslSetView('hasqr', this)"><span class="qsl-dot" style="background:#16a34a"></span>Customers with QR</button>
     </div>
     <input type="search" id="qslTableSearch" class="form-control form-control-sm mb-2" placeholder="Search QR code or FileNo" oninput="qslFilterActiveTable()">
 
@@ -433,6 +564,7 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
             <th>Scans</th>
             <th>Latitude</th>
             <th>Longitude</th>
+            <th>Map</th>
           </tr>
         </thead>
         <tbody id="qslQrBody">
@@ -445,8 +577,10 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
               <?php if ($q['lat'] !== null): ?>
                 <td><?php echo h($q['lat']); ?></td>
                 <td><?php echo h($q['lng']); ?></td>
+                <td><a class="btn btn-sm btn-outline-primary py-0" target="_blank" rel="noopener" onclick="event.stopPropagation();" href="https://www.google.com/maps?q=<?php echo h($q['lat'] . ',' . $q['lng']); ?>">Open map</a></td>
               <?php else: ?>
                 <td colspan="2" class="text-muted">No location</td>
+                <td class="text-muted">-</td>
               <?php endif; ?>
             </tr>
           <?php endforeach; ?>
@@ -478,24 +612,6 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
       </table>
     </div>
 
-    <div id="qslViewHasQr" class="table-responsive d-none">
-      <table class="table table-bordered table-hover qsl-table bg-white">
-        <thead class="table-light">
-          <tr><th>#</th><th>Customer</th><th>Code</th><th>QR Code</th><th>Address</th></tr>
-        </thead>
-        <tbody id="qslHasQrBody">
-          <?php foreach ($taggedCustomers as $i => $c): ?>
-            <tr data-id="<?php echo $c['id']; ?>">
-              <td><span class="qsl-seq-badge" style="background:#16a34a;"><?php echo $i + 1; ?></span></td>
-              <td><?php echo h($c['name']); ?></td>
-              <td><?php echo h($c['code']); ?></td>
-              <td><?php echo h($c['qr']); ?></td>
-              <td><?php echo h($c['addr']); ?></td>
-            </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
-    </div>
 
     <div class="d-flex justify-content-between align-items-center mt-2">
       <span id="qslPagerInfo" class="text-muted" style="font-size:12.5px;"></span>
@@ -504,7 +620,6 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
         <button type="button" id="qslPagerNext" class="btn btn-sm btn-outline-secondary" onclick="qslPagerGo(1)">Next &raquo;</button>
       </div>
     </div>
-  <?php endif; ?>
   </div>
 
   <div id="qslTabPending" class="qsl-tab-pane d-none">
@@ -516,11 +631,18 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
         <div id="qslPendingMap" class="qsl-map"></div>
         <div id="qslPendingPanel" class="qsl-panel"></div>
       </div>
-      <input type="search" id="qslPendingTableSearch" class="form-control form-control-sm mb-2" placeholder="Search QR code, customer, code, or employee" oninput="filterPendingTable(this.value)">
+      <div class="d-flex gap-2 mb-2">
+        <input type="search" id="qslPendingTableSearch" class="form-control form-control-sm" placeholder="Search QR code, customer, code, or employee" oninput="filterPendingTable()">
+        <select id="qslPendingLocFilter" class="form-select form-select-sm" style="width:auto;" onchange="filterPendingTable()">
+          <option value="all">All locations</option>
+          <option value="noloc">No location only</option>
+          <option value="hasloc">With location only</option>
+        </select>
+      </div>
       <div class="table-responsive">
         <table class="table table-bordered table-hover qsl-table bg-white">
           <thead class="table-light">
-            <tr><th>#</th><th>QR Code</th><th>Customer</th><th>Code</th><th>Tagged By</th><th>Date Tagged</th></tr>
+            <tr><th>#</th><th>QR Code</th><th>Customer</th><th>Code</th><th>Tagged By</th><th>Date Tagged</th><th>Location</th></tr>
           </thead>
           <tbody id="qslPendingBody">
             <?php foreach ($pendingList as $i => $p): ?>
@@ -531,11 +653,91 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
                 <td><?php echo h($p['code']); ?></td>
                 <td><?php echo h($p['employee']); ?></td>
                 <td><?php echo h($p['dt']); ?></td>
+                <td><?php echo $p['lat'] !== null ? 'Yes' : '<span class="badge bg-warning text-dark">No location</span>'; ?></td>
               </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
       </div>
+    <?php endif; ?>
+  </div>
+
+  <div id="qslTabTagged" class="qsl-tab-pane d-none">
+    <p class="text-muted mb-2">Customers that already have a QR code in the Customer Masterlist. Click a row for details.</p>
+    <div class="d-flex gap-2 mb-2">
+      <input type="search" id="qslTaggedSearch" class="form-control form-control-sm" placeholder="Search customer, code, QR code or address">
+      <select id="qslTaggedLocFilter" class="form-select form-select-sm" style="width:auto;">
+        <option value="all">All locations</option>
+        <option value="noloc">No location only</option>
+      </select>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover qsl-table bg-white">
+        <thead class="table-light">
+          <tr><th>#</th><th>Customer</th><th>Code</th><th>QR Code</th><th>Address</th><th>Contact Person</th><th>Contact No.</th><th>Location</th><?php if (!$view_only): ?><th>Action</th><?php endif; ?></tr>
+        </thead>
+        <tbody id="qslHasQrBody">
+          <?php foreach ($taggedCustomers as $i => $c): ?>
+            <tr data-id="<?php echo $c['id']; ?>" data-noloc="<?php echo $c['lat'] === null ? '1' : '0'; ?>">
+              <td><span class="qsl-seq-badge" style="background:#16a34a;"><?php echo $i + 1; ?></span></td>
+              <td><?php echo h($c['name']); ?></td>
+              <td><?php echo h($c['code']); ?></td>
+              <td><?php echo h($c['qr']); ?></td>
+              <td><?php echo h($c['addr']); ?></td>
+              <td><?php echo h($c['cper']); ?></td>
+              <td><?php echo h($c['cno']); ?></td>
+              <td><?php echo $c['lat'] !== null ? h($c['lat'] . ', ' . $c['lng']) : '<span class="badge bg-warning text-dark">No location</span>'; ?></td>
+              <?php if (!$view_only): ?>
+                <td><button type="button" class="btn btn-sm btn-outline-danger py-0" onclick="event.stopPropagation(); askRemoveQr(<?php echo (int)$c['id']; ?>)">Remove QR</button></td>
+              <?php endif; ?>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mt-2">
+      <span id="qslTaggedInfo" class="text-muted" style="font-size:12.5px;"></span>
+      <div class="btn-group">
+        <button type="button" id="qslTaggedPrev" class="btn btn-sm btn-outline-secondary">&laquo; Prev</button>
+        <button type="button" id="qslTaggedNext" class="btn btn-sm btn-outline-secondary">Next &raquo;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qslTabNoLoc" class="qsl-tab-pane d-none">
+    <p class="text-muted mb-2">Customers that have a QR code but no latitude/longitude (empty or 0). These need a location captured.</p>
+    <?php if (!$qrNoLocation): ?>
+      <div class="qsl-empty">Every customer with a QR code has a location.</div>
+    <?php else: ?>
+    <input type="search" id="qslNoLocSearch" class="form-control form-control-sm mb-2" placeholder="Search customer, code, QR code or address">
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover qsl-table bg-white">
+        <thead class="table-light">
+          <tr><th>#</th><th>Customer</th><th>Code</th><th>QR Code</th><th>Address</th><th>Contact Person</th><th>Contact No.</th><th>Registered</th></tr>
+        </thead>
+        <tbody id="qslNoLocBody">
+          <?php foreach ($qrNoLocation as $i => $c): ?>
+            <tr data-id="<?php echo $c['id']; ?>">
+              <td><span class="qsl-seq-badge" style="background:#d97706;"><?php echo $i + 1; ?></span></td>
+              <td><?php echo h($c['name']); ?></td>
+              <td><?php echo h($c['code']); ?></td>
+              <td><?php echo h($c['qr']); ?></td>
+              <td><?php echo h($c['addr']); ?></td>
+              <td><?php echo h($c['cper']); ?></td>
+              <td><?php echo h($c['cno']); ?></td>
+              <td><?php echo h($c['dt']); ?></td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mt-2">
+      <span id="qslNoLocInfo" class="text-muted" style="font-size:12.5px;"></span>
+      <div class="btn-group">
+        <button type="button" id="qslNoLocPrev" class="btn btn-sm btn-outline-secondary">&laquo; Prev</button>
+        <button type="button" id="qslNoLocNext" class="btn btn-sm btn-outline-secondary">Next &raquo;</button>
+      </div>
+    </div>
     <?php endif; ?>
   </div>
 </div>
@@ -566,11 +768,11 @@ function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
     </div>
 </div>
 <div id="qslToast" class="qsl-toast"></div>
+<?php $cf_csrf = $_SESSION['qut_csrf']; require __DIR__ . '/../CUSTOMERS/customer_form_modal.php'; ?>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
-<?php if ($qrList): ?>
 const QR      = <?php echo json_encode($qrList, $jf); ?>;
 const CUST    = <?php echo json_encode($customers, $jf); ?>;
 const CUST_OK = <?php echo json_encode($taggedCustomers, $jf); ?>;
@@ -790,6 +992,7 @@ function renderPanel() {
         <div class="qsl-sub mb-1">${q.scans.length} scan${q.scans.length > 1 ? 's' : ''}${q.lat === null ? ' &middot; <span class="text-danger">no location</span>' : ''}</div>
         ${locCount > 1 ? '<div class="text-danger mb-1" style="font-size:12px;">This code was scanned from more than one location — pick the correct one below.</div>' : ''}
         <div class="mb-2" style="max-height:110px;overflow-y:auto;">${scanRows}</div>
+        ${VIEW_ONLY ? '' : `<button type="button" class="btn btn-sm btn-success w-100 mb-2" onclick="openCreateForQr()">+ Create new customer for this QR</button>`}
         <input type="search" id="qslSearch" class="form-control form-control-sm mb-2" placeholder="Search customer name, code or address" oninput="renderCands(this.value)">
         <div id="qslCandList"></div>`;
     renderCands('');
@@ -897,6 +1100,18 @@ async function confirmAction() {
             if (!data.ok) throw new Error(data.error || 'Delete failed.');
             onScanDeleted(idx, id);
             toast('Scan deleted');
+        } else if (pending.type === 'remove_qr') {
+            const { id } = pending;
+            const clr = document.getElementById('qslRmLoc').checked ? '1' : '0';
+            const res = await fetch(location.href, {
+                method: 'POST',
+                body: new URLSearchParams({ action: 'remove_qr', customer_id: id, clear_loc: clr, csrf: CSRF })
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error || 'Remove failed.');
+            toast('QR removed — reloading...');
+            setTimeout(() => location.reload(), 700);
+            return;
         } else if (pending.type === 'void_pending') {
             const { idx } = pending, p = PENDING[idx];
             const res = await fetch(location.href, {
@@ -935,10 +1150,28 @@ function onTagged(idx, id) {
     document.getElementById('qslStatCust').textContent = CUST.length;
 }
 
+function openCreateForQr() {
+    if (selIdx === null) return;
+    const q = QR[selIdx];
+    const here = getQrLatLng(q);
+    cfOpenCreate({ qr: q.code, lat: here ? here.lat : null, lng: here ? here.lng : null });
+}
+
 function askDeleteScan(idx, id) {
     pending = { type: 'delete_scan', idx, id };
     document.getElementById('qslConfirmText').innerHTML =
         `Delete this scan record permanently? This cannot be undone.`;
+    document.getElementById('qslConfirmBackdrop').classList.add('active');
+}
+
+function askRemoveQr(id) {
+    const c = custById[id];
+    if (!c) return;
+    pending = { type: 'remove_qr', id };
+    document.getElementById('qslConfirmText').innerHTML =
+        `Remove QR code <strong>${esc(c.qr)}</strong> from <strong>${esc(c.name)}</strong> (${esc(c.code)})?` +
+        `<label class="d-flex align-items-center gap-2 mt-3" style="font-size:13.5px;"><input type="checkbox" id="qslRmLoc" checked> Also clear latitude/longitude</label>` +
+        `<div class="text-muted mt-2" style="font-size:12.5px;">If this code has scans, it will return to the Untagged QR Codes tab so it can be re-tagged.</div>`;
     document.getElementById('qslConfirmBackdrop').classList.add('active');
 }
 
@@ -1044,14 +1277,12 @@ document.querySelectorAll('#qslNoQrBody tr').forEach(tr => tr.addEventListener('
     if (c.lat !== null) qslMap.flyTo([c.lat, c.lng], Math.max(qslMap.getZoom(), 17));
     document.getElementById('qslMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }));
-document.querySelectorAll('#qslHasQrBody tr').forEach(tr => tr.addEventListener('click', () => {
-    const c = custById[+tr.dataset.id];
-    if (!c) return;
-    if (!qslMap.hasLayer(taggedLayer)) qslMap.addLayer(taggedLayer);
-    openCustomerModal(c, true);
-    if (c.lat !== null) qslMap.flyTo([c.lat, c.lng], Math.max(qslMap.getZoom(), 17));
-    document.getElementById('qslMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
-}));
+['qslHasQrBody', 'qslNoLocBody'].forEach(id => {
+    document.querySelectorAll('#' + id + ' tr').forEach(tr => tr.addEventListener('click', () => {
+        const c = custById[+tr.dataset.id];
+        if (c) openCustomerModal(c, true);
+    }));
+});
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeConfirm(); });
 
 renderPanel();
@@ -1084,7 +1315,6 @@ function qslSetView(view, btn) {
     }
     document.getElementById('qslViewUntagged').classList.toggle('d-none', view !== 'untagged');
     document.getElementById('qslViewNoQr').classList.toggle('d-none', view !== 'noqr');
-    document.getElementById('qslViewHasQr').classList.toggle('d-none', view !== 'hasqr');
     if (view !== 'untagged') showAllQr();
     const search = document.getElementById('qslTableSearch');
     search.value = '';
@@ -1129,7 +1359,39 @@ function qslRenderActiveTable() {
 }
 
 qslRenderActiveTable();
-<?php endif; ?>
+
+// Generic search + pagination for the standalone tabs
+function qslMakePager(bodyId, searchId, infoId, prevId, nextId, filterId) {
+    const bodyEl = document.getElementById(bodyId);
+    const filterEl = filterId ? document.getElementById(filterId) : null;
+    if (!bodyEl) return;
+    let page = 1;
+    function render() {
+        const term = document.getElementById(searchId).value.trim().toLowerCase();
+        const onlyNoLoc = filterEl && filterEl.value === 'noloc';
+        const rows = Array.from(bodyEl.querySelectorAll('tr'));
+        const matched = rows.filter(tr =>
+            (!onlyNoLoc || tr.dataset.noloc === '1') &&
+            (!term || tr.textContent.toLowerCase().includes(term)));
+        const totalPages = Math.max(1, Math.ceil(matched.length / QSL_PAGE_SIZE));
+        page = Math.min(Math.max(page, 1), totalPages);
+        const start = (page - 1) * QSL_PAGE_SIZE, end = start + QSL_PAGE_SIZE;
+        rows.forEach(tr => tr.style.display = 'none');
+        matched.slice(start, end).forEach(tr => tr.style.display = '');
+        document.getElementById(infoId).textContent = matched.length
+            ? `Showing ${start + 1}\u2013${Math.min(end, matched.length)} of ${matched.length}`
+            : 'No records found.';
+        document.getElementById(prevId).disabled = page <= 1;
+        document.getElementById(nextId).disabled = page >= totalPages;
+    }
+    document.getElementById(searchId).addEventListener('input', () => { page = 1; render(); });
+    if (filterEl) filterEl.addEventListener('change', () => { page = 1; render(); });
+    document.getElementById(prevId).addEventListener('click', () => { page--; render(); });
+    document.getElementById(nextId).addEventListener('click', () => { page++; render(); });
+    render();
+}
+qslMakePager('qslHasQrBody', 'qslTaggedSearch', 'qslTaggedInfo', 'qslTaggedPrev', 'qslTaggedNext', 'qslTaggedLocFilter');
+qslMakePager('qslNoLocBody', 'qslNoLocSearch', 'qslNoLocInfo', 'qslNoLocPrev', 'qslNoLocNext');
 
 <?php if ($pendingList): ?>
 const PENDING = <?php echo json_encode($pendingList, $jf); ?>;
@@ -1180,7 +1442,7 @@ function renderPendingPanel() {
         <div class="qsl-sub mb-2">${esc(p.name)} (${esc(p.code)})<br>${esc(p.addr)}<br>Tagged by ${esc(p.employee)} on ${esc(p.dt)}</div>
         ${VIEW_ONLY ? '' : `
         <div class="d-flex gap-2">
-            <button type="button" class="btn btn-sm btn-primary flex-grow-1" onclick="askSync(${pendSelIdx})">Sync to Tbl_Customer_Info</button>
+            <button type="button" class="btn btn-sm btn-success flex-grow-1" onclick="askSync(${pendSelIdx})">Register to Customer Masterlist</button>
             <button type="button" class="btn btn-sm btn-outline-danger" onclick="askVoidPending(${pendSelIdx})">Void</button>
         </div>`}`;
 }
@@ -1197,7 +1459,7 @@ function askSync(idx) {
     const p = PENDING[idx];
     pending = { type: 'sync', idx };
     document.getElementById('qslConfirmText').innerHTML =
-        `Write QR <strong>${esc(p.qr)}</strong> into <strong>${esc(p.name)}</strong>'s record (Tbl_Customer_Info) and mark tagging as done?`;
+        `Write QR <strong>${esc(p.qr)}</strong> into <strong>${esc(p.name)}</strong>'s record (Customer Masterlist) and mark tagging as done?`;
     document.getElementById('qslConfirmBackdrop').classList.add('active');
 }
 
@@ -1216,32 +1478,205 @@ document.querySelectorAll('#qslPendingBody tr').forEach(tr => tr.addEventListene
 }));
 renderPendingPanel();
 
-function filterPendingTable(term) {
-    const t = term.trim().toLowerCase();
+function filterPendingTable() {
+    const t = document.getElementById('qslPendingTableSearch').value.trim().toLowerCase();
+    const loc = document.getElementById('qslPendingLocFilter').value;
     document.querySelectorAll('#qslPendingBody tr').forEach(tr => {
-        tr.style.display = (!t || tr.textContent.toLowerCase().includes(t)) ? '' : 'none';
+        const p = PENDING[+tr.dataset.idx];
+        const okLoc = loc === 'all' || (loc === 'noloc' ? p.lat === null : p.lat !== null);
+        tr.style.display = (okLoc && (!t || tr.textContent.toLowerCase().includes(t))) ? '' : 'none';
     });
 }
 <?php endif; ?>
 
 function qslSwitchTab(tab) {
     const isUntagged = tab === 'untagged';
-    document.getElementById('qslTabUntagged').classList.toggle('d-none', !isUntagged);
-    document.getElementById('qslTabPending').classList.toggle('d-none', isUntagged);
-    document.getElementById('qslTabBtnUntagged').classList.toggle('active', isUntagged);
-    document.getElementById('qslTabBtnPending').classList.toggle('active', !isUntagged);
+    const panes = {
+        untagged: ['qslTabUntagged', 'qslTabBtnUntagged'],
+        pending:  ['qslTabPending',  'qslTabBtnPending'],
+        tagged:   ['qslTabTagged',   'qslTabBtnTagged'],
+        noloc:    ['qslTabNoLoc',    'qslTabBtnNoLoc']
+    };
+    Object.entries(panes).forEach(([k, [paneId, btnId]]) => {
+        document.getElementById(paneId).classList.toggle('d-none', k !== tab);
+        document.getElementById(btnId).classList.toggle('active', k === tab);
+    });
     // Leaflet miscalculates size while its container is display:none, so fix it up on switch
     setTimeout(() => {
         if (isUntagged && typeof qslMap !== 'undefined') {
             qslMap.invalidateSize();
             if (typeof bounds !== 'undefined' && bounds.length) qslMap.fitBounds(bounds, { padding: [40, 40] });
         }
-        if (!isUntagged && typeof qslPendingMap !== 'undefined') {
+        if (tab === 'pending' && typeof qslPendingMap !== 'undefined') {
             qslPendingMap.invalidateSize();
             if (typeof pendBounds !== 'undefined' && pendBounds.length) qslPendingMap.fitBounds(pendBounds, { padding: [40, 40] });
         }
     }, 50);
 }
+</script>
+
+<script>
+// ---- Print / CSV export for the Untagged + Pending Sync tables ----
+(function () {
+    const val = v => (v === null || v === undefined) ? '' : String(v);
+    const escHtml = s => val(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function untaggedRows() {
+        if (typeof QR === 'undefined') return [];
+        const out = [];
+        document.querySelectorAll('#qslQrBody tr[data-idx]').forEach(tr => {
+            const q = QR[+tr.dataset.idx];
+            if (!q || q.done || !q.scans.length) return;
+            const times = q.scans.map(s => s.datetime).filter(Boolean).sort();
+            const emps  = [...new Set(q.scans.map(s => s.employee).filter(Boolean))];
+            out.push([q.code, q.files.join(', '), emps.join(', '), q.scans.length,
+                      times[0] || '', times[times.length - 1] || '', val(q.lat), val(q.lng)]);
+        });
+        return out.map((r, i) => [i + 1, ...r]);
+    }
+
+    function pendingRows() {
+        if (typeof PENDING === 'undefined') return [];
+        const out = [];
+        document.querySelectorAll('#qslPendingBody tr[data-idx]').forEach(tr => {
+            const p = PENDING[+tr.dataset.idx];
+            if (!p) return;
+            out.push([p.qr, p.name, p.code, p.addr, p.employee, p.dt, val(p.lat), val(p.lng)]);
+        });
+        return out.map((r, i) => [i + 1, ...r]);
+    }
+
+    function taggedRows() {
+        if (typeof CUST_OK === 'undefined') return [];
+        const byId = {};
+        CUST_OK.forEach(c => { byId[c.id] = c; });
+        const out = [];
+        document.querySelectorAll('#qslHasQrBody tr[data-id]').forEach(tr => {
+            const c = byId[+tr.dataset.id];
+            if (!c) return;
+            out.push([c.qr, c.name, c.code, c.addr, c.cper, c.cno, val(c.lat), val(c.lng)]);
+        });
+        return out.map((r, i) => [i + 1, ...r]);
+    }
+
+    const SETS = {
+        untagged: {
+            title: 'Untagged QR Codes',
+            head: ['#', 'QR Code', 'FileNo', 'Employee(s)', 'Scans', 'First Scan', 'Last Scan', 'Latitude', 'Longitude'],
+            rows: untaggedRows
+        },
+        pending: {
+            title: 'Pending Sync',
+            head: ['#', 'QR Code', 'Customer', 'Customer Code', 'Address', 'Tagged By', 'Date Tagged', 'Latitude', 'Longitude'],
+            rows: pendingRows
+        },
+        tagged: {
+            title: 'Registered / Tagged QR Codes',
+            head: ['#', 'QR Code', 'Customer', 'Customer Code', 'Address', 'Contact Person', 'Contact No', 'Latitude', 'Longitude'],
+            rows: taggedRows
+        },
+        noloc: {
+            title: 'Customers With QR but No Location',
+            head: ['#', 'QR Code', 'Customer', 'Customer Code', 'Address', 'Contact Person', 'Contact No', 'Registered'],
+            rows: function () {
+                if (typeof CUST_OK === 'undefined') return [];
+                const out = CUST_OK.filter(c => c.qr && c.lat === null)
+                    .map(c => [c.qr, c.name, c.code, c.addr, c.cper, c.cno, c.dt]);
+                return out.map((r, i) => [i + 1, ...r]);
+            }
+        }
+    };
+
+    function keysFor(scope) {
+        if (scope === 'all')  return ['untagged', 'pending', 'tagged', 'noloc'];
+        if (scope === 'both') return ['untagged', 'pending'];
+        return [scope];
+    }
+    function currentScope() {
+        return document.getElementById('qslRptScope').value;
+    }
+    function stamp() {
+        const d = new Date(), p = n => String(n).padStart(2, '0');
+        return { date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
+                 full: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}` };
+    }
+
+    window.qslReportPrint = function () {
+        const scope = currentScope();
+        let body = '';
+        keysFor(scope).forEach((k, n) => {
+            const s = SETS[k], rows = s.rows();
+            body += `<section class="${n ? 'brk' : ''}"><h2>${escHtml(s.title)} <small>(${rows.length} record${rows.length === 1 ? '' : 's'})</small></h2>`;
+            if (!rows.length) {
+                body += '<p class="none">No records.</p>';
+            } else {
+                body += '<table><thead><tr>' + s.head.map(h => `<th>${escHtml(h)}</th>`).join('') + '</tr></thead><tbody>'
+                      + rows.map(r => '<tr>' + r.map(c => `<td>${escHtml(c)}</td>`).join('') + '</tr>').join('')
+                      + '</tbody></table>';
+            }
+            body += '</section>';
+        });
+
+        const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>QR Code Tagging Report</title>
+<style>
+  @page { size: A4 landscape; margin: 12mm; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .meta { color: #555; margin-bottom: 12px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; }
+  h2 small { font-weight: normal; color: #555; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #999; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+  .brk { page-break-before: always; }
+  .none { color: #666; font-style: italic; }
+</style></head><body>
+<h1>QR Code Tagging Report</h1>
+<div class="meta">Generated ${escHtml(stamp().full)}</div>
+${body}
+</body></html>`;
+
+        const old = document.getElementById('qslRptFrame');
+        if (old) old.remove();
+        const f = document.createElement('iframe');
+        f.id = 'qslRptFrame';
+        f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+        document.body.appendChild(f);
+        const d = f.contentWindow.document;
+        d.open(); d.write(html); d.close();
+        setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); }, 250);
+    };
+
+    // Guard against spreadsheet formula injection, without touching negative coordinates
+    function csvCell(v) {
+        let s = val(v);
+        if (/^[=+@]/.test(s) || /^-(?!\d)/.test(s)) s = "'" + s;
+        return '"' + s.replace(/"/g, '""') + '"';
+    }
+
+    window.qslReportCsv = function () {
+        const scope = currentScope();
+        const lines = [];
+        keysFor(scope).forEach((k, n) => {
+            const s = SETS[k], rows = s.rows();
+            if (n) lines.push('');
+            lines.push(csvCell(s.title + ' (' + rows.length + ')'));
+            lines.push(s.head.map(csvCell).join(','));
+            rows.forEach(r => lines.push(r.map(csvCell).join(',')));
+        });
+        const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        const name = scope === 'all' ? 'all_qr' : (scope === 'both' ? 'untagged_and_pending' : scope);
+        a.href = URL.createObjectURL(blob);
+        a.download = `qr_tagging_${name}_${stamp().date}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+})();
 </script>
 </body>
 </html>

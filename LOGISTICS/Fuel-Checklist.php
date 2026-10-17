@@ -49,6 +49,7 @@ if ($checklistFilterActive) {
                 ts.Area AS [Sched. Area],
                 f.Requested AS [Driver],
                 f.ORnumber AS [INV #],
+                f.Supplier AS [Supplier],
                 ROUND(f.Liters, 2) AS [Liters],
                 ROUND(f.Amount, 2) AS [Amount],
                 CASE WHEN f.FuelID IS NOT NULL THEN 'REFUELED' ELSE 'NOT REFUELED' END AS [Status]
@@ -56,8 +57,15 @@ if ($checklistFilterActive) {
             LEFT JOIN [dbo].[Tbl_fuel] f 
                 ON f.PlateNumber = ts.PlateNumber 
                AND f.Fueldate = ts.ScheduleDate
-            LEFT JOIN [dbo].[Vehicle] v 
-                ON v.PlateNumber = ts.PlateNumber
+               AND ts.TruckScheduleID = (
+                    SELECT MIN(ts3.TruckScheduleID) FROM [dbo].[TruckSchedule] ts3
+                    WHERE ts3.PlateNumber = ts.PlateNumber
+                      AND ts3.ScheduleDate = ts.ScheduleDate)
+            OUTER APPLY (
+                SELECT TOP 1 v0.* FROM [dbo].[Vehicle] v0
+                WHERE v0.PlateNumber = ts.PlateNumber
+                ORDER BY v0.Vehicletype
+            ) v
             WHERE ts.ScheduleDate BETWEEN '$baseFrom' AND '$baseTo'
               AND ts.PlateNumber IS NOT NULL 
               AND ts.PlateNumber <> ''
@@ -76,11 +84,16 @@ if ($checklistFilterActive) {
                 CAST(NULL AS NVARCHAR(100)) AS [Sched. Area],
                 f.Requested AS [Driver],
                 f.ORnumber AS [INV #],
+                f.Supplier AS [Supplier],
                 ROUND(f.Liters, 2) AS [Liters],
                 ROUND(f.Amount, 2) AS [Amount],
                 'UNSCHEDULED REFUEL' AS [Status]
             FROM [dbo].[Tbl_fuel] f
-            LEFT JOIN [dbo].[Vehicle] v ON v.PlateNumber = f.PlateNumber
+            OUTER APPLY (
+                SELECT TOP 1 v0.* FROM [dbo].[Vehicle] v0
+                WHERE v0.PlateNumber = f.PlateNumber
+                ORDER BY v0.Vehicletype
+            ) v
             WHERE f.Fueldate BETWEEN '$baseFrom' AND '$baseTo'
               AND f.PlateNumber IS NOT NULL
               AND f.PlateNumber <> ''
@@ -200,13 +213,14 @@ $unscheduledCount  = count(array_filter($data, fn($r) => ($r['Status'] ?? '') ==
         <th onclick="sortTable(6)">Sched. Driver <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable(7)">Sched. Area <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable(8)">INV # <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(9)" class="right">Liters <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(10)" class="right">Amount <span class="sort-icon">⇅</span></th>
-        <th onclick="sortTable(11)">Status <span class="sort-icon">⇅</span></th>
+        <th onclick="sortTable(9)">Supplier <span class="sort-icon">⇅</span></th>
+        <th onclick="sortTable(10)" class="right">Liters <span class="sort-icon">⇅</span></th>
+        <th onclick="sortTable(11)" class="right">Amount <span class="sort-icon">⇅</span></th>
+        <th onclick="sortTable(12)">Status <span class="sort-icon">⇅</span></th>
       </tr></thead>
       <tbody>
       <?php if (empty($displayData)): ?>
-        <tr><td colspan="12"><div class="empty-state">
+        <tr><td colspan="13"><div class="empty-state">
           <?php if (!$checklistFilterActive): ?>
             <span class="icon">🔍</span><p>Apply a <strong>date range</strong> or <strong>vehicle type</strong> filter to load checklist data.</p>
           <?php else: ?>
@@ -232,6 +246,7 @@ $unscheduledCount  = count(array_filter($data, fn($r) => ($r['Status'] ?? '') ==
           <td class="dim"><?= $unscheduled ? '<span class="text-muted">—</span>' : htmlspecialchars($row['Sched. Driver'] ?? '—') ?></td>
           <td class="dim"><?= $unscheduled ? '<span class="text-muted">—</span>' : htmlspecialchars($row['Sched. Area'] ?? '—') ?></td>
           <td class="mono dim"><?= $hasFuel ? htmlspecialchars($row['INV #'] ?? '—') : '<span class="text-muted">—</span>' ?></td>
+          <td class="dim"><?= ($hasFuel && trim((string)($row['Supplier'] ?? '')) !== '') ? htmlspecialchars($row['Supplier']) : '<span class="text-muted">—</span>' ?></td>
           <td class="right mono bold"><?= $hasFuel ? fmt($row['Liters']) . ' L' : '<span class="text-muted">—</span>' ?></td>
           <td class="right mono bold"><?= $hasFuel ? peso($row['Amount']) : '<span class="text-muted">—</span>' ?></td>
           <td><?php
@@ -361,6 +376,7 @@ function checklistPrint() {
             <td>${unscheduled ? '<span class="dim-dash">—</span>' : esc(row['Sched. Driver'] || '—')}</td>
             <td>${unscheduled ? '<span class="dim-dash">—</span>' : esc(row['Sched. Area'] || '—')}</td>
             <td class="mono center">${hasFuel ? esc(row['INV #'] || '—') : '<span class="dim-dash">—</span>'}</td>
+            <td>${hasFuel ? dash(row['Supplier']) : '<span class="dim-dash">—</span>'}</td>
             <td class="right">${hasFuel ? fmtL(row['Liters']) : '<span class="dim-dash">—</span>'}</td>
             <td class="right">${hasFuel ? fmtP(row['Amount']) : '<span class="dim-dash">—</span>'}</td>
             <td class="center">${statusBadgeHtml(status)}</td>
@@ -619,6 +635,7 @@ function checklistPrint() {
       <th>Sched. Driver</th>
       <th>Area</th>
       <th class="center">INV #</th>
+      <th>Supplier</th>
       <th class="right">Liters</th>
       <th class="right">Amount</th>
       <th class="center">Status</th>

@@ -29,7 +29,8 @@ define('ROUTES', [
     'set_department'                => 'set_department.php',
 
     // ── HR Modules
-    'payroll_dashboard'             => 'HR/payroll_dashboard.php',
+
+    // ── Careers / Job Application Modules
     'careers'                       => 'HR/careers.php',
     'careers_admin'                 => 'HR/careers-admin.php',
     'careers_details'               => 'HR/careers-details.php',
@@ -38,17 +39,28 @@ define('ROUTES', [
     'update_status'                 => 'HR/update-status.php',
     'save_interview'                => 'HR/save-interview.php',
     'download_resume'               => 'HR/download-resume.php',
+
+    // ── Uniform Modules
     'uniform_inventory'             => 'HR/uniform-inventory.php',
     'uniform_po_items'              => 'HR/uniform-po-items.php',
+
+
+    // ── Employee Modules
     'employee_list'                 => 'HR/employee-list.php',
+
+    // ── Attendance Modules
     'attendance'                    => 'HR/attendance.php',
     'my_attendance'                 => 'HR/my_attendance.php',
     'override_attendance'           => 'HR/override-attendance.php',
     'override_attendance_approval'  => 'HR/override-approval.php',
     'schedule_calendar'             => 'HR/schedule_calendar.php',
-    'payroll_cutoff'                => 'HR/payroll_cutoff.php',
     'attendance_present'            => 'HR/attendance_present.php',
     'weekly_payroll'                => 'HR/weekly_payroll.php',
+
+
+    // ── Payroll Modules
+    'payroll_cutoff'                => 'HR/PAYROLL/payroll_cutoff.php',
+    'payroll_dashboard'             => 'HR/PAYROLL/payroll_dashboard.php',
 
     // ── Leave Modules
     'leave_application'             => 'LEAVE/leave-application.php',
@@ -67,6 +79,7 @@ define('ROUTES', [
     'fuel_dashboard'                => 'LOGISTICS/fuel_dashboard.php',
     'graphs'                        => 'LOGISTICS/graphs.php',
     'team_schedule'                 => 'LOGISTICS/team_schedule.php',
+    'vehicle_list'                  => 'LOGISTICS/vehicle_list.php',
 
     // ── Aeron Modules
     'fuel'                          => 'fuel/index.php',
@@ -87,7 +100,8 @@ define('ROUTES', [
     // ── Customer Modules
     'customer_list'                 => 'CUSTOMERS/customer-list.php',
     'customer_detail'               => 'CUSTOMERS/customer-detail.php',
-    'customer_qr'                   => 'CUSTOMERS/customer_qr.php',
+    // this is posponed 'customer_qr'                   => 'CUSTOMERS/customer_qr.php',
+    'customer_masterlist'           => 'CUSTOMERS/customer_masterlist.php',
 
     // ── FINANCE Modules
     'delivery_remittance'           => 'FINANCE/delivery_remittance.php',
@@ -102,7 +116,11 @@ define('ROUTES', [
     // ── SALES Modules
     'sales_order_report'            => 'SALES/sales_order_report.php',
     'gps_location_map'              => 'SALES/gps_location_map.php',
-    'qr_scan_log'                   => 'SALES/qr_scan_log.php',
+
+    // ── QR Modules
+    'qr_scan_log'                   => 'QR/qr_scan_log.php',
+    'qr_untagged_map'               => 'QR/qr_untagged_map.php',
+    'qr_customer_monitor'           => 'QR/qr_customer_monitor.php',
 
     // ── BULLETIN Modules
     'bulletin'                      => 'BULLETIN/bulletin_manage.php',

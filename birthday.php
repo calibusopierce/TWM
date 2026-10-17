@@ -70,6 +70,48 @@ function bdayResolvePic($rawPic): array {
 function bdayInitials(string $first, string $last): string { return strtoupper(substr($first,0,1).substr($last,0,1)); }
 function bdayAvatarColor(string $name): string { $c=['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#ef4444','#06b6d4','#f97316']; return $c[abs(crc32($name))%count($c)]; }
 
+// Wholesome corporate greetings. {name} is swapped for the first name.
+// The pick is seeded by person + date, so it varies between people and days
+// but doesn't reshuffle every time the page is refreshed.
+function bdayMessage(array $b, bool $today): string {
+    $todayMsgs = [
+        "Happy Birthday, {name}! 🎉 Thank you for everything you bring to Urban Tradewell Corporation. Wishing you a day full of joy, laughter, and cake! 🎂",
+        "Hey {name}, today is your day! 🥳 We're grateful for your hard work and the good energy you bring to the team. Enjoy every moment!",
+        "Cheers to you, {name}! 🎈 Your dedication makes a real difference here. May this year bring you health, happiness, and plenty of well-earned rest.",
+        "Happy Birthday, {name}! 🎂 The whole Urban Tradewell family is celebrating you today. Thank you for being such a valued part of our team.",
+        "Wishing you a wonderful birthday, {name}! 🌟 May your day be filled with good food, good company, and everything you've been hoping for.",
+        "It's your special day, {name}! 🎁 Thank you for your commitment and kindness. Here's to another great year ahead!",
+        "Happy Birthday, {name}! 🥳 Our team is better because you're in it. Take a break, have some cake, and enjoy the day you deserve.",
+        "Many happy returns, {name}! 🎉 We appreciate all that you do. May the year ahead be your best one yet.",
+        "Celebrating you today, {name}! 🎈 Thank you for showing up, pitching in, and making work brighter for everyone around you.",
+        "Happy Birthday, {name}! 🍰 Wishing you laughter, love, and peace today and always. From all of us at Urban Tradewell Corporation.",
+    ];
+    $upcomingMsgs = [
+        "🎈 {name}'s birthday is just around the corner! Get ready to celebrate and make some unforgettable memories.",
+        "🎂 Mark your calendar, team! {name} celebrates a birthday soon. A kind greeting goes a long way!",
+        "🎁 {name}'s big day is coming up. Don't forget to send your warm wishes!",
+        "🥳 Cake alert! {name}'s birthday is coming soon. Let's make it a memorable one.",
+        "🌟 A birthday is on the way for {name}! Take a moment to say thanks for all they do.",
+        "🎉 {name} has a birthday coming up. Let's show them some appreciation!",
+        "🍰 Heads up, team: {name}'s birthday is around the corner. Wishes and smiles welcome!",
+        "🎈 It's almost {name}'s special day! A little kindness makes a big difference.",
+    ];
+    $pool = $today ? $todayMsgs : $upcomingMsgs;
+    $msg  = $pool[abs(crc32(bdayFullName($b) . date('Y-m-d'))) % count($pool)];
+    return str_replace('{name}', trim((string) ($b['FirstName'] ?? '')), $msg);
+}
+
+function bdayFullName(array $b): string { return trim(($b['FirstName'] ?? '') . ' ' . ($b['LastName'] ?? '')); }
+function bdayDate(array $b, string $fmt = 'F j'): string {
+    return (isset($b['Birth_date']) && $b['Birth_date'] instanceof DateTime) ? $b['Birth_date']->format($fmt) : '';
+}
+// Only called for people whose birthday is today, so birth year alone gives the age they're turning.
+function bdayAge(array $b): ?int {
+    if (!(isset($b['Birth_date']) && $b['Birth_date'] instanceof DateTime)) return null;
+    $age = (int) date('Y') - (int) $b['Birth_date']->format('Y');
+    return $age > 0 ? $age : null;
+}
+
 // Renders one avatar <img> (with TWM → legacy → initials fallback chain).
 // $size controls the initials-fallback font size.
 function bdayAvatarMarkup(array $b, string $size = '1rem'): string {
@@ -104,7 +146,7 @@ function bdayAvatarMarkup(array $b, string $size = '1rem'): string {
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       min-height: 100%; font-family: 'DM Sans', sans-serif;
-      background: linear-gradient(145deg, var(--blue-bright) 0%, var(--blue-deep) 100%);
+      background: linear-gradient(to right top, #030616, #030624, #020531, #00043d, #030048);
       background-attachment: fixed;
     }
     .page { display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 2rem 2rem 3rem; gap: 1.75rem; }
@@ -176,6 +218,130 @@ function bdayAvatarMarkup(array $b, string $size = '1rem'): string {
       0%   { opacity: 0; transform: translateY(10px) scale(.96); }
       100% { opacity: 1; transform: translateY(0) scale(1); }
     }
+    /* ── Redesign: balloons + hero + centered carousel ── */
+    .hub-birthday { max-width: 1100px; gap: 3rem; }
+
+    /* Balloons */
+    .bd-balloons { position: relative; width: 738px; max-width: 100%; height: 175px; margin: 0 auto; }
+    .bd-balloons > div {
+      position: absolute; top: 30px; width: 94px; height: 115px; padding: 10px;
+      border-radius: 80%; transform-origin: bottom center;
+      background: var(--c); color: var(--c); box-shadow: inset 10px 10px 10px var(--s);
+    }
+    .bd-balloons > div::before { content: "▲"; position: absolute; bottom: -11px; left: 52px; font-size: 1em; }
+    .bd-balloons span { display: block; position: relative; top: 30px; font-size: 2.8em; color: #fff; }
+    .bd-balloons > div:nth-child(1) { --c: rgba(182,15,97,.9);  --s: rgba(135,11,72,.9);   left: 0;     animation: bdBalloon1 6s ease-in-out infinite; }
+    .bd-balloons > div:nth-child(2) { --c: rgba(242,112,45,.9); --s: rgba(222,85,14,.9);   left: 120px; animation: bdBalloon2 6s ease-in-out infinite; }
+    .bd-balloons > div:nth-child(3) { --c: rgba(45,181,167,.9); --s: rgba(35,140,129,.9);  left: 240px; animation: bdBalloon4 6s ease-in-out infinite; }
+    .bd-balloons > div:nth-child(4) { --c: rgba(190,61,244,.9); --s: rgba(173,14,240,.9);  left: 360px; animation: bdBalloon1 5s ease-in-out infinite; }
+    .bd-balloons > div:nth-child(5) { --c: rgba(180,224,67,.9); --s: rgba(158,206,34,.9);  left: 480px; animation: bdBalloon3 5s ease-in-out infinite; }
+    .bd-balloons > div:nth-child(6) { --c: rgba(242,194,58,.9); --s: rgba(234,177,15,.9);  left: 600px; animation: bdBalloon2 3s ease-in-out infinite; }
+    @keyframes bdBalloon1 { 0%,100% { transform: translateY(0) rotate(-6deg); }        50% { transform: translateY(-20px) rotate(8deg); } }
+    @keyframes bdBalloon2 { 0%,100% { transform: translateY(0) rotate(6deg); }         50% { transform: translateY(-30px) rotate(-8deg); } }
+    @keyframes bdBalloon3 { 0%,100% { transform: translate(0,-10px) rotate(6deg); }    50% { transform: translate(-20px,30px) rotate(-8deg); } }
+    @keyframes bdBalloon4 { 0%,100% { transform: translate(10px,-10px) rotate(-8deg); } 50% { transform: translate(-15px,20px) rotate(10deg); } }
+    @media (max-width: 700px) { .bd-balloons { display: none; } }
+    @media (prefers-reduced-motion: reduce) { .bd-balloons > div { animation: none; } }
+
+    /* Hero */
+    .bd-hero { width: 100%; display: grid; grid-template-columns: minmax(0, 450px) 1fr; gap: 3rem; align-items: center; }
+    .bd-hero-photo {
+      width: 100%; max-width: 450px; height: 400px; border-radius: 16px; overflow: hidden;
+      background: rgba(255,255,255,.08); display: flex; align-items: center; justify-content: center;
+    }
+    .bd-hero-photo img { width: 100%; height: 100%; object-fit: cover; }
+    .bd-hero-photo .bday-avatar-fallback { border-radius: 0; }
+    .bd-hero-body h1 { font-family: 'Sora', sans-serif; font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 800; line-height: 1.15; color: #fff; margin-bottom: .6rem; }
+    .bd-hero-body h1 span { color: var(--blue-bright); }
+    .bd-hero-body h5 { font-size: 1.05rem; font-weight: 500; color: #fff; margin-bottom: 1rem; }
+    .bd-hero-body p { color: #fff; line-height: 1.7; margin-bottom: 1.25rem; }
+    .bd-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1.5rem; margin-bottom: 1.5rem; }
+    .bd-facts div { color: #fff; font-size: .95rem; }
+    .bd-facts i { color: #f59505; margin-right: .5rem; }
+    @media (max-width: 991px) {
+      .bd-hero { grid-template-columns: 1fr; gap: 1.75rem; justify-items: center; }
+      .bd-hero-body { width: 100%; }
+    }
+    @media (max-width: 575px) { .bd-facts { grid-template-columns: 1fr; } }
+
+    /* Bubble-burst button */
+    .bd-btn {
+      position: relative; isolation: isolate; padding: 10px 22px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,.25); background: #100572; color: #fff;
+      font: inherit; font-weight: 600; cursor: pointer; transition: transform .15s ease;
+    }
+    .bd-btn:active { transform: scale(.96); }
+    .bd-btn::before, .bd-btn::after {
+      position: absolute; content: ""; width: 150%; height: 100%; left: 50%;
+      transform: translateX(-50%); z-index: -1; background-repeat: no-repeat; pointer-events: none;
+    }
+    .bd-btn.animate::before {
+      top: -70%;
+      background-image: radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, transparent 20%, #7d2ae8 20%, transparent 30%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, transparent 10%, #7d2ae8 15%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%);
+      background-size: 10% 10%, 20% 20%, 15% 15%, 20% 20%, 18% 18%, 10% 10%, 15% 15%, 10% 10%, 18% 18%;
+      animation: bdTopBubbles ease-in-out .6s forwards infinite;
+    }
+    @keyframes bdTopBubbles {
+      0%   { background-position: 5% 90%, 10% 90%, 10% 90%, 15% 90%, 25% 90%, 25% 90%, 40% 90%, 55% 90%, 70% 90%; }
+      50%  { background-position: 0% 80%, 0% 20%, 10% 40%, 20% 0%, 30% 30%, 22% 50%, 50% 50%, 65% 20%, 90% 30%; }
+      100% { background-position: 0% 70%, 0% 10%, 10% 30%, 20% -10%, 30% 20%, 22% 40%, 50% 40%, 65% 10%, 90% 20%;
+             background-size: 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%; }
+    }
+    .bd-btn.animate::after {
+      bottom: -70%;
+      background-image: radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, transparent 10%, #7d2ae8 15%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%),
+        radial-gradient(circle, #7d2ae8 20%, transparent 20%);
+      background-size: 15% 15%, 20% 20%, 18% 18%, 20% 20%, 15% 15%, 20% 20%, 18% 18%;
+      animation: bdBottomBubbles ease-in-out .6s forwards infinite;
+    }
+    @keyframes bdBottomBubbles {
+      0%   { background-position: 10% -10%, 30% 10%, 55% -10%, 70% -10%, 85% -10%, 70% -10%, 70% 0%; }
+      50%  { background-position: 0% 80%, 20% 80%, 45% 60%, 60% 100%, 75% 70%, 95% 60%, 105% 0%; }
+      100% { background-position: 0% 90%, 20% 90%, 45% 70%, 60% 110%, 75% 80%, 95% 70%, 110% 10%;
+             background-size: 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%; }
+    }
+
+    /* Upcoming carousel */
+    .bd-upcoming { width: 100%; }
+    .bd-upcoming-title { text-align: center; color: #fff; font-family: 'Sora', sans-serif; font-size: 1.8rem; font-weight: 700; margin-bottom: 2rem; }
+    .bd-carousel { position: relative; overflow: hidden; padding: 4px 0 8px; cursor: grab; user-select: none; touch-action: pan-y; }
+    .bd-carousel.dragging { cursor: grabbing; }
+    .bd-card img { pointer-events: none; -webkit-user-drag: none; }
+    .bd-track { position: relative; display: flex; gap: 24px; transition: transform 1s ease; will-change: transform; }
+    .bd-card {
+      flex: 0 0 calc((100% - 48px) / 3); display: flex; flex-direction: column;
+      background: #030031; border: 1px solid rgba(255,255,255,.08); border-radius: 8px;
+      padding: 1.5rem; transition: .5s;
+    }
+    .bd-card-quote { font-size: 2rem; line-height: 1; color: #fffade; margin-bottom: .75rem; transition: .5s; }
+    .bd-card p { flex: 1; color: #eb9e10; font-size: .92rem; line-height: 1.6; margin-bottom: 1.1rem; transition: .5s; }
+    .bd-card-person { display: flex; align-items: center; gap: 1rem; }
+    .bd-card-avatar { width: 50px; height: 50px; border-radius: 8px; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.1); }
+    .bd-card-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .bd-card-avatar .bday-avatar-fallback { border-radius: 0; }
+    .bd-card h5 { margin: 0 0 .2rem; font-size: 1rem; font-weight: 600; color: wheat; transition: .5s; }
+    .bd-card small { color: #fffade; transition: .5s; }
+    .bd-card.active { background: #f59505; }
+    .bd-card.active p, .bd-card.active h5, .bd-card.active small, .bd-card.active .bd-card-quote { color: #030031; }
+    .bd-jump .bd-card, .bd-jump .bd-card * { transition: none; }
+    .bd-dots { display: flex; justify-content: center; gap: 10px; margin-top: 24px; }
+    .bd-dot { width: 12px; height: 12px; padding: 0; border: 0; border-radius: 2px; background: rgba(255,255,255,.25); cursor: pointer; transition: .5s; }
+    .bd-dot.active { background: #f59505; }
+    @media (max-width: 991px) { .bd-card { flex-basis: calc((100% - 24px) / 2); } }
+    @media (max-width: 767px) { .bd-card { flex-basis: 100%; } }
   </style>
 </head>
 <body>
@@ -189,47 +355,181 @@ function bdayAvatarMarkup(array $b, string $size = '1rem'): string {
     </div>
   </div>
 
+  <div class="bd-balloons" aria-hidden="true">
+    <div><span>☺</span></div><div><span>B</span></div><div><span>D</span></div>
+    <div><span>A</span></div><div><span>Y</span></div><div><span>!</span></div>
+  </div>
+
   <?php if (empty($todayBirthdays) && empty($upcomingBirthdays)): ?>
   <div class="bday-empty">No birthdays in the next 15 days.</div>
   <?php else: ?>
   <div class="hub-birthday">
     <?php if (!empty($todayBirthdays)): ?>
-    <div class="bday-today-row">
-      <?php foreach ($todayBirthdays as $i => $b): ?>
-      <div class="bday-hero bday-pop" style="animation-delay: <?= $i * 0.08 ?>s">
-        <div class="bday-hero-avatar"><?= bdayAvatarMarkup($b, '1rem') ?></div>
-        <div>
-          <div class="bday-hero-eyebrow"><i class="bi bi-gift-fill"></i> Happy Birthday!</div>
-          <div class="bday-hero-name"><?= htmlspecialchars(trim(($b['FirstName'] ?? '') . ' ' . ($b['LastName'] ?? ''))) ?></div>
-          <div class="bday-hero-meta">
-            <?= htmlspecialchars($b['Position_held'] ?? '') ?><?php if (!empty($b['Department'])): ?> · <?= htmlspecialchars($b['Department']) ?><?php endif; ?>
-          </div>
+    <?php foreach ($todayBirthdays as $i => $b):
+      $first = trim((string) ($b['FirstName'] ?? ''));
+      $age   = bdayAge($b);
+    ?>
+    <div class="bd-hero bday-pop" style="animation-delay: <?= $i * 0.1 ?>s">
+      <div class="bd-hero-photo"><?= bdayAvatarMarkup($b, '5rem') ?></div>
+      <div class="bd-hero-body">
+        <h1>Happy Birthday <span><?= htmlspecialchars($first) ?> !!</span></h1>
+        <h5><?= htmlspecialchars(bdayDate($b) ?: date('F j')) ?></h5>
+        <p>“<?= htmlspecialchars(bdayMessage($b, true)) ?>”</p>
+        <div class="bd-facts">
+          <?php if (!empty($b['Position_held'])): ?><div><i class="bi bi-arrow-right"></i><?= htmlspecialchars($b['Position_held']) ?></div><?php endif; ?>
+          <?php if (!empty($b['Department'])): ?><div><i class="bi bi-arrow-right"></i><?= htmlspecialchars($b['Department']) ?></div><?php endif; ?>
         </div>
+        <button type="button" class="bd-btn">Happy Birthday</button>
       </div>
-      <?php endforeach; ?>
     </div>
+    <?php endforeach; ?>
     <?php endif; ?>
 
     <?php if (!empty($upcomingBirthdays)): ?>
-    <div>
-      <div class="qa-label"><i class="bi bi-calendar-heart"></i> Upcoming birthdays</div>
-      <div class="bday-upcoming-row">
-        <?php foreach ($upcomingBirthdays as $i => $b): ?>
-        <div class="bday-chip bday-pop" style="animation-delay: <?= 0.15 + $i * 0.04 ?>s">
-          <span class="bday-chip-avatar"><?= bdayAvatarMarkup($b, '.6rem') ?></span>
-          <span class="bday-chip-body">
-            <span class="bday-chip-name"><?= htmlspecialchars(trim(($b['FirstName'] ?? '') . ' ' . ($b['LastName'] ?? ''))) ?></span>
-            <span class="bday-chip-date"><?= (isset($b['Birth_date']) && $b['Birth_date'] instanceof DateTime) ? $b['Birth_date']->format('M j') : '' ?></span>
-          </span>
+    <section class="bd-upcoming">
+      <h2 class="bd-upcoming-title">Upcoming Birthdays!</h2>
+      <div class="bd-carousel" id="bdCarousel">
+        <div class="bd-track">
+          <?php foreach ($upcomingBirthdays as $b):
+            $first = trim((string) ($b['FirstName'] ?? ''));
+            $off   = $offsetByKey["{$b['BMonth']}-{$b['Bday']}"] ?? null;
+            $when  = $off === 1 ? 'Tomorrow' : ($off ? "In $off days" : '');
+            $dateLine = trim(bdayDate($b) . ($when !== '' ? ' · ' . $when : ''), ' ·');
+          ?>
+          <div class="bd-card">
+            <i class="bi bi-quote bd-card-quote"></i>
+            <p><?= htmlspecialchars(bdayMessage($b, false)) ?></p>
+            <div class="bd-card-person">
+              <span class="bd-card-avatar"><?= bdayAvatarMarkup($b, '1rem') ?></span>
+              <div>
+                <h5><?= htmlspecialchars(bdayFullName($b)) ?></h5>
+                <small><?= htmlspecialchars($dateLine) ?></small>
+              </div>
+            </div>
+          </div>
+          <?php endforeach; ?>
         </div>
-        <?php endforeach; ?>
+        <div class="bd-dots" id="bdDots"></div>
       </div>
-    </div>
+    </section>
     <?php endif; ?>
   </div>
   <?php endif; ?>
 
 </div>
+<script>
+(function () {
+  // Bubble burst + confetti replay on the hero button
+  document.querySelectorAll('.bd-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      btn.classList.add('animate');
+      setTimeout(function () { btn.classList.remove('animate'); }, 600);
+      if (typeof confetti !== 'undefined') {
+        confetti.start();
+        setTimeout(confetti.stop, 3000);
+      }
+    });
+  });
+
+  // Centered carousel (active card turns orange)
+  var root = document.getElementById('bdCarousel');
+  if (!root) return;
+  var track  = root.querySelector('.bd-track');
+  var dotsEl = document.getElementById('bdDots');
+  var originals = Array.prototype.slice.call(track.children);
+  var n = originals.length;
+  var infinite = n > 1;
+  var idx = 0, timer = null, curShift = 0, dragging = false;
+
+  if (infinite) {
+    // Clone the set on both sides so the strip never runs out of cards
+    var before = document.createDocumentFragment();
+    originals.forEach(function (c) { before.appendChild(c.cloneNode(true)); });
+    track.insertBefore(before, track.firstChild);
+    originals.forEach(function (c) { track.appendChild(c.cloneNode(true)); });
+    idx = n;
+  }
+  var cards = track.children;
+
+  var dots = [];
+  if (infinite) {
+    for (var k = 0; k < n; k++) {
+      (function (k) {
+        var d = document.createElement('button');
+        d.type = 'button'; d.className = 'bd-dot'; d.setAttribute('aria-label', 'Birthday ' + (k + 1));
+        d.addEventListener('click', function () { go(n + k); restart(); });
+        dotsEl.appendChild(d); dots.push(d);
+      })(k);
+    }
+  }
+
+  function place(animate) {
+    var card = cards[idx];
+    if (!animate) root.classList.add('bd-jump');
+    track.style.transition = animate ? '' : 'none';
+    curShift = root.clientWidth / 2 - (card.offsetLeft + card.offsetWidth / 2);
+    track.style.transform = 'translateX(' + curShift + 'px)';
+    for (var i = 0; i < cards.length; i++) cards[i].classList.toggle('active', i === idx);
+    dots.forEach(function (d, j) { d.classList.toggle('active', j === ((idx % n) + n) % n); });
+    if (!animate) { void track.offsetWidth; track.style.transition = ''; root.classList.remove('bd-jump'); }
+  }
+  function go(i) { idx = i; place(true); }
+  function restart() {
+    clearInterval(timer);
+    if (infinite && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      timer = setInterval(function () { if (!dragging) go(idx + 1); }, 3500);
+    }
+  }
+
+  track.addEventListener('transitionend', function (e) {
+    if (e.target !== track || !infinite) return;
+    if (idx >= 2 * n)   { idx -= n; place(false); }
+    else if (idx < n)   { idx += n; place(false); }
+  });
+  root.addEventListener('mouseenter', function () { clearInterval(timer); });
+  root.addEventListener('mouseleave', restart);
+  window.addEventListener('resize', function () { place(false); });
+  window.addEventListener('load', function () { place(false); });
+
+  // Drag / swipe to move the carousel
+  var drag = null;
+  root.addEventListener('pointerdown', function (e) {
+    if ((e.pointerType === 'mouse' && e.button !== 0) || e.target.closest('.bd-dot')) return;
+    clearInterval(timer);
+    drag = { x: e.clientX, shift: curShift, id: e.pointerId };
+    dragging = true;
+    track.style.transition = 'none';
+    root.classList.add('dragging');
+    root.setPointerCapture(e.pointerId);
+  });
+  root.addEventListener('pointermove', function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    curShift = drag.shift + (e.clientX - drag.x);
+    track.style.transform = 'translateX(' + curShift + 'px)';
+  });
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    // Snap to whichever card is closest to the center
+    var mid = root.clientWidth / 2, best = idx, bestDist = Infinity;
+    for (var i = 0; i < cards.length; i++) {
+      var d = Math.abs(cards[i].offsetLeft + cards[i].offsetWidth / 2 + curShift - mid);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    var type = e.pointerType;
+    drag = null; dragging = false;
+    root.classList.remove('dragging');
+    idx = best;
+    place(true);
+    track.style.transition = 'transform .4s ease';   // quicker snap than the 1s autoplay slide
+    if (type !== 'mouse' || !root.matches(':hover')) restart();
+  }
+  root.addEventListener('pointerup', endDrag);
+  root.addEventListener('pointercancel', endDrag);
+
+  place(false);
+  restart();
+})();
+</script>
 <?php if ($celebrateToday): ?>
 <script>
 var confetti = {

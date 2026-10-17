@@ -37,3 +37,7 @@ uploads/
 *.orig
 includes/TradewellDatabase.rar
 *.rar
+
+# Large installers (exceed GitHub 100MB limit)
+*.MSI
+*.msi

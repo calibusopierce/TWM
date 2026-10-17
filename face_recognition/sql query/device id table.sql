@@ -1,0 +1,9 @@
+CREATE TABLE TBL_FaceRecognitionDevices (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    DeviceID VARCHAR(10) NOT NULL UNIQUE,
+    EmployeeName VARCHAR(150) NOT NULL,
+    Department VARCHAR(50) NOT NULL,
+    Branch VARCHAR(50) NOT NULL,
+    Position VARCHAR(100) NOT NULL,
+    DateEntered DATETIME NOT NULL DEFAULT GETDATE()
+);

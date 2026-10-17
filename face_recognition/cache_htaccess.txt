@@ -1,0 +1,20 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Save this as:  face_recognition/cache/.htaccess
+#
+# Everything under cache/ is either a captured face photo, an event metadata
+# sidecar, or the listener log. None of it should be reachable over the web:
+# photos are served through face_image.php, which sits behind auth_check() and
+# rbac_gate(). Without this file, anyone who can guess a serial number can pull
+# an employee's photo straight off the URL with no login at all.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Apache 2.4+
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+
+# Apache 2.2
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

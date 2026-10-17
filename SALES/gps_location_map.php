@@ -76,7 +76,41 @@ $sql = "
     LEFT JOIN [dbo].[TBL_HREmployeeList] e
         ON UPPER(LTRIM(RTRIM(ISNULL(g.[Type], '')))) = 'EMPLOYEE'
        AND LTRIM(RTRIM(CONVERT(VARCHAR(50), g.[Code]))) = LTRIM(RTRIM(CONVERT(VARCHAR(50), e.[EmployeeID])))
+    WHERE UPPER(LTRIM(RTRIM(ISNULL(g.[Type], '')))) <> 'CUSTOMER'
 ";
+// --- Employee details for the click modal (dbo.TBL_HREmployeeList), keyed by EmployeeID ---
+// Sensitive-looking columns are never sent to the browser. Extend these two
+// patterns if the column log shows anything else that shouldn't be visible here.
+$gmEmpSkip       = '/(salary|wage|payroll|password|pwd|bank|passport|signature|basicpay|dailyrate|monthlyrate|hourlyrate|picture|photo|image)/i';
+$gmEmpSkipPrefix = '/^(tin|sss|philhealth|pagibig|hdmf|gsis|umid|tax)/i';
+$empDetailsById  = [];
+$empStmt = sqlsrv_query($conn, "SELECT * FROM [dbo].[TBL_HREmployeeList]");
+if ($empStmt === false) {
+    error_log('TBL_HREmployeeList details query error: ' . print_r(sqlsrv_errors(), true));
+} else {
+    $empColsLogged = false;
+    while ($er = sqlsrv_fetch_array($empStmt, SQLSRV_FETCH_ASSOC)) {
+        if (!$empColsLogged) {
+            error_log('TBL_HREmployeeList columns: ' . implode(', ', array_keys($er)));
+            $empColsLogged = true;
+        }
+        $idCol = gm_find_col($er, ['EmployeeID']);
+        if ($idCol === null) continue;
+        $empKey = trim((string)$er[$idCol]);
+        if ($empKey === '') continue;
+
+        $empDetailsById[$empKey] = [
+            'branch'       => gm_detail_value(gm_pick($er, ['Branch', 'BranchName', 'Branch_Name'])) ?? '',
+            'employeeId'   => $empKey,
+            'positionHeld' => gm_detail_value(gm_pick($er, ['PositionHeld', 'Position_Held', 'Position'])) ?? '',
+            'jobTitle'     => gm_detail_value(gm_pick($er, ['JobTitle', 'Job_Title', 'JobTittle', 'Job_Tittle', 'Title'])) ?? '',
+            'category'     => gm_detail_value(gm_pick($er, ['Category', 'EmployeeCategory', 'Employee_Category', 'EmploymentCategory'])) ?? '',
+            'mobileNo'     => gm_detail_value(gm_pick($er, ['MobileNo', 'Mobile_No', 'MobileNumber', 'Mobile', 'CellphoneNo', 'ContactNo'])) ?? '',
+        ];
+    }
+    sqlsrv_free_stmt($empStmt);
+}
+
 $stmt = sqlsrv_query($conn, $sql);
 
 if ($stmt === false) {
@@ -157,9 +191,162 @@ if ($stmt === false) {
             'pinColor'   => $pinColor,
             'lastUpdate' => $lastUpdate,
             'isStale'    => $isStale,
+            'details'    => $category === 'employee'
+                ? ($empDetailsById[trim((string)($row['Code'] ?? ''))] ?? [])
+                : [],
         ];
     }
     sqlsrv_free_stmt($stmt);
+}
+
+// --- Customers (dbo.Tbl_Customer_Info) — linked to the QR project via QRCODE ---
+// Column names are tried in order (case-insensitive) against whatever
+// Tbl_Customer_Info actually returns. If a column has a different name,
+// just add it to the matching list below.
+$gmCustCols = [
+    'name' => ['CustomerName', 'Customer_Name', 'CustName', 'StoreName', 'Name', 'Customer'],
+    'code' => ['CustomerCode', 'Customer_Code', 'CustCode', 'CustomerID', 'Code'],
+    'dept' => ['Department', 'Principal'],
+    'lat'  => ['Latitude', 'Lat'],
+    'lng'  => ['Longitude', 'Lng', 'Long', 'Lon'],
+];
+
+function gm_find_col(array $row, array $candidates) {
+    $lookup = [];
+    foreach (array_keys($row) as $k) { $lookup[strtolower((string)$k)] = $k; }
+    foreach ($candidates as $c) {
+        $lc = strtolower($c);
+        if (isset($lookup[$lc])) return $lookup[$lc];
+    }
+    return null;
+}
+
+function gm_pick(array $row, array $candidates) {
+    $col = gm_find_col($row, $candidates);
+    return $col === null ? null : $row[$col];
+}
+
+// Turns any DB value into a safe display string, or null if it is empty/binary.
+// Keeps json_encode from failing on invalid UTF-8 (which would break the whole map).
+function gm_detail_value($v) {
+    if ($v === null) return null;
+    if ($v instanceof DateTimeInterface) {
+        return $v->format('H:i:s') === '00:00:00' ? $v->format('M j, Y') : $v->format('M j, Y g:i A');
+    }
+    if (is_bool($v)) return $v ? 'Yes' : 'No';
+    if (is_int($v) || is_float($v)) return (string)$v;
+    if (!is_string($v)) return null; // streams/resources (binary columns) are skipped
+    $v = trim($v);
+    if ($v === '') return null;
+    if (!preg_match('//u', $v) || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $v)) return null;
+    return $v;
+}
+
+function gm_detail_label($col) {
+    $s = str_replace('_', ' ', (string)$col);
+    $s = preg_replace('/(?<=[a-z0-9])(?=[A-Z])/', ' ', $s);
+    return trim(preg_replace('/\s+/', ' ', $s));
+}
+
+$custSql = "
+    ;WITH LastScan AS (
+        SELECT
+            LTRIM(RTRIM(CONVERT(VARCHAR(100), s.[QRCODE]))) AS QrKey,
+            s.[Latitude], s.[Longitude], s.[DateTimeInput], s.[EmployeeName], s.[CustomerName],
+            ROW_NUMBER() OVER (
+                PARTITION BY LTRIM(RTRIM(CONVERT(VARCHAR(100), s.[QRCODE])))
+                ORDER BY s.[DateTimeInput] DESC
+            ) AS rn
+        FROM [dbo].[View_QRScan_Log] s
+        WHERE s.[QRCODE] IS NOT NULL
+    )
+    SELECT c.*,
+           ls.[Latitude]      AS [__ScanLat],
+           ls.[Longitude]     AS [__ScanLng],
+           ls.[DateTimeInput] AS [__ScanDT],
+           ls.[EmployeeName]  AS [__ScanBy],
+           ls.[CustomerName]  AS [__ScanName]
+    FROM [dbo].[Tbl_Customer_Info] c
+    LEFT JOIN LastScan ls
+        ON ls.rn = 1
+       AND ls.QrKey = LTRIM(RTRIM(CONVERT(VARCHAR(100), c.[QRCODE])))
+";
+$custStmt = sqlsrv_query($conn, $custSql);
+
+if ($custStmt === false) {
+    error_log('Tbl_Customer_Info query error: ' . print_r(sqlsrv_errors(), true));
+} else {
+    $custColsLogged = false;
+    while ($row = sqlsrv_fetch_array($custStmt, SQLSRV_FETCH_ASSOC)) {
+        if (!$custColsLogged) {
+            error_log('Tbl_Customer_Info columns: ' . implode(', ', array_keys($row)));
+            $custColsLogged = true;
+        }
+
+        $qr         = gm_detail_value(gm_pick($row, ['QRCODE', 'QRCode', 'QR_Code'])) ?? '';
+        $name       = gm_detail_value(gm_pick($row, $gmCustCols['name'])) ?? (gm_detail_value($row['__ScanName'] ?? null) ?? '');
+        $code       = gm_detail_value(gm_pick($row, $gmCustCols['code'])) ?? $qr;
+        $department = gm_detail_value(gm_pick($row, $gmCustCols['dept'])) ?? '';
+
+        // Coordinates: the customer's own lat/lng if valid, else the latest QR scan.
+        $lat = gm_pick($row, $gmCustCols['lat']);
+        $lng = gm_pick($row, $gmCustCols['lng']);
+        $coordSource = 'customer';
+        $hasOwn = is_numeric($lat) && is_numeric($lng) && !((float)$lat == 0.0 && (float)$lng == 0.0);
+        if (!$hasOwn) {
+            $lat = $row['__ScanLat'] ?? null;
+            $lng = $row['__ScanLng'] ?? null;
+            $coordSource = 'scan';
+        }
+        if ($lat === null || $lng === null || !is_numeric($lat) || !is_numeric($lng)) {
+            $noCoordCount++;
+            continue;
+        }
+        $lat = (float)$lat;
+        $lng = (float)$lng;
+        if ($lat == 0.0 && $lng == 0.0) {
+            $noCoordCount++;
+            continue;
+        }
+
+        // Same swapped lat/lng stopgap as the other layers
+        $corrected = false;
+        if (abs($lat) > 90 && abs($lng) <= 90) {
+            [$lat, $lng] = [$lng, $lat];
+            $corrected = true;
+            $correctedCount++;
+        }
+
+        $details = [];
+        foreach ($row as $col => $val) {
+            if (strpos((string)$col, '__') === 0) continue; // internal scan columns
+            $clean = gm_detail_value($val);
+            if ($clean === null) continue;
+            $details[] = ['label' => gm_detail_label($col), 'value' => $clean];
+        }
+
+        $locations[] = [
+            'category'    => 'customer',
+            'type'        => 'CUSTOMER',
+            'department'  => $department,
+            'code'        => $code,
+            'name'        => $name,
+            'lat'         => $lat,
+            'lng'         => $lng,
+            'corrected'   => $corrected,
+            'pic'         => '',
+            'picLegacy'   => '',
+            'initials'    => '',
+            'pinColor'    => gm_department_color($department) ?? '#d97706',
+            'lastUpdate'  => gm_detail_value($row['__ScanDT'] ?? null) ?? '',
+            'isStale'     => false, // customers are fixed locations, staleness doesn't apply
+            'qr'          => $qr,
+            'scanBy'      => gm_detail_value($row['__ScanBy'] ?? null) ?? '',
+            'coordSource' => $coordSource,
+            'details'     => $details,
+        ];
+    }
+    sqlsrv_free_stmt($custStmt);
 }
 
 $EmployeeCount = count(array_filter($locations, fn($l) => $l['category'] === 'employee'));
@@ -611,6 +798,15 @@ body {
     color: #fff; cursor: pointer;
 }
 .gm-lightbox-close:hover { background: rgba(255,255,255,.3); }
+
+/* Customer details modal */
+.gm-modal.gm-modal-wide { max-width: 640px; }
+.gm-modal-row span:last-child { overflow-wrap: anywhere; }
+.gm-modal-wide .gm-modal-row span:first-child { flex: 0 0 38%; }
+.gm-modal-section {
+    margin: 18px 0 6px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #6b7280;
+}
 </style>
 </head>
 <body>
@@ -669,7 +865,7 @@ body {
     </div>
 
     <div class="gm-toolbar">
-        <input type="text" id="gm-search" class="gm-search" placeholder="Search by name, plate, or code...">
+        <input type="text" id="gm-search" class="gm-search" placeholder="Search by name, plate, code, or QR...">
         <div class="gm-toggle-group">
             <label class="gm-toggle gm-toggle-vehicle">
                 <input type="checkbox" id="gm-toggle-vehicle" checked> <i class="bi bi-truck"></i> Vehicles
@@ -849,7 +1045,7 @@ const gmVehicles = [
 ];
 
 // --- Employee/Customer/Other GPS data for the map ---
-const gmLocations = <?= json_encode($locations, JSON_UNESCAPED_UNICODE) ?>;
+const gmLocations = <?= json_encode($locations, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR) ?>;
 
 const GM_ICONS = {
     employee: { bi: 'bi-person-fill', fallback: '#2563eb' },
@@ -932,7 +1128,7 @@ function gmAvatarHtml(loc) {
 // --- Details modal, shared by Employee / Customer / Other / Vehicle pins ---
 function gmModalRow(label, value) {
     if (value === null || value === undefined || value === '') value = '—';
-    return `<div class="gm-modal-row"><span>${label}</span><span>${value}</span></div>`;
+    return `<div class="gm-modal-row"><span>${gmEsc(label)}</span><span>${gmEsc(value)}</span></div>`;
 }
 
 function gmModalAvatarHtml(kind, loc) {
@@ -991,6 +1187,15 @@ function gmModalAvatarHtml(kind, loc) {
 
 function gmOpenModal(kind, data) {
     const body = document.getElementById('gm-modal-body');
+    const modalEl = body.closest('.gm-modal');
+    const isCustomer = kind === 'location' && data && data.category === 'customer';
+    const hasDetails = kind === 'location' && data && Array.isArray(data.details) && data.details.length > 0;
+    if (modalEl) modalEl.classList.toggle('gm-modal-wide', isCustomer || hasDetails);
+    if (isCustomer) {
+        body.innerHTML = gmCustomerModalHtml(data);
+        document.getElementById('gm-modal-backdrop').classList.add('active');
+        return;
+    }
     let html = '';
 
     if (kind === 'vehicle') {
@@ -1032,9 +1237,18 @@ function gmOpenModal(kind, data) {
         </div>`;
         html += '<div class="gm-modal-grid">';
         html += gmModalRow('Type', loc.type);
+        const ed = (loc.category === 'employee' && loc.details && !Array.isArray(loc.details)) ? loc.details : null;
         html += gmModalRow('Department', loc.department);
+        if (ed) html += gmModalRow('Branch', ed.branch);
         html += gmModalRow('Code', loc.code);
         html += gmModalRow('Last Update', loc.lastUpdate);
+        if (ed) {
+            html += gmModalRow('Employee ID', ed.employeeId);
+            html += gmModalRow('Position Held', ed.positionHeld);
+            html += gmModalRow('Job Title', ed.jobTitle);
+            html += gmModalRow('Category', ed.category);
+            html += gmModalRow('Mobile No.', ed.mobileNo);
+        }
         html += '</div>';
         if (loc.corrected) html += '<div class="gm-modal-warn">⚠ Lat/Lng appeared swapped in source data — auto-corrected for display</div>';
         if (loc.isStale) html += '<div class="gm-modal-warn">⚠ No update in over 24 hours</div>';
@@ -1042,6 +1256,41 @@ function gmOpenModal(kind, data) {
 
     body.innerHTML = html;
     document.getElementById('gm-modal-backdrop').classList.add('active');
+}
+
+function gmEsc(s) {
+    return String(s === null || s === undefined ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function gmCustomerModalHtml(loc) {
+    let html = `<div class="gm-modal-head">
+        ${gmModalAvatarHtml('location', loc)}
+        <div>
+            <div class="gm-modal-title">${gmEsc(loc.name || '(no name)')}</div>
+            <div class="gm-modal-subtitle">Customer</div>
+        </div>
+    </div>`;
+
+    html += '<div class="gm-modal-grid">';
+    html += gmModalRow('QR Code', loc.qr);
+    html += gmModalRow('Department', loc.department);
+    html += gmModalRow('Last QR Scan', loc.lastUpdate);
+    html += gmModalRow('Scanned By', loc.scanBy);
+    html += gmModalRow('Coordinates', Number(loc.lat).toFixed(6) + ', ' + Number(loc.lng).toFixed(6));
+    html += gmModalRow('Location Source', loc.coordSource === 'scan' ? 'Latest QR scan' : 'Customer record');
+    html += '</div>';
+
+    const rows = Array.isArray(loc.details) ? loc.details : [];
+    if (rows.length) {
+        html += '<div class="gm-modal-section">Customer Information</div><div class="gm-modal-grid">';
+        rows.forEach(r => { html += gmModalRow(r.label, r.value); });
+        html += '</div>';
+    }
+
+    if (loc.corrected) html += '<div class="gm-modal-warn">⚠ Lat/Lng appeared swapped in source data — auto-corrected for display</div>';
+    return html;
 }
 
 function gmCloseModal() {
@@ -1190,7 +1439,7 @@ function gmInitMap() {
         marker.on('click', () => gmOpenModal('location', loc));
         const group = gmClusterGroups[loc.category] || gmClusterGroups.other;
         group.addLayer(marker);
-        gmMarkers.push({ marker, category: loc.category, name: (loc.name || '').toLowerCase(), code: (loc.code || '').toLowerCase() });
+        gmMarkers.push({ marker, category: loc.category, name: (loc.name || '').toLowerCase(), code: ((loc.code || '') + ' ' + (loc.qr || '')).toLowerCase() });
         bounds.push([loc.lat, loc.lng]);
     });
 

@@ -27,7 +27,7 @@ function rbac_csrf_verify(): void {
     if ($expected === '' || !hash_equals($expected, $received)) {
         http_response_code(403);
         header('Content-Type: application/json');
-        echo json_encode(['ok' => false, 'msg' => 'Invalid or missing CSRF token.']);
+        echo json_encode(['ok' => false, 'success' => false, 'msg' => 'Invalid or missing CSRF token.', 'message' => 'Invalid or missing CSRF token.']);
         exit;
     }
 }
@@ -49,6 +49,7 @@ function rbac_module_urls(): array {
         // ── Accounting ───────────────────────────────────────────────────────
         'short_stocks_paid' => '/TWM/ACCOUNTING/short_stocks_paid.php',
         'face_recognition' => '/TWM/face_recognition/index.php',
+        'payroll_dashboard' => '/TWM/HR/PAYROLL/payroll_dashboard.php',
         // ── Add more overrides here as needed ───────────────────────────────
         // 'payroll'        => '/TWM/Finance/payroll/index.php',
         // 'fleet_tracking' => '/TWM/Fleet/tracking/index.php',
@@ -62,6 +63,18 @@ function rbac_module_urls(): array {
 function rbac_module_url(string $moduleKey): string {
     $overrides = rbac_module_urls();
     return $overrides[$moduleKey] ?? route($moduleKey);
+}
+
+/**
+ * Modules that live inside the HR/Payroll hub sidebar. They are hidden from the
+ * Home cards only for users who can open the hub (payroll_dashboard).
+ */
+function rbac_hub_module_keys(): array {
+    return [
+        'employee_loans', 'attendance',
+        'cash_advance_record', 'leave_management', 'leave_approval',
+        'override_attendance_approval', 'payroll_cutoff', 'attendance_present', 'weekly_payroll',
+    ];
 }
 
 /**
@@ -178,6 +191,10 @@ function rbac_get_sections(PDO $pdo, array $permissions): array {
     $sections = [];
     foreach ($all as $mod) {
         if (!isset($permissions[$mod['module_key']])) continue;
+        // Hub modules are reached from the Payroll/HR sidebar for users who can open the hub
+        if (isset($permissions['payroll_dashboard']) && in_array($mod['module_key'], rbac_hub_module_keys(), true)) continue;
+        // Applications is reached from Careers Admin for users who have it
+        if ($mod['module_key'] === 'view_applications' && isset($permissions['careers_admin'])) continue;
         $cat = $mod['category'];
         if (!isset($sections[$cat])) {
             $sections[$cat] = array_merge(
@@ -322,4 +339,13 @@ function rbac_gate(PDO $pdo, string $moduleKey, string $requiredLevel = 'any'): 
         // rbac_enforce_full_access() always exits, but be explicit:
         exit;
     }
+}
+
+/**
+ * True if the current user may open $moduleKey (Administrators always can).
+ * For showing/hiding navigation links only; pages still use rbac_gate().
+ */
+function rbac_can_access(string $moduleKey): bool {
+    if (in_array($_SESSION['UserType'] ?? '', rbac_superadmin_roles())) return true;
+    return rbac_can($moduleKey);
 }

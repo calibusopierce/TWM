@@ -1,0 +1,56 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Save this as:  face_recognition/.htaccess
+#
+# Merge into your existing file if you already have one.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Keep the device credentials out of reach ───────────────────────────────
+# hik_config.php holds the terminal's admin password. It is only ever included
+# by other PHP files, never requested directly, so deny it outright. (A stray
+# server misconfiguration that stops executing .php files would otherwise
+# serve it as plain text.)
+<Files "hik_config.php">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
+
+# ── Stray data files ───────────────────────────────────────────────────────
+<FilesMatch "\.(log|json|ptr|tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ── ONLY IF the listener log reports NOPARSE ───────────────────────────────
+# Some firmware builds send multipart parts without a filename= attribute in a
+# way PHP's own parser won't touch, leaving $_POST and $_FILES empty. Turning
+# off PHP's POST parsing for this one script lets hik_event_listener.php read
+# php://input and parse the multipart body itself.
+#
+# Uncomment BOTH this block and HIK_LISTENER_RAW_MULTIPART in hik_config.php.
+# Requires mod_php; under PHP-FPM set enable_post_data_reading in a pool
+# override instead, since php_flag does nothing there.
+#
+# <Files "hik_event_listener.php">
+#     php_flag enable_post_data_reading off
+# </Files>
+
+# ── Optional: restrict the listener to the terminal at the network level ───
+# hik_event_listener.php already checks the source IP in PHP. This adds a
+# second layer, so a stray request never even reaches PHP. Leave commented if
+# your device is behind NAT and arrives with a different address.
+#
+# <Files "hik_event_listener.php">
+#     <IfModule mod_authz_core.c>
+#         Require ip 192.168.100.59
+#     </IfModule>
+# </Files>

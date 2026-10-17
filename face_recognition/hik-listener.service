@@ -1,0 +1,32 @@
+# /etc/systemd/system/hik-listener.service
+#
+# NOTE: now runs poll_events.php, not listen_events.php. listen_events.php
+# watched /ISAPI/Event/notification/alertStream, which this device
+# (DS-K1T343MWX) doesn't support — every attempt returned HTTP 404, so no
+# photo was ever actually cached that way. poll_events.php gets the same
+# result using AcsEvent search on a short poll interval, the one endpoint
+# already confirmed to work on this device.
+#
+# If you already installed the old unit pointing at listen_events.php:
+#   sudo systemctl stop hik-listener
+#   sudo cp hik-listener.service /etc/systemd/system/hik-listener.service
+#   (edit the ExecStart path below to match where you deployed poll_events.php)
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart hik-listener
+#   sudo journalctl -u hik-listener -f      # watch it live — should show
+#                                            # "Cached photo for serial=..."
+#                                            # lines instead of repeating
+#                                            # "reconnecting" / 404 lines
+
+[Unit]
+Description=Hikvision access-event photo-cache poller
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/php /full/path/to/face_recognition/poll_events.php
+Restart=always
+RestartSec=5
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,46 @@ $department  = $_SESSION['Department']  ?? '';
 $employeeId  = $_SESSION['EmployeeID']  ?? '';
 $username    = $_SESSION['Username']    ?? '';
 
+// ── Download Apps modal — newest file inside each folder wins ──
+function dl_latest($dir) {
+    $files = array_filter(glob(__DIR__ . '/' . $dir . '/*') ?: [], 'is_file');
+    if (!$files) return null;
+    usort($files, function ($a, $b) { return filemtime($b) <=> filemtime($a); });
+    $f    = $files[0];
+    $size = filesize($f);
+    return [
+        'href'  => $dir . '/' . rawurlencode(basename($f)),
+        'name'  => basename($f),
+        'size'  => $size >= 1048576 ? round($size / 1048576, 1) . ' MB' : round($size / 1024) . ' KB',
+        'mtime' => filemtime($f),
+    ];
+}
+$downloadApps = [
+    ['zip' => true, 'dir' => '/../tradewellportal/download/64bit', 'icon' => 'bi-windows',  'title' => 'Windows 64-bit', 'sub' => 'Desktop app for 64-bit Windows', 'color' => '#60a5fa'],
+    ['zip' => true, 'dir' => '/../tradewellportal/download/32bit', 'icon' => 'bi-windows',  'title' => 'Windows 32-bit', 'sub' => 'Desktop app for 32-bit Windows', 'color' => '#34d399'],
+    ['dir' => '/../tradewellportal/download/app',   'icon' => 'bi-android2', 'title' => 'Android App',    'sub' => 'Mobile app (APK) for Android',  'color' => '#fbbf24'],
+];
+function dl_folder($dir) {
+    $files = [];
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . '/' . $dir, FilesystemIterator::SKIP_DOTS));
+    foreach ($it as $f) { if ($f->isFile()) $files[] = $f; }
+    if (!$files) return null;
+    $size = 0; $mtime = 0;
+    foreach ($files as $f) { $size += $f->getSize(); $mtime = max($mtime, $f->getMTime()); }
+    return [
+        'href'  => 'download_zip.php?app=' . rawurlencode(basename($dir)),
+        'name'  => 'TWM-Windows-' . basename($dir) . '.zip',
+        'count' => count($files),
+        'size'  => $size >= 1048576 ? round($size / 1048576, 1) . ' MB' : round($size / 1024) . ' KB',
+        'mtime' => $mtime,
+    ];
+}
+foreach ($downloadApps as $i => $a) {
+    $downloadApps[$i]['file'] = !empty($a['zip']) && is_dir(__DIR__ . '/' . $a['dir'])
+        ? dl_folder($a['dir'])
+        : dl_latest($a['dir']);
+}
+
 $hour = (int) date('G');
 $greeting = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
 
@@ -502,6 +542,11 @@ foreach ($sections as $section) {
       .topbar-subtitle { display: none; }
       .topbar-search-wrap { order: 3; max-width: 100%; flex-basis: 100%; }
       .user-name { display: none; }
+      /* keep avatar + gift/download/bell icons pinned to the right edge (even if the row wraps) */
+      .topbar-user { margin-left: auto; gap: .4rem; }
+      .topbar-user .gift-btn,
+      .topbar-user .download-btn,
+      .topbar-user .notify-btn { width: 36px; height: 36px; font-size: 1rem; }
       .page { padding: 1.25rem 1rem 2rem; }
       .section-grid { padding: 0 1rem 1.2rem; gap: .6rem; }
       .section-header { padding: .8rem 1rem; }
@@ -509,7 +554,13 @@ foreach ($sections as $section) {
     @media (max-width: 420px) {
       .page { padding: 1rem .75rem 1.75rem; gap: 1.25rem; }
       .section-grid { padding: 0 .75rem 1rem; gap: .55rem; }
-      .user-dropdown { min-width: 0; width: calc(100vw - 1.5rem); right: -.75rem; }
+      /* compact brand + avatar-only trigger so everything fits on one row */
+      .topbar-logo { width: 38px; height: 38px; }
+      .topbar-title { font-size: .95rem; }
+      .user-trigger { padding: .3rem; }
+      .user-trigger .bi-chevron-down { display: none; }
+      /* dropdown now sits flush with the right edge of the page padding, so right:0 gives .75rem margin on both sides */
+      .user-dropdown { min-width: 0; width: calc(100vw - 1.5rem); right: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, .hub-section, .topbar, .hub-quick-access {
@@ -593,6 +644,78 @@ foreach ($sections as $section) {
     .bulletin-btn-primary { background: var(--blue-bright); color: #fff; }
     .bulletin-btn-ghost { background: transparent; border: 1px solid var(--w25); color: var(--white); }
     .bulletin-btn-ghost:hover { background: var(--w10); opacity: 1; }
+
+    /* ── Download Apps modal ── */
+    .download-btn {
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(52,211,153,.14); border: 1px solid rgba(52,211,153,.35);
+      color: #34d399; font-size: 1.05rem; cursor: pointer;
+      transition: background .15s, transform .15s, border-color .15s;
+    }
+    .download-btn:hover { background: rgba(52,211,153,.24); border-color: rgba(52,211,153,.55); transform: scale(1.06); }
+
+    .dl-overlay {
+      position: fixed; inset: 0; z-index: 900;
+      background: rgba(4,10,28,.65); backdrop-filter: blur(3px);
+      display: flex; align-items: center; justify-content: center; padding: 1.5rem;
+      opacity: 0; visibility: hidden;
+      transition: opacity .18s ease, visibility .18s ease;
+    }
+    .dl-overlay.open { opacity: 1; visibility: visible; }
+    .dl-modal {
+      width: 100%; max-width: 1080px; max-height: 92vh; overflow-y: auto;
+      background: #0a1533; border: 1px solid var(--w25); border-radius: 22px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.55);
+      padding: 2.2rem 2.4rem 2.4rem;
+      transform: translateY(10px) scale(.98); transition: transform .2s ease;
+    }
+    .dl-overlay.open .dl-modal { transform: translateY(0) scale(1); }
+    .dl-head { display: flex; align-items: center; gap: .6rem; font-family: 'Sora', sans-serif; font-size: 1.3rem; font-weight: 800; letter-spacing: -.01em; color: var(--white); margin-bottom: .5rem; }
+    .dl-head .bi-cloud-download-fill { color: #34d399; font-size: 1.6rem; }
+    .dl-head .bulletin-close { margin-left: auto; width: 40px; height: 40px; font-size: 1.3rem; }
+    .dl-sub { font-size: 1.05rem; color: var(--w80); margin-bottom: 1.5rem; line-height: 1.6; }
+    .dl-list { display: flex; flex-direction: column; gap: 1rem; }
+    .dl-item {
+      display: flex; align-items: center; gap: 1.2rem; text-decoration: none; color: var(--white);
+      background: var(--w10); border: 1px solid var(--w25); border-radius: 18px; padding: 1.2rem 1.4rem;
+      transition: background .15s, border-color .15s, transform .15s;
+    }
+    a.dl-item:hover { background: var(--w15); border-color: var(--dl-color); transform: translateY(-2px); color: var(--white); }
+    .dl-item.is-missing { opacity: .55; }
+    .dl-item-icon {
+      width: 72px; height: 72px; border-radius: 18px; flex-shrink: 0; font-size: 2.2rem;
+      display: flex; align-items: center; justify-content: center; color: var(--dl-color);
+      background: color-mix(in srgb, var(--dl-color) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--dl-color) 35%, transparent);
+    }
+    .dl-item-info { flex: 1; min-width: 0; }
+    .dl-item-title { font-family: 'Sora', sans-serif; font-size: 1.35rem; font-weight: 800; }
+    .dl-item-desc { font-size: 1rem; color: var(--w80); margin-top: .2rem; line-height: 1.45; }
+    .dl-item-file { font-size: .9rem; color: var(--w60); margin-top: .5rem; word-break: break-all; }
+    .dl-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: .6rem;
+      flex-shrink: 0; min-height: 56px; padding: .9rem 1.7rem; border-radius: 14px;
+      background: var(--dl-color); color: #08173d;
+      font-family: 'Sora', sans-serif; font-size: 1.1rem; font-weight: 800;
+      box-shadow: 0 4px 14px rgba(0,0,0,.3);
+    }
+    .dl-btn i { font-size: 1.3rem; }
+    a.dl-item:hover .dl-btn { filter: brightness(1.1); }
+    .dl-footer { display: flex; justify-content: flex-end; margin-top: 1.5rem; padding-top: 1.2rem; border-top: 1px solid var(--w15); }
+    .dl-footer .bulletin-btn { font-size: 1rem; padding: .8rem 2rem; }
+    @media (max-width: 600px) {
+      .dl-overlay { padding: .5rem; align-items: flex-end; }
+      .dl-modal { padding: 1.4rem 1.1rem 1.1rem; border-radius: 22px 22px 14px 14px; max-height: 94vh; }
+      .dl-head { font-size: 1.15rem; }
+      .dl-sub { font-size: 1rem; margin-bottom: 1.1rem; }
+      .dl-item { flex-wrap: wrap; padding: 1rem; gap: .9rem; }
+      .dl-item-icon { width: 56px; height: 56px; font-size: 1.7rem; border-radius: 14px; }
+      .dl-item-title { font-size: 1.2rem; }
+      .dl-btn { flex-basis: 100%; min-height: 58px; font-size: 1.15rem; }
+      .dl-footer .bulletin-btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -619,6 +742,44 @@ foreach ($sections as $section) {
     <div class="bulletin-footer">
       <button class="bulletin-btn bulletin-btn-ghost" id="bulletin-dismiss-all-btn">Dismiss all</button>
       <button class="bulletin-btn bulletin-btn-primary" id="bulletin-got-it-btn">Got it</button>
+    </div>
+  </div>
+</div>
+
+<div class="dl-overlay" id="dl-overlay">
+  <div class="dl-modal">
+    <div class="dl-head">
+      <i class="bi bi-cloud-download-fill"></i> Download Apps
+      <button class="bulletin-close" id="dl-close-btn" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="dl-sub">Choose the version that matches your device, then press the big <strong>Download</strong> button.</div>
+    <div class="dl-list">
+      <?php foreach ($downloadApps as $a):
+          $f   = $a['file'];
+          $tag = $f ? 'a' : 'div';
+      ?>
+      <<?= $tag ?> class="dl-item<?= $f ? '' : ' is-missing' ?>" style="--dl-color: <?= $a['color'] ?>"
+        <?php if ($f): ?>href="<?= htmlspecialchars($f['href']) ?>" download="<?= htmlspecialchars($f['name']) ?>"<?php endif; ?>>
+        <div class="dl-item-icon"><i class="bi <?= $a['icon'] ?>"></i></div>
+        <div class="dl-item-info">
+          <div class="dl-item-title"><?= htmlspecialchars($a['title']) ?></div>
+          <div class="dl-item-desc"><?= htmlspecialchars($a['sub']) ?></div>
+          <div class="dl-item-file">
+            <?php if ($f): ?>
+              <?php if (!empty($f['count'])): ?><?= $f['count'] ?> file<?= $f['count'] !== 1 ? 's' : '' ?> in one ZIP &middot; <?php endif; ?><?= $f['size'] ?> &middot; Updated <?= date('M d, Y', $f['mtime']) ?>
+            <?php else: ?>
+              Not available yet
+            <?php endif; ?>
+          </div>
+        </div>
+        <?php if ($f): ?>
+        <span class="dl-btn"><i class="bi bi-download"></i> Download<?= !empty($f['count']) ? ' ZIP' : '' ?></span>
+        <?php endif; ?>
+      </<?= $tag ?>>
+      <?php endforeach; ?>
+    </div>
+    <div class="dl-footer">
+      <button class="bulletin-btn bulletin-btn-ghost" id="dl-done-btn">Close</button>
     </div>
   </div>
 </div>
@@ -654,6 +815,9 @@ foreach ($sections as $section) {
       <a href="birthday.php" class="gift-btn" title="Birthdays &amp; celebrations" aria-label="Birthdays">
         <i class="bi bi-gift-fill"></i>
       </a>
+      <button class="download-btn" id="download-btn" title="Download apps" aria-label="Download apps">
+        <i class="bi bi-cloud-download-fill"></i>
+      </button>
       <button class="notify-btn" id="notify-btn" title="Bulletin board" aria-label="Bulletin board">
         <i class="bi bi-bell-fill"></i>
         <span class="notify-btn-dot" id="notify-btn-dot" style="display:none;"></span>
@@ -1098,6 +1262,19 @@ function toggleSection(el) {
       render();
     }
   });
+})();
+
+// ── Download Apps modal ──
+(function () {
+  const overlay = document.getElementById('dl-overlay');
+  const openBtn = document.getElementById('download-btn');
+  if (!overlay || !openBtn) return;
+  const close = () => overlay.classList.remove('open');
+  openBtn.addEventListener('click', () => overlay.classList.toggle('open'));
+  document.getElementById('dl-close-btn')?.addEventListener('click', close);
+  document.getElementById('dl-done-btn')?.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 })();
 </script>
 
